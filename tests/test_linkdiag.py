@@ -166,3 +166,16 @@ def test_suspects_same_gpu_position_on_many_trays_and_adjacent_ports():
     text = " | ".join(s)
     assert "GPU position 0002:01:00.1: problem links on 3 trays" in text and "shared by that GPU position" in text
     assert "st4 asic0: 3 problem links (Ethernet66, Ethernet69, Ethernet70) on adjacent ports" in text
+
+
+def test_trays_filter_keeps_only_links_of_the_selected_trays():
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import link_check
+    rack = SimpleNamespace(computes={"ct13": SimpleNamespace(host=SimpleNamespace(extra={"slot": 12}))})
+    mk = lambda port, slot, tray=None: ld.Link("st6", "asic1", f"Ethernet{port}", tray=tray,  # noqa: E731
+                                               desc=f"To ComputeTray Slot{slot}/GPU1[1]/Port0")
+    res = {"links": [mk(261, 12, "ct13"), mk(262, 12), mk(170, 3), mk(171, 4)], "learned": {"slots": {"ct13": 12}}}
+    assert [x.sw_port for x in link_check._only_selected_trays(res, rack)] == ["Ethernet261", "Ethernet262"]

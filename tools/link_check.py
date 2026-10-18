@@ -376,6 +376,21 @@ def _filtered_rack(a):
     return inv, rack
 
 
+def _only_selected_trays(res, rack) -> list:
+    """--trays: keep only the links cabled to the selected trays. Without this every port cabled to a tray left out
+    of the run reads as 'no compute tray in the inventory' (g02-g17 18 Oct: --trays ct13,ct14 on st6 gave 360 of
+    them, and ct05's quarantined links)."""
+    keep = set(rack.computes)
+    slots = {s for t, s in (res.get("learned") or {}).get("slots", {}).items() if t in keep}
+    slots |= {v for v in (tray_slot(t) for t in rack.computes.values()) if v is not None}
+    out = []
+    for ln in res["links"]:
+        cab = parse_port_description(ln.desc or "")
+        if ln.tray in keep or (ln.tray is None and cab and cab[0] in slots):
+            out.append(ln)
+    return out
+
+
 def _room(folder: Path, need_mb: int = 50) -> None:
     """Refuse before collecting when the report folder's disk is nearly full (g02-g17 18 Oct: the jump host's /home
     filled up and a scan died at mkdir with a traceback)."""
@@ -399,6 +414,8 @@ def scan_cmd(a) -> int:
         res = linkdiag.scan(rack, a.interval)
     finally:
         rack.close()
+    if getattr(a, "trays", None):
+        res["links"] = _only_selected_trays(res, rack)
     links, groups = res["links"], linkdiag.group_causes(res["links"])
     lines = [f"Scale-up link scan {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC  rack {inv.rack}",
              f"{len(links)} GPU links: " + ", ".join(f"{sum(1 for x in links if x.state == k)} {k}" for k in ("ok", "degraded", "down")), ""]

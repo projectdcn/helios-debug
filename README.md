@@ -5,7 +5,7 @@ Debug tools for the AMD Helios scale-up fabric, separate from the test-case auto
 - **Link check** (`tools/link_check.py`): every GPU link of a rack (switch port <-> GPU port), its state
   (ok / degraded / down) and, for each problem, one root cause with the evidence, who owns the fix and the next step.
   Read-only, SSH only, no AFM password. Runs on any rack described by an inventory.
-- **Debug guide** (`docs/link-debug-guide.md`): how to isolate a link problem by hand, layer by layer, with every
+- **Debug guide** (`docs/link-debug-guide.md`, `docs/link-debug-guide.html` to share; regenerate with `python3 tools/md_to_html.py docs/link-debug-guide.md`): how to isolate a link problem by hand, layer by layer, with every
   command, and the abbreviations.
 - **Topology** (`docs/scaleup-topology.html`): how the GPUs / compute trays are cabled to the switch trays (planes,
   ports per switch, tray resources). The resource table is the g02-g17 rack's.
@@ -45,7 +45,8 @@ password in the file. Rack behind a bastion: `transport.jump`. The compute tray 
 
 - `scan`: every link; counters sampled twice (`--interval`, 30 s) so only growing errors count; patterns across
   problem links (several on one GPU, the same GPU position on many trays, adjacent ports on one ASIC); cabling checked
-  against IFCP (miscabled). `--switches` / `--trays` limit it.
+  against IFCP (miscabled). `--switches st6` checks one switch tray (432 links on a full rack: 72 GPUs x 6
+  ports; every compute tray is still read, they are the other end); `--trays ct13,ct14` keeps only those trays' links.
 - `pingmap`: a ring of L2 pings repeated N rounds; loss per GPU port number / switch ASIC, sticky or moving.
 - `path`: one GPU-to-GPU path port by port: tray side, IFCP, forwarding entries, an L2 ping (`--no-ping` to skip)
   and the counters around it.

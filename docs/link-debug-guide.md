@@ -1,12 +1,15 @@
 # Helios Debug Guide
 
-Oct 18, 2026 · @Amish
+18 Oct 2026
 
 A scale-up link has three ends to check: the switch ASIC port, the cable and optics between, and the GPU's IFoE port on the compute tray, with AFM and IFCP layered on top. Work from the bottom up: physical link on both ends, then the IFCP session, then what AFM reports, then an L2 ping. Stop at the first layer that disagrees. Abbreviations are explained at the end, under Abbreviations and terms.
 
 ## Triage at a glance
 
-&#91;embedded content: link triage · 4 layers, bottom up\]
+1. **Is the physical link up on both ends?** Switch port oper up and GPU port LINK\_UP. No: Layer 1.
+2. **Is the IFCP session up?** `ll_up` and `peer_enabled` yes, no errors. No: IFCP session.
+3. **Does AFM agree?** PortReady on the switch node and the compute node. No: What AFM reports.
+4. **Does an L2 ping pass on every port?** No: Data path.
 
 Each question is one section below; a "no" sends you to the layer at fault, and only a link that passes all four is healthy.
 
