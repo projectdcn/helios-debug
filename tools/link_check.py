@@ -335,6 +335,57 @@ def _not_checked(res) -> list[tuple[str, str, str, str]]:
     return out
 
 
+def _ranges(nums) -> str:
+    """[18, 19, 20, 22] -> '18-20, 22'."""
+    nums = sorted({n for n in nums if n is not None})
+    out, i = [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 'es' if word.endswith('ch') else 's'}"
+
+
+RANK = {"ok": 0, "degraded": 1, "down": 2}
+
+
+def asic_gpu_map(links) -> dict:
+    """{asic key: {tray: {bdf: {"ports": [...], "ok": n, "total": n, "worst": state}}}} plus per-ASIC totals - which
+    GPU ports each switch ASIC carries (one plane per GPU port number) and how many of them are ok."""
+    m: dict = {}
+    for ln in links:
+        if not ln.tray or not ln.bdf:
+            continue
+        k = f"{ln.switch} {ln.asic}".strip()
+        c = m.setdefault(k, {}).setdefault(ln.tray, {}).setdefault(ln.bdf, {"ports": [], "ok": 0, "total": 0, "worst": "ok"})
+        c["ports"].append(ln.gpu_port)
+        c["total"] += 1
+        c["ok"] += ln.state == "ok"
+        if RANK.get(ln.state, 0) > RANK[c["worst"]]:
+            c["worst"] = ln.state
+    return m
+
+
+def map_lines(links) -> list[str]:
+    """Text form of the ASIC -> GPU map for report.txt."""
+    out = []
+    for k, trays in sorted(asic_gpu_map(links).items()):
+        tot = sum(c["total"] for t in trays.values() for c in t.values())
+        ok = sum(c["ok"] for t in trays.values() for c in t.values())
+        parts = []
+        for tray, gpus in sorted(trays.items()):
+            ports = sorted({p for c in gpus.values() for p in c["ports"]})
+            parts.append(f"{tray} {len(gpus)} GPU x ports {_ranges(ports)}")
+        out.append(f"  {k}: {ok}/{tot} links ok - " + "; ".join(parts))
+    return out
+
+
 def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[dict]) -> None:
     links = res["links"]
     n = {k: sum(1 for x in links if x.state == k) for k in ("ok", "degraded", "down")}
@@ -354,37 +405,114 @@ def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[di
             per_asic[k] = per_asic.get(k, 0) + 1
     asic_rows = "".join(f"<tr><td>{esc(k)}</td><td>{n}</td></tr>" for k, n in sorted(per_asic.items(), key=lambda x: -x[1]))
     cab = res["learned"].get("ifcp") or {}
-    cab_txt = (f"checked against IFCP on {cab.get('checked_links', 0)} links" if cab.get("device") else
-               "not checked: IFCP is not running on this rack (no GPU port has an IFCP session or peer)"
-               if not res["learned"].get("ifcp_in_use", True) else "not checked (no IFCP peer data)")
+    ifcp_in_use = res["learned"].get("ifcp_in_use", True)
     unreach = [t["name"] for t in res["trays"].values() if t.get("error")] + \
               [s["name"] for s in res["switches"].values() if s.get("error")]
-    optics = "yes" if any(res["optics_reported"].values()) else "no (this platform reports no transceiver presence or optic power)"
+
+    # notes: what was and was not checked, in plain words
+    notes = []
+    if not ifcp_in_use:
+        notes.append("<b>IFCP is not running on this rack.</b> No GPU port has an IFCP session or knows a peer, so IFCP is not "
+                     "judged per link and the cabling cannot be cross-checked against IFCP. Links are judged on the other "
+                     "layers. Whether traffic flows without it: <code>link_check.py path</code> runs an L2 ping over chosen ports.")
+    elif cab.get("device"):
+        notes.append(f"Cabling checked against IFCP on {cab.get('checked_links', 0)} links: each GPU port's IFCP peer is the "
+                     f"switch port that the forwarding table / port description names.")
+    else:
+        notes.append("Cabling not checked against IFCP (no IFCP peer data).")
+    by = {}
+    for ln in links:
+        by[ln.matched_by or "none"] = by.get(ln.matched_by or "none", 0) + 1
+    notes.append("Switch port to GPU port matching: " + ", ".join(f"{v} by {'the GPU port MAC in the switch forwarding table' if k == 'mac' else 'the switch port description' if k == 'description' else k}"
+                                                              for k, v in sorted(by.items(), key=lambda kv: -kv[1])) + ".")
+    if not any(res["optics_reported"].values()):
+        notes.append("Optics: this switch platform reports no transceiver presence or optic power, so a cable fault cannot "
+                     "be told from a port fault remotely.")
+    notes.append(f"Bit errors count only when they grow during the {res['interval_s']:.0f} s sample.")
+
+    # ASIC -> GPU map
+    amap = asic_gpu_map(links)
+    trays = sorted({t for v in amap.values() for t in v})
+    map_head = "<tr><th>Switch ASIC</th><th>Links ok</th>" + "".join(f"<th>{esc(t)}</th>" for t in trays) + "</tr>"
+    map_rows = []
+    for k, tv in sorted(amap.items()):
+        tot = sum(c["total"] for t in tv.values() for c in t.values())
+        ok = sum(c["ok"] for t in tv.values() for c in t.values())
+        cells = []
+        for t in trays:
+            gpus = tv.get(t, {})
+            cells.append("<td>" + "".join(f"<div class='chip {c['worst']}' title='{esc(t)} {esc(b)}'>{esc(b)} · ports "
+                                          f"{esc(_ranges(c['ports']))} · {c['ok']}/{c['total']}</div>"
+                                          for b, c in sorted(gpus.items())) + "</td>")
+        cls = "ok" if ok == tot else "down" if ok == 0 else "degraded"
+        map_rows.append(f"<tr><td><b>{esc(k)}</b></td><td class='{cls}'>{ok}/{tot}</td>{''.join(cells)}</tr>")
+
+    # every link
+    def pnum(x):
+        m_ = re.search(r"(\d+)$", x or "")
+        return int(m_.group(1)) if m_ else 0
+    all_rows = []
+    for ln in sorted(links, key=lambda x: (x.switch, x.asic or "", pnum(x.sw_port))):
+        g = ln.gpu or {}
+        i = g.get("ifcp") or {}
+        ifcp = ("not running" if not ifcp_in_use else ("up" if i.get("ll_up") == "yes" else f"down (ll_up {i.get('ll_up')})")) if g else ""
+        fec = f"+{ln.deltas.get('FEC_CORR', 0)} / +{ln.deltas.get('FEC_UNCORR', 0)}" if ln.deltas or g else ""
+        all_rows.append(
+            f"<tr class='{ln.state}' data-s='{ln.state}'><td>{esc(ln.state)}</td><td>{esc(ln.switch)}</td><td>{esc(ln.asic)}</td>"
+            f"<td>{esc(ln.sw_port)}</td><td>{esc(ln.sw_admin)}/{esc(ln.sw_oper)}</td><td>{esc(ln.tray)}</td><td>{esc(ln.bdf)}</td>"
+            f"<td>{esc(ln.gpu_port)}</td><td>{esc(g.get('admin', ''))}/{esc(str(g.get('link', ''))[:28])}</td><td>{esc(ifcp)}</td>"
+            f"<td>{esc(fec)}</td><td>{esc(ln.matched_by)}</td><td>{esc(ln.cause or '')}</td></tr>")
+
+    nsw, ntr = len(res["switches"]), len(res["trays"])
     path.write_text(f"""<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Scale-up link report - {esc(rack_name)}</title><style>
-:root{{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--down:#b42318;--deg:#b54708;--ok:#067647}}
-@media (prefers-color-scheme:dark){{:root{{--bg:#12161b;--fg:#e6eaef;--mut:#96a2b0;--rule:#2b3540;--down:#f97066;--deg:#fdb022;--ok:#47cd89}}}}
+:root{{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--card:#ffffff;--down:#b42318;--deg:#b54708;--ok:#067647;
+--okbg:#e7f6ec;--degbg:#fef3e2;--downbg:#fdecea}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#12161b;--fg:#e6eaef;--mut:#96a2b0;--rule:#2b3540;--card:#1a2027;--down:#f97066;
+--deg:#fdb022;--ok:#47cd89;--okbg:#10291b;--degbg:#33250c;--downbg:#3a1512}}}}
 body{{background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,'Segoe UI',Arial,sans-serif;margin:0;padding:24px max(16px,4vw)}}
 h1{{font-size:1.5rem;margin:0}}h2{{font-size:1.1rem;margin:28px 0 8px}}.mut{{color:var(--mut)}}
 .k{{display:flex;flex-wrap:wrap;gap:24px;margin:14px 0}}.k b{{display:block;font-size:1.6rem}}
+.notes{{background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:10px 16px}}.notes li{{margin:4px 0}}
 .wrap{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;min-width:760px;font-size:13px}}
-th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--rule);vertical-align:top}}th{{color:var(--mut);font-weight:600}}
-tr.down td:first-child{{color:var(--down);font-weight:600}}tr.degraded td:first-child{{color:var(--deg);font-weight:600}}
+th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--rule);vertical-align:top}}th{{color:var(--mut);font-weight:600;position:sticky;top:0;background:var(--bg)}}
+tr.down td:first-child,td.down{{color:var(--down);font-weight:600}}tr.degraded td:first-child,td.degraded{{color:var(--deg);font-weight:600}}
+tr.ok td:first-child,td.ok{{color:var(--ok)}}
+.chip{{display:inline-block;margin:2px 4px 2px 0;padding:2px 6px;border-radius:6px;font:12px ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}}
+.chip.ok{{background:var(--okbg)}}.chip.degraded{{background:var(--degbg);color:var(--deg)}}.chip.down{{background:var(--downbg);color:var(--down)}}
+.bar{{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}}input,select{{font:inherit;padding:4px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--fg)}}
+.scroll{{max-height:70vh;overflow:auto;border:1px solid var(--rule);border-radius:8px}}
 code,details div{{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}}
 </style></head><body>
 <h1>Scale-up link report: {esc(rack_name)}</h1>
-<div class='mut'>{esc(when)} UTC · {len(res['switches'])} switches, {len(res['trays'])} compute trays · errors sampled over {res['interval_s']:.0f} s · read-only</div>
+<div class='mut'>{esc(when)} UTC · {_plural(nsw, 'switch')}, {_plural(ntr, 'compute tray')} · read-only</div>
 <div class='k'><span><b>{len(links)}</b>GPU links</span><span><b style='color:var(--ok)'>{n['ok']}</b>ok</span>
 <span><b style='color:var(--deg)'>{n['degraded']}</b>degraded</span><span><b style='color:var(--down)'>{n['down']}</b>down</span></div>
-{('<h2 style="color:var(--down)">Not checked</h2><p>The scan could not read these, so their links are missing or incomplete below.</p><ul>' + ''.join(f'<li><b>{esc(r)} {esc(n)}</b>: {esc(e[:200])}<br><span class="mut">{esc(h)}</span></li>' for n, r, e, h in _not_checked(res)) + '</ul>') if unreach else ''}
-<p class='mut'>Optic data from the switches: {esc(optics)}. Cabling: {esc(cab_txt)}.</p>
+{('<h2 style="color:var(--down)">Not checked</h2><p>The scan could not read these, so their links are missing or incomplete below.</p><ul>' + ''.join(f'<li><b>{esc(r)} {esc(nm)}</b>: {esc(e[:200])}<br><span class="mut">{esc(h)}</span></li>' for nm, r, e, h in _not_checked(res)) + '</ul>') if unreach else ''}
+<h2>Notes</h2><ul class='notes'>{''.join(f'<li>{x}</li>' for x in notes)}</ul>
 {(("<h2>Changes since the earlier scan</h2><p>" + esc(f"{len(res['compare']['new_problems'])} new problem(s), {len(res['compare']['recovered'])} recovered, {res['compare']['still_bad']} still bad") + "</p>" + "".join(f"<div><code>new: {esc(x)}</code></div>" for x in res['compare']['new_problems']) + "".join(f"<div><code>recovered: {esc(x)}</code></div>" for x in res['compare']['recovered'])) if res.get('compare') else '')}
 {("<h2>Patterns</h2>" + "".join(f"<p>{esc(x)}</p>" for x in res.get('suspects') or [])) if res.get('suspects') else ''}
 <h2>Root causes</h2><div class='wrap'><table><tr><th>State</th><th>Links</th><th>Cause</th><th>Owner</th></tr>{summary or "<tr><td colspan=4>No problem links.</td></tr>"}</table></div>
-{("<h2>Problem links per switch ASIC</h2><p class='mut'>Trays out of service left out. Problems spread over many ASICs point at the trays or cabling; many on one ASIC point at that ASIC.</p><div class='wrap'><table style='min-width:320px'><tr><th>Switch ASIC</th><th>Problem links</th></tr>" + asic_rows + "</table></div>") if asic_rows else ""}
 <h2>Problem links</h2><div class='wrap'><table><tr><th>State</th><th>Switch port</th><th>GPU port</th><th>Cause</th><th>Owner</th><th>Next step</th><th>Evidence</th></tr>
 {''.join(rows) or ("<tr><td colspan=7>All links ok.</td></tr>" if links and not any(r == "switch" for _n, r, _e, _h in _not_checked(res)) else "<tr><td colspan=7>No problem found among the links that could be checked - see Not checked above.</td></tr>")}</table></div>
-<p class='mut'>Each link is one switch port and the GPU port cabled to it, matched by the GPU port's MAC in the switch forwarding table (or by the switch port description). Bit errors count only when they grow during the sample.</p>
+{("<h2>Problem links per switch ASIC</h2><p class='mut'>Trays out of service left out. Problems spread over many ASICs point at the trays or cabling; many on one ASIC point at that ASIC.</p><div class='wrap'><table style='min-width:320px'><tr><th>Switch ASIC</th><th>Problem links</th></tr>" + asic_rows + "</table></div>") if asic_rows else ""}
+<h2>Switch ASIC to GPU map</h2>
+<p class='mut'>Which GPU ports each switch ASIC carries (a GPU port number is one plane, on one ASIC) and how many of them are ok. Green: all ok; amber / red: at least one degraded / down - see All links.</p>
+<div class='wrap'><table>{map_head}{''.join(map_rows) or "<tr><td>No links matched.</td></tr>"}</table></div>
+<h2>All links ({len(links)})</h2>
+<div class='bar'><input id='q' type='search' placeholder='Filter: switch port, tray, BDF, cause ...' aria-label='Filter links' size='34'>
+<select id='st' aria-label='State'><option value=''>all states</option><option>ok</option><option>degraded</option><option>down</option></select>
+<span id='cnt' class='mut'></span></div>
+<div class='scroll'><table id='all'><thead><tr><th>State</th><th>Switch</th><th>ASIC</th><th>Switch port</th><th>Admin/oper</th><th>Tray</th><th>GPU (BDF)</th>
+<th>GPU port</th><th>GPU admin/link</th><th>IFCP</th><th>FEC corr / uncorr (sample)</th><th>Matched by</th><th>Cause</th></tr></thead>
+<tbody>{''.join(all_rows)}</tbody></table></div>
+<script>
+(function(){{var q=document.getElementById('q'),st=document.getElementById('st'),cnt=document.getElementById('cnt'),
+rows=Array.prototype.slice.call(document.querySelectorAll('#all tbody tr'));
+function f(){{var t=q.value.toLowerCase(),s=st.value,n=0;rows.forEach(function(r){{var on=(!s||r.dataset.s===s)&&(!t||r.textContent.toLowerCase().indexOf(t)>=0);
+r.style.display=on?'':'none';if(on)n++;}});cnt.textContent=n+' of '+rows.length+' shown';}}
+q.addEventListener('input',f);st.addEventListener('change',f);f();}})();
+</script>
 </body></html>
 """)
 
@@ -467,6 +595,11 @@ def scan_cmd(a) -> int:
         lines.append("")
         lines.append("problem links per switch ASIC (trays out of service left out): " +
                      ", ".join(f"{k} {n}" for k, n in sorted(per_asic.items(), key=lambda x: -x[1])))
+    ml = map_lines(links)
+    if ml:
+        lines.append("")
+        lines.append("switch ASIC -> GPU ports (links ok / total):")
+        lines += ml
     if not res["learned"].get("ifcp_in_use", True):
         lines.append("note: IFCP is not running on this rack - no GPU port has an IFCP session or peer; links are judged "
                      "on the other layers (check with `path`: an L2 ping that passes means the data path works without it)")

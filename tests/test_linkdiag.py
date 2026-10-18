@@ -208,3 +208,17 @@ def test_path_verdict_lets_a_passing_ping_win_over_ifcp_down():
     ok = link_check.judge(0, port, port, e, e, {"failed": []}, {})
     assert ok.startswith("ok (L2 ping passes") and "IFCP down" in ok
     assert link_check.judge(0, port, port, e, e, {"failed": ["IFoE Req"]}, {}).startswith("IFCP")
+
+
+def test_asic_gpu_map_and_ranges():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import link_check
+    assert link_check._ranges([18, 19, 20, 22, 35, 34]) == "18-20, 22, 34-35"
+    assert link_check._plural(1, "switch") == "1 switch" and link_check._plural(6, "switch") == "6 switches"
+    mk = lambda asic, tray, bdf, p, st="ok": ld.Link("st1", asic, f"Ethernet{p}", tray=tray, bdf=bdf, gpu_port=p, state=st)  # noqa: E731
+    links = [mk("asic0", "c1", "0001:01:00.1", p) for p in range(18, 36)] + [mk("asic1", "c1", "0001:01:00.1", 3, "down")]
+    m = link_check.asic_gpu_map(links)
+    assert m["st1 asic0"]["c1"]["0001:01:00.1"]["ok"] == 18 and m["st1 asic1"]["c1"]["0001:01:00.1"]["worst"] == "down"
+    assert link_check.map_lines(links)[0] == "  st1 asic0: 18/18 links ok - c1 1 GPU x ports 18-35"
