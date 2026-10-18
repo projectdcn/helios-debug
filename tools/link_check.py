@@ -530,12 +530,14 @@ def bcm_cmd(a) -> int:
                      if (p in want) or (not want and r.get("Vlan") == "trunk" and str(r.get("Oper")).lower() != "up")}
             if not ports:
                 continue
-            res = bcm.read_ports(sw, ns, ports)
+            ref = bcm.reference_port(rows, set(ports))
+            res = bcm.read_ports(sw, ns, ports | ({ref[0]: ref[1]} if ref else {}))
+            refv = res.pop(ref[0], None) if ref and ref[0] not in ports else (res.get(ref[0]) if ref else None)
             for port in sorted(res, key=lambda x: int(re.sub(r"\D", "", x) or 0)):
                 v = res[port]
                 raw[f"{ns or ''}/{port}"] = v
-                finding, ev = bcm.judge(v)
                 oper = (rows.get(port) or {}).get("Oper")
+                finding, ev = bcm.judge(v, refv if ref and port != ref[0] else None, oper_down=str(oper).lower() != "up")
                 lines.append(f"{ns or ''} {port} (oper {oper}): {finding or 'nothing wrong seen by the ASIC'}")
                 lines += [f"    {e}" for e in ev]
                 bad += bool(finding)

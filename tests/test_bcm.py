@@ -83,3 +83,28 @@ def test_read_ports_one_ssh_call_per_port():
     assert v["bcm_port"] == "cd100" and v["lane"][1]["RX_SNR"] == bcm.SNR_INVALID and v["fec_bins"][16] == 123
     assert len(calls) == 2 and "bcmcmd -n 1" in calls[1] and "</dev/null" in calls[1]
     assert "set" not in calls[1].replace("STATUS_ALL", "") and "prbs" not in calls[1] and "eyescan" not in calls[1]
+
+
+def test_clean_signal_that_never_locks_is_not_called_weak():
+    # g02-g17 st5 Ethernet494 18 Oct 16:17: SNR 2408 / 2490 on both lanes, working ports ~2400-2600, never locked
+    ref = view([lane(1, 2473), lane(1, 2515)])
+    finding = bcm.judge(view([lane(1, 2408), lane(1, 2490)], PMD_RX_LOCK=0, PMD_LANE_RX_LOCK=0), ref, oper_down=True)[0]
+    assert "reads like a working lane's" in finding and "not a weak signal" in finding and "polarity" in finding
+    weak = bcm.judge(view([lane(1, 1200), lane(1, 2490)], PMD_RX_LOCK=0), ref, oper_down=True)[0]
+    assert "lower RX_SNR than a working port (1200 vs 2473)" in weak and "marginal" in weak
+    assert "marginal" in bcm.judge(view([lane(1, 2408), lane(1, 2490)], PMD_RX_LOCK=0))[0]   # no reference: no claim
+
+
+def test_flapping_when_sonic_saw_down_but_asic_is_locked():
+    # g02-g17 st3 Ethernet356 18 Oct 16:17: down 59 s in the scan, locked and trained at the Broadcom read
+    v = view([lane(1, 2589), lane(1, 2525)])
+    assert bcm.judge(v, oper_down=True)[0].startswith("flapping")
+    assert bcm.judge(v, oper_down=False)[0] == ""
+
+
+def test_reference_port_is_a_working_trunk_port_outside_the_problem_set():
+    st = {"Ethernet257": {"Vlan": "trunk", "Oper": "down", "Lanes": "193,194"},
+          "Ethernet258": {"Vlan": "trunk", "Oper": "up", "Lanes": "195,196"},
+          "Ethernet3": {"Vlan": "routed", "Oper": "up", "Lanes": "5,6"}}
+    assert bcm.reference_port(st, {"Ethernet257"}) == ("Ethernet258", "195,196")
+    assert bcm.reference_port(st, {"Ethernet257", "Ethernet258"}) is None

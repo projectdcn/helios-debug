@@ -360,14 +360,19 @@ def add_bcm(rack, links: list, sw_res: dict, log=print, limit: int = 64) -> None
         for asic, lns in by_sw[swn]:
             status = (sw_res[swn]["asics"].get(asic) or {}).get("status", {})
             ports = {ln.sw_port: (status.get(ln.sw_port) or {}).get("Lanes", "") for ln in lns}
+            ref = bcm.reference_port(status, set(ports))
+            if ref:
+                ports[ref[0]] = ref[1]
             res[asic] = bcm.read_ports(sw, asic or None, ports)
+            res[asic]["__ref__"] = res[asic].get(ref[0]) if ref else None
         return res
     for swn, val, exc in fan_out(one, list(by_sw)):
         for asic, lns in by_sw[swn]:
             for ln in lns:
                 v = (val or {}).get(asic, {}).get(ln.sw_port) if not exc else {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
                 ln.bcm = {k: x for k, x in (v or {}).items() if k != "raw"} or None
-                finding, ev = bcm.judge(v or {})
+                ref = (val or {}).get(asic, {}).get("__ref__") if not exc else None
+                finding, ev = bcm.judge(v or {}, ref, oper_down=str(ln.sw_oper or "").lower() != "up")
                 ln.evidence += ev
                 if finding:
                     ln.cause += f"; switch ASIC: {finding}"

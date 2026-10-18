@@ -123,13 +123,31 @@ def read_ports(sw, ns, ports: dict[str, str], pmap: dict | None = None) -> dict[
     return out
 
 
+def reference_port(status: dict, exclude: set) -> tuple[str, str] | None:
+    """A working trunk port of the ASIC (oper up, not one of the problem ports): (EthernetN, lanes) or None."""
+    for port, r in sorted(status.items(), key=lambda kv: int(re.sub(r"\D", "", kv[0] or "") or 0)):
+        if port not in exclude and r.get("Vlan") == "trunk" and str(r.get("Oper", "")).lower() == "up" and r.get("Lanes"):
+            return port, r["Lanes"]
+    return None
+
+
 def _lanes(idx: list[int]) -> str:
     return ", ".join(str(i) for i in idx)
 
 
-def judge(v: dict) -> tuple[str, list[str]]:
+def _snr(lane: dict):
+    v = lane.get("RX_SNR")
+    return None if v in (None, SNR_INVALID) or not isinstance(v, int) else v
+
+
+def judge(v: dict, ref: dict | None = None, oper_down: bool = False) -> tuple[str, list[str]]:
     """(finding, evidence lines) from one port's bcm view. The finding names the layer that fails on the switch
-    side; '' when the bcm view shows nothing wrong."""
+    side; '' when the bcm view shows nothing wrong.
+
+    ``ref``: the bcm view of a working port on the same ASIC - what a clean lane reads on this rack (SNR / eye
+    units are Broadcom's, so the comparison is relative, never an absolute threshold). ``oper_down``: SONiC
+    reported the port down when the scan read it; a port the ASIC then sees fully locked came back in between
+    (flapping)."""
     if not v or v.get("error"):
         return "", [f"Broadcom view not read: {v.get('error') if v else 'not collected'}"]
     p, ln = v["port"], v["lane"]
@@ -155,10 +173,26 @@ def judge(v: dict) -> tuple[str, list[str]]:
     if no_sig:
         return (f"no signal on lane(s) {_lanes(no_sig)} of {n}, the other lane(s) have signal: one lane of the cable / "
                 f"connector / cartridge"), ev
+    ref_ok = bool(ref) and not ref.get("error") and ref.get("lane")
+    ref_snr = min([x for x in (_snr(r) for r in ref["lane"]) if x is not None] or [0]) if ref_ok else 0
+    if ref_ok:
+        ev.append(f"  reference: working port {ref['bcm_port']} on the same ASIC, lowest lane RX_SNR {ref_snr or 'n/a'}")
     if not p.get("PMD_RX_LOCK"):
-        return "signal arrives on every lane but the receiver cannot lock (PMD_RX_LOCK 0): marginal signal or a damaged lane", ev
+        snrs = [_snr(x) for x in ln]
+        if all(x is not None for x in snrs) and ref_snr and min(snrs) >= 0.9 * ref_snr:
+            return (f"a signal arrives on every lane and reads like a working lane's (RX_SNR {min(snrs)}, working port "
+                    f"{ref_snr}), yet the receiver never locks (PMD_RX_LOCK 0): not a weak signal - check lane order, "
+                    f"polarity and speed / FEC settings on both ends, or the GPU port's own PHY"), ev
+        return ("signal arrives on every lane but the receiver cannot lock (PMD_RX_LOCK 0)"
+                + (f", with a lower RX_SNR than a working port ({min(x for x in snrs if x is not None)} vs {ref_snr})"
+                   if ref_snr and any(x is not None for x in snrs) else "")
+                + ": marginal signal or a damaged lane"), ev
     if p.get("LINK_TRAINING") and not p.get("LINK_TRAINING_DONE"):
         return "the receiver locks but link training does not finish", ev
     if p.get("LOCAL_FAULT") or p.get("REMOTE_FAULT"):
         return f"PCS fault: local {p.get('LOCAL_FAULT')}, remote {p.get('REMOTE_FAULT')}", ev
+    if oper_down:
+        return ("flapping: SONiC had the port down, but moments later the ASIC had it locked and trained on every lane "
+                "with signal - the link drops and comes back; scan again or watch the counters, and check the cable "
+                "seating"), ev
     return "", ev

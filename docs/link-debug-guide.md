@@ -62,7 +62,7 @@ python tools/link_check.py scan --inventory <inventory> --switches st6 --trays c
 
 A partial scan is quicker and lighter on the jump host; links of trays left out are not reported. The patterns across trays (the same GPU position failing on several trays) need the full scan. `pingmap` takes the same two options.
 
-**What the switch ASIC sees.** For a down or degraded switch port, `bcm` reads the Broadcom shell lane by lane: whether any signal arrives, receiver lock, link training and signal quality (see Layer 1 from the Broadcom shell). `scan` already adds it to every physical-layer problem link.
+**What the switch ASIC sees.** For a down or degraded switch port, `bcm` reads the Broadcom shell lane by lane: whether any signal arrives, receiver lock, link training and signal quality (see Layer 1 from the Broadcom shell). `scan` already adds it to every physical-layer problem link, and reads one working port on the same ASIC as the reference for what a clean lane looks like on that rack.
 
 ```
 python tools/link_check.py bcm --inventory <inventory> --switch st6 --ports Ethernet257,Ethernet261
@@ -160,7 +160,9 @@ python tools/link_check.py bcm --inventory <inventory> --switch st6 --ports Ethe
 | --- | --- |
 | No signal on every lane, transmitter on, and the GPU port NO\_PHY\_LINK too | Neither direction gets through: the cable, connector or cartridge between them (or a GPU port whose transmitter and receiver both fail). Not the switch port's transmitter. |
 | No signal on some lanes, signal on the others | One lane of the cable, connector or cartridge. |
-| Signal on every lane but no receiver lock (`PMD_RX_LOCK=0`) | Signal too weak or distorted: marginal cable, dirty or damaged contact, a bad lane. |
+| Signal on every lane but no receiver lock (`PMD_RX_LOCK=0`), SNR lower than a working port's | Signal too weak or distorted: marginal cable, dirty or damaged contact, a bad lane. |
+| Signal on every lane that reads like a working port's (SNR, eyes), yet no receiver lock | Not a weak signal: check lane order, polarity and speed / FEC settings on both ends, or the GPU port's own PHY. st5 Ethernet494 (CT16 port 5), never up since boot, reads like this (18 Oct). |
+| SONiC saw the port down, but the ASIC has it locked and trained a moment later | Flapping: the link drops and comes back. Scan again, watch the counters, check the cable seating. |
 | Receiver locked, link training not done | Training does not converge between the two ends: raise it with both vendors, with this output. |
 | `LOCAL_FAULT` / `REMOTE_FAULT` set | The link is up at the PHY but the PCS sees faults: local = this side's receive path, remote = reported by the far end. |
 | Link up, low SNR or small eyes compared with neighbours, high FEC bins | Marginal link that still works: watch it, reseat at the next window. |
