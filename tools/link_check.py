@@ -313,6 +313,24 @@ def esc(v) -> str:
     return html.escape(str(v if v is not None else ""))
 
 
+def _not_checked(res) -> list[tuple[str, str, str, str]]:
+    """[(name, 'switch' | 'tray', error, what to do)] for every node the scan could not read. A switch that cannot be
+    read means none of its links were checked (MR2 18 Oct: every login refused and the report said 'All links ok')."""
+    def hint(err: str) -> str:
+        e = err.lower()
+        if "authentication" in e or "permission denied" in e:
+            return ("login refused: install your SSH key on it (ssh-copy-id) and set key_file, or export the "
+                    "password_env variable the inventory names in this shell")
+        if "timed out" in e or "timeout" in e or "no route" in e or "unreachable" in e or "refused" in e:
+            return "not reachable: check the address in the inventory, the network / VPN, or transport.jump"
+        if "sudo" in e:
+            return "needs sudo without a password prompt for the inventory user"
+        return "see the error"
+    out = [(n, "switch", s["error"], hint(s["error"])) for n, s in res["switches"].items() if s.get("error")]
+    out += [(n, "tray", t["error"], hint(t["error"])) for n, t in res["trays"].items() if t.get("error")]
+    return out
+
+
 def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[dict]) -> None:
     links = res["links"]
     n = {k: sum(1 for x in links if x.state == k) for k in ("ok", "degraded", "down")}
@@ -352,14 +370,14 @@ code,details div{{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12
 <div class='mut'>{esc(when)} UTC · {len(res['switches'])} switches, {len(res['trays'])} compute trays · errors sampled over {res['interval_s']:.0f} s · read-only</div>
 <div class='k'><span><b>{len(links)}</b>GPU links</span><span><b style='color:var(--ok)'>{n['ok']}</b>ok</span>
 <span><b style='color:var(--deg)'>{n['degraded']}</b>degraded</span><span><b style='color:var(--down)'>{n['down']}</b>down</span></div>
-{('<p><b>Not reachable:</b> ' + esc(', '.join(unreach)) + '</p>') if unreach else ''}
+{('<h2 style="color:var(--down)">Not checked</h2><p>The scan could not read these, so their links are missing or incomplete below.</p><ul>' + ''.join(f'<li><b>{esc(r)} {esc(n)}</b>: {esc(e[:200])}<br><span class="mut">{esc(h)}</span></li>' for n, r, e, h in _not_checked(res)) + '</ul>') if unreach else ''}
 <p class='mut'>Optic data from the switches: {esc(optics)}. Cabling: {esc(cab_txt)}.</p>
 {(("<h2>Changes since the earlier scan</h2><p>" + esc(f"{len(res['compare']['new_problems'])} new problem(s), {len(res['compare']['recovered'])} recovered, {res['compare']['still_bad']} still bad") + "</p>" + "".join(f"<div><code>new: {esc(x)}</code></div>" for x in res['compare']['new_problems']) + "".join(f"<div><code>recovered: {esc(x)}</code></div>" for x in res['compare']['recovered'])) if res.get('compare') else '')}
 {("<h2>Patterns</h2>" + "".join(f"<p>{esc(x)}</p>" for x in res.get('suspects') or [])) if res.get('suspects') else ''}
 <h2>Root causes</h2><div class='wrap'><table><tr><th>State</th><th>Links</th><th>Cause</th><th>Owner</th></tr>{summary or "<tr><td colspan=4>No problem links.</td></tr>"}</table></div>
 {("<h2>Problem links per switch ASIC</h2><p class='mut'>Trays out of service left out. Problems spread over many ASICs point at the trays or cabling; many on one ASIC point at that ASIC.</p><div class='wrap'><table style='min-width:320px'><tr><th>Switch ASIC</th><th>Problem links</th></tr>" + asic_rows + "</table></div>") if asic_rows else ""}
 <h2>Problem links</h2><div class='wrap'><table><tr><th>State</th><th>Switch port</th><th>GPU port</th><th>Cause</th><th>Owner</th><th>Next step</th><th>Evidence</th></tr>
-{''.join(rows) or "<tr><td colspan=7>All links ok.</td></tr>"}</table></div>
+{''.join(rows) or ("<tr><td colspan=7>All links ok.</td></tr>" if links and not any(r == "switch" for _n, r, _e, _h in _not_checked(res)) else "<tr><td colspan=7>No problem found among the links that could be checked - see Not checked above.</td></tr>")}</table></div>
 <p class='mut'>Each link is one switch port and the GPU port cabled to it, matched by the GPU port's MAC in the switch forwarding table (or by the switch port description). Bit errors count only when they grow during the sample.</p>
 </body></html>
 """)
@@ -443,8 +461,17 @@ def scan_cmd(a) -> int:
         lines.append("")
         lines.append("problem links per switch ASIC (trays out of service left out): " +
                      ", ".join(f"{k} {n}" for k, n in sorted(per_asic.items(), key=lambda x: -x[1])))
-    if not groups:
-        lines.append("All links ok.")
+    nc = _not_checked(res)
+    sw_missing = [n for n, r, _e, _h in nc if r == "switch"]
+    if nc:
+        lines.append("")
+        lines.append("NOT CHECKED - the scan could not read these, so their links are missing or incomplete:")
+        lines += [f"  {r} {n}: {e[:140]}\n      -> {h}" for n, r, e, h in nc]
+    if not links:
+        lines.append("\nNo link was checked." + (" Fix the access above and scan again." if nc else
+                                                  " No switch port is described as cabled to a compute tray."))
+    elif not groups:
+        lines.append("No problem found among the links checked." if sw_missing else "All links ok.")
     if getattr(a, "compare", None):
         prev = json.loads(Path(a.compare).read_text())
         diff = linkdiag.compare(prev.get("links") or [], links)
@@ -467,7 +494,7 @@ def scan_cmd(a) -> int:
         "root_causes": [{k: v for k, v in g.items() if k != "links"} | {"links": [f"{x.switch} {x.sw_port}" for x in g["links"]]}
                         for g in groups]}, indent=1, default=str))
     write_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), res, groups)
-    return 1 if groups else 0
+    return 2 if (sw_missing or not links) else 1 if groups else 0
 
 
 def pingmap_cmd(a) -> int:
