@@ -129,6 +129,7 @@ class Link:
     fdb_static: bool = False
     fdb_static_late: bool | None = None  # the second read of the forwarding table (None = not re-read)
     vpod_accelerators: int | None = None
+    bcm: dict | None = None             # Broadcom shell view of the switch port (problem links only)
     deltas: dict = field(default_factory=dict)
     fec_total: dict = field(default_factory=dict)
     presence: str = ""
@@ -335,6 +336,48 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
     return set_("ok", "", "", "", "")
 
 
+# kinds where the switch ASIC's own view of the lanes says which side / layer fails
+BCM_KINDS = ("phys_never_up", "phys_went_down", "one_sided", "bit_errors")
+
+
+def add_bcm(rack, links: list, sw_res: dict, log=print, limit: int = 64) -> None:
+    """Broadcom shell evidence for physical-layer problem links (at most ``limit`` ports, read-only): per lane
+    signal detect / lock / SNR, and a sharper cause. Skipped quietly where bcmcmd is missing."""
+    from . import bcm
+    todo: dict = {}
+    for ln in links:
+        if ln.kind in BCM_KINDS and sum(len(v) for v in todo.values()) < limit:
+            todo.setdefault((ln.switch, ln.asic), []).append(ln)
+    if not todo:
+        return
+    log(f"reading the Broadcom shell for {sum(len(v) for v in todo.values())} problem link(s) ...")
+    by_sw: dict = {}
+    for (swn, asic), lns in todo.items():
+        by_sw.setdefault(swn, []).append((asic, lns))
+
+    def one(swn):
+        sw, res = rack.switches[swn], {}
+        for asic, lns in by_sw[swn]:
+            status = (sw_res[swn]["asics"].get(asic) or {}).get("status", {})
+            ports = {ln.sw_port: (status.get(ln.sw_port) or {}).get("Lanes", "") for ln in lns}
+            res[asic] = bcm.read_ports(sw, asic or None, ports)
+        return res
+    for swn, val, exc in fan_out(one, list(by_sw)):
+        for asic, lns in by_sw[swn]:
+            for ln in lns:
+                v = (val or {}).get(asic, {}).get(ln.sw_port) if not exc else {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+                ln.bcm = {k: x for k, x in (v or {}).items() if k != "raw"} or None
+                finding, ev = bcm.judge(v or {})
+                ln.evidence += ev
+                if finding:
+                    ln.cause += f"; switch ASIC: {finding}"
+                    if ln.kind in ("phys_never_up", "phys_went_down") and "receives no signal on any" in finding \
+                            and "transmitter is on" in finding:
+                        ln.cause += (" - and the GPU sees no link either, so neither direction gets through: the cable / "
+                                     "connector / cartridge between them (or a GPU port whose transmitter and receiver "
+                                     "both fail), not the switch port's transmitter")
+
+
 def quarantined_slots(inv) -> dict:
     """{slot: (tray name, reason)} for compute trays quarantined in the inventory (with a ``slot:``)."""
     out = {}
@@ -345,7 +388,7 @@ def quarantined_slots(inv) -> dict:
     return out
 
 
-def scan(rack, interval_s: float = 30.0, log=print) -> dict:
+def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_max: int = 64) -> dict:
     t0 = time.monotonic()
     log(f"reading {len(rack.switches)} switches and {len(rack.computes)} compute trays ...")
     sw_res, tr_res = {}, {}
@@ -388,6 +431,8 @@ def scan(rack, interval_s: float = 30.0, log=print) -> dict:
         ln.vpod_accelerators = next((g.get("vpod_accelerators") for g in t.get("gpus", []) if g["bdf"] == ln.bdf), None)
         diagnose(ln, tr_res, optics.get(ln.switch, False), span, ifcp_map)
     learned["ifcp"] = ifcp_map
+    if bcm_view:
+        add_bcm(rack, links, sw_res, log, bcm_max)
     return {"switches": sw_res, "trays": tr_res, "links": links, "learned": learned, "optics_reported": optics,
             "interval_s": span}
 

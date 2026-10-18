@@ -62,6 +62,12 @@ python tools/link_check.py scan --inventory <inventory> --switches st6 --trays c
 
 A partial scan is quicker and lighter on the jump host; links of trays left out are not reported. The patterns across trays (the same GPU position failing on several trays) need the full scan. `pingmap` takes the same two options.
 
+**What the switch ASIC sees.** For a down or degraded switch port, `bcm` reads the Broadcom shell lane by lane: whether any signal arrives, receiver lock, link training and signal quality (see Layer 1 from the Broadcom shell). `scan` already adds it to every physical-layer problem link.
+
+```
+python tools/link_check.py bcm --inventory <inventory> --switch st6 --ports Ethernet257,Ethernet261
+```
+
 Two more options help during a repair. `scan --compare <earlier link_check.json>` lists what changed since that scan: new problems, recovered links and causes that changed. The scan also names **patterns** across problem links:
 
 - several problem links on one GPU point at that GPU or tray, or at either end when they all sit on one ASIC
@@ -123,6 +129,47 @@ Check both ends: a link is only up when the switch port and the GPU port both sa
 | Flaps (oper changes, FEC errors grow) | LINK\_UP / down | Marginal optic or cable: watch DOM power and FEC counters over a few minutes |
 
 To count changes on a Linux interface, `ip -s link show <iface>` with `cat /sys/class/net/<iface>/carrier_changes` shows how often the carrier dropped.
+
+## Layer 1 from the Broadcom shell
+
+SONiC only says a switch port is oper down. The switch ASIC's own shell says why, lane by lane: whether any signal arrives, whether the receiver locks, link training, faults, signal quality and how close the FEC runs to its limit. It is read-only and needs sudo on the switch.
+
+**With the tool.** `scan` adds this automatically to every physical-layer problem link (up to 64 ports; `--no-bcm` skips it). For chosen ports, or every oper-down trunk port of one switch when `--ports` is left out:
+
+```
+python tools/link_check.py bcm --inventory <inventory> --switch st6 --ports Ethernet257,Ethernet261
+```
+
+**By hand.** Each ASIC is a unit of `bcmcmd` (`asic1` = `-n 1`). Find the Broadcom port first: the SONiC port's first lane is its physical port in the port map.
+
+1. Lanes of the SONiC port: `show interfaces status -n asic1 | grep -w Ethernet261` gives Lanes `201,202`.
+2. Broadcom name and logical port: `sudo bcmcmd -n 1 "show pmap"`, row with physical `201`: `cd100`, logical `220`.
+3. Read the port (replace 220 and the lane index):
+
+| What | Command | Healthy |
+| --- | --- | --- |
+| Link, lanes, speed, FEC | `sudo bcmcmd -n 1 'bsh -c "PortStatus 220"'` | link Up |
+| Receiver lock, training, faults | `sudo bcmcmd -n 1 'bsh -c "lt PC_PORT_STATUS lookup PORT_ID=220 STATUS=STATUS_ALL"'` | `PMD_RX_LOCK=1`, `PMD_LANE_RX_LOCK` all lane bits set, `LINK_TRAINING_DONE=1`, no `LOCAL_FAULT` / `REMOTE_FAULT` |
+| Signal per lane | `sudo bcmcmd -n 1 'bsh -c "lt PC_PHY_STATUS lookup PORT_ID=220 LANE_INDEX=0"'` | `RX_SIGNAL_DETECT=1`, `TX_SQUELCH=0` |
+| Signal quality per lane | `sudo bcmcmd -n 1 'bsh -c "lt PC_PHY_STATUS_2 lookup PORT_ID=220 LANE_INDEX=0 STATUS=STATUS_2_ALL"'` | `RX_SNR` and `EYE_UP` / `EYE_DOWN` like a healthy neighbour port |
+| FEC codeword histogram | `sudo bcmcmd -n 1 'bsh -c "lt PC_PORT_CUMULATIVE_DIAG_STATS lookup PORT_ID=220"'` | errors only in the low bins |
+
+**Reading it:**
+
+| The ASIC shows | Meaning |
+| --- | --- |
+| No signal on every lane, transmitter on, and the GPU port NO\_PHY\_LINK too | Neither direction gets through: the cable, connector or cartridge between them (or a GPU port whose transmitter and receiver both fail). Not the switch port's transmitter. |
+| No signal on some lanes, signal on the others | One lane of the cable, connector or cartridge. |
+| Signal on every lane but no receiver lock (`PMD_RX_LOCK=0`) | Signal too weak or distorted: marginal cable, dirty or damaged contact, a bad lane. |
+| Receiver locked, link training not done | Training does not converge between the two ends: raise it with both vendors, with this output. |
+| `LOCAL_FAULT` / `REMOTE_FAULT` set | The link is up at the PHY but the PCS sees faults: local = this side's receive path, remote = reported by the far end. |
+| Link up, low SNR or small eyes compared with neighbours, high FEC bins | Marginal link that still works: watch it, reseat at the next window. |
+
+On g02-g17 healthy lanes read `RX_SNR` about 2,400 to 2,500 and `EYE_UP` about 34 to 43 (18 Oct). The units are Broadcom's and not given here: compare with a healthy port on the same switch rather than with an absolute number. `RX_SNR` 99900 means no signal. In the FEC histogram, bin k counts codewords that had k symbol errors; RS544 corrects up to 15, and bin 16 counts the uncorrectable ones. The histogram runs since the counters started, so compare two reads to see what is happening now.
+
+Example, st6 18 Oct 13:45 UTC: Ethernet261 (CT13 port 0) has no signal on either lane while its transmitter is on, and Ethernet257 (CT14 port 2) has no signal on lane 0 only. Lane 1 reads SNR 2401, close to its healthy neighbour Ethernet258 (2473 / 2515). Both point at the cable path, and for Ethernet257 at one lane of it.
+
+Only use the read commands above. `prbs`, `eyescan`, loopback and any `lt ... insert` / `update` / `delete` change the port and can drop a working link. `portmod` and `phy diag` do not exist on these chips (LTSW / SDKLT). In scripts, close stdin (`bcmcmd ... </dev/null`), because `bcmcmd` reads it.
 
 ## IFCP session
 
@@ -250,7 +297,7 @@ Check this list first: these are already known, so a new symptom on one of them 
 | --- | --- | --- |
 | st4 asic0 Ethernet70 = CT17 0002:01:00.1 port 24 | no physical link on either end, down since about 17:50 UTC 17 Oct | new, found by the link check 18 Oct; the time matches the batch 2 link tests, which shut and restored ports around 17:50 UTC: the link likely did not train again |
 | st6 asic1 Ethernet261 = CT13 0002:01:00.1 port 0 | no physical link on either end, down since about 21:20 UTC 17 Oct | coupled to Ethernet257: did not come back after the TC-AFM-013 rerun flapped 257 (finding F6) |
-| st6 asic1 Ethernet257 = CT14 0002:01:00.1 port 2 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped its coupled neighbour Ethernet261 to recover it (finding F12); not touched since |
+| st6 asic1 Ethernet257 = CT14 0002:01:00.1 port 2 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped its coupled neighbour Ethernet261 to recover it (finding F12); not touched since. Broadcom view 18 Oct 13:45 UTC: no signal on lane 0 only, lane 1 has signal: one lane of the cable path |
 | st4 asic0 Ethernet66 = CT18 0002:01:00.1 port 28 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped st4 Ethernet70 to recover it: 66 and 70 look coupled (finding F12); not touched since |
 | CT16 GPU port 5 = st5 asic1 Ethernet494 | NO\_PHY\_LINK, never up since the tray booted | AMD 16 Oct: mechanical inspection needed |
 | CT14 GPU port 33 | NO\_PHY\_LINK on 16 Oct | LINK\_UP in the 18 Oct 06:51 link check |
@@ -283,6 +330,7 @@ Send the same set every time, with UTC times: it lets AMD (GPU, IFCP, AFM) or HP
 
 - [ ] Both ends named: switch / ASIC / EthernetN, tray, GPU PCI address, GPU port, station
 - [ ] Switch: `show interfaces status` line, transceiver DOM for the port, FEC and error counters taken twice a few minutes apart
+- [ ] Switch ASIC: `link_check.py bcm` output for the port (signal, lock and SNR per lane)
 - [ ] Tray: `afmctl show port -b <bdf> --json` for the GPU (link\_status, admin\_state, the `ifcp` block)
 - [ ] AFM: the port's `oper-state` on the switch node and the compute node, and the related events sorted by time
 - [ ] L2 ping output for the pair, run two or three times
@@ -300,10 +348,12 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | acc | accelerator | A GPU's id in the scale-up fabric (AFM `acc-id`); switch port descriptions may number a tray's accelerators differently |
 | Admin / Oper state | administrative / operational state | Admin = what the port is set to (up / down); Oper = what the link actually is |
 | AFM (also AIFM) | AI Fabric Manager (to confirm with AMD) | AMD's controller for the scale-up fabric; runs as a 3-node cluster on st1 to st3 and is reached through its API |
+| AM lock | alignment-marker lock | The PCS found the lane alignment markers (`AM_LOCK_LIVE`) |
 | AMD | Advanced Micro Devices | Supplier of the GPUs, compute trays and AFM |
 | API | application programming interface | AFM's HTTPS interface, e.g. `/configs/cluster/v1/...` |
 | ARC | the name of an earlier test run on this rack | Left the stale Vlan2 entries on the switches |
 | ASIC | application-specific integrated circuit | A switch chip; each switch has two, `asic0` and `asic1`, each its own SONiC namespace |
+| bcmcmd, bsh, LTSW / SDKLT | Broadcom shell, its logical-table shell, the SDK generation of these chips | Read the ASIC's port state directly (`lt <TABLE> lookup`) |
 | BDF | bus:device.function (PCI address, with domain) | A GPU's PCI address on the tray, e.g. `0004:01:00.1` |
 | CONFIG\_DB | SONiC configuration database | Holds port descriptions and VLANs; read with `sonic-db-cli` |
 | CT | compute tray | CT01 to CT18; CT n is AFM slot n - 1 (CT05 = slot 4) |
@@ -317,9 +367,14 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | L1 / L2 | layer 1 / layer 2 | Physical link / Ethernet frames (the L2 ping) |
 | LINK\_UP, NO\_PHY\_LINK | afmctl link states | GPU port has a link / no physical link at all |
 | ll\_up | link layer up | IFCP field: the link-layer handshake completed |
+| PAM4 | 4-level pulse amplitude modulation | The line coding of these 400G lanes; it has three eyes, hence three `EYE_UP` values |
 | PCI | Peripheral Component Interconnect (Express) | The bus the GPUs sit on |
+| PCS | physical coding sublayer | Above the SerDes: alignment, FEC framing; reports local / remote faults |
+| PMD | physical medium dependent (sublayer) | The SerDes receiver; `PMD_RX_LOCK` = it locked on the incoming signal |
 | PortReady, PortFailed | AFM port states | Port usable / port down as AFM sees it |
 | Rx / Tx, RX\_ERR / TX\_ERR | receive / transmit, and their error counters | Port counters in `show interfaces counters` |
+| SerDes | serializer / deserializer | The ASIC's high-speed transmitter and receiver per lane |
+| SNR | signal-to-noise ratio | `RX_SNR` per lane in the Broadcom shell; compare with healthy ports |
 | SONiC | Software for Open Networking in the Cloud | The switch operating system |
 | SSH | Secure Shell | Remote login to switches, trays and the jump host |
 | st1 to st6 | switch tray 1 to 6 | The six switches, 10.255.4.71 to 10.255.4.76 |

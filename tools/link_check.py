@@ -5,6 +5,7 @@
     python tools/link_check.py pingmap --inventory <inv> --rounds 6 --wait 300   # loss per port / ASIC, sticky or moving
     python tools/link_check.py path --inventory <inv> --src <tray> --src-bdf 0004:01:00.1 --dst-acc 8 --ports 25,26
     python tools/link_check.py path ... --no-ping                      # one path, without the L2 ping
+    python tools/link_check.py bcm --inventory <inv> --switch st6 --ports Ethernet257,Ethernet261   # Broadcom shell view
 
 Works on any rack described by an inventory (switches + compute trays, SSH access with sudo for afmctl and
 `show mac`); no AFM password. Which switch port belongs to which GPU port is learned from the rack itself (each GPU
@@ -28,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -411,7 +413,7 @@ def scan_cmd(a) -> int:
     _room(out)
     (out / "raw").mkdir(parents=True, exist_ok=True)
     try:
-        res = linkdiag.scan(rack, a.interval)
+        res = linkdiag.scan(rack, a.interval, bcm_view=not a.no_bcm, bcm_max=a.bcm_max)
     finally:
         rack.close()
     if getattr(a, "trays", None):
@@ -507,6 +509,51 @@ def pingmap_cmd(a) -> int:
     return 1 if any(v["fails"] for v in pm["ports"].values()) else 0
 
 
+def bcm_cmd(a) -> int:
+    """Broadcom shell view of switch ports, lane by lane: signal detect, lock, SNR, eye, FEC codeword histogram."""
+    from heliosdbg import bcm
+    from heliosdbg.linkdiag import ns_flag
+    inv = load_inventory(a.inventory)
+    rack = Rack(inv)
+    if a.switch not in rack.switches:
+        raise SystemExit(f"unknown switch {a.switch} (inventory: {sorted(rack.switches)})")
+    sw = rack.switches[a.switch]
+    want = {x.strip() for x in (a.ports or "").split(",") if x.strip()}
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"bcm-{stamp}"
+    _room(out, 5)
+    lines, raw, bad = [f"Broadcom view {a.switch}  {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC", ""], {}, 0
+    try:
+        for ns in sw.namespaces():
+            rows = {r.get("Interface"): r for r in parse_table(sw.sh(f"show interfaces status{ns_flag(ns)} -d all"))}
+            ports = {p: r.get("Lanes", "") for p, r in rows.items()
+                     if (p in want) or (not want and r.get("Vlan") == "trunk" and str(r.get("Oper")).lower() != "up")}
+            if not ports:
+                continue
+            res = bcm.read_ports(sw, ns, ports)
+            for port in sorted(res, key=lambda x: int(re.sub(r"\D", "", x) or 0)):
+                v = res[port]
+                raw[f"{ns or ''}/{port}"] = v
+                finding, ev = bcm.judge(v)
+                oper = (rows.get(port) or {}).get("Oper")
+                lines.append(f"{ns or ''} {port} (oper {oper}): {finding or 'nothing wrong seen by the ASIC'}")
+                lines += [f"    {e}" for e in ev]
+                bad += bool(finding)
+    finally:
+        rack.close()
+    missing = want - {k.split("/", 1)[1] for k in raw}
+    if missing:
+        lines.append(f"not found on {a.switch}: {', '.join(sorted(missing))}")
+    if not raw:
+        lines.append("no ports to read" + ("" if want else " (no oper-down trunk port)"))
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "bcm.txt").write_text("\n".join(lines) + "\n")
+    (out / "bcm.json").write_text(json.dumps(raw, indent=1, default=str))
+    print("\n".join(lines))
+    print(f"\nevidence: {out}")
+    return 1 if bad else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -517,6 +564,8 @@ def main(argv=None) -> int:
     s.add_argument("--interval", type=float, default=30.0, help="seconds between the two counter samples (default 30)")
     s.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/scan-<UTC time>)")
     s.add_argument("--compare", type=Path, help="an earlier scan's link_check.json: list what changed since")
+    s.add_argument("--no-bcm", action="store_true", help="skip the Broadcom shell view of physical-layer problem links")
+    s.add_argument("--bcm-max", type=int, default=64, help="at most this many problem ports read in the Broadcom shell (64)")
     for x in (s,):
         x.add_argument("--switches", help="only these switches (comma-separated inventory names)")
         x.add_argument("--trays", help="only these compute trays (comma-separated inventory names)")
@@ -539,8 +588,13 @@ def main(argv=None) -> int:
     p.add_argument("--count", type=int, default=1, help="pings per port set (default 1)")
     p.add_argument("--no-ping", action="store_true", help="check everything except the L2 ping")
     p.add_argument("--out", type=Path, help="evidence folder (default results/link-check/<rack>/<UTC time>)")
+    b = sub.add_parser("bcm", help="what one switch's Broadcom ASIC sees on given ports, lane by lane (read-only)")
+    b.add_argument("--inventory", **inv_kw)
+    b.add_argument("--switch", required=True, help="switch tray (inventory name), e.g. st6")
+    b.add_argument("--ports", help="SONiC ports, e.g. Ethernet257,Ethernet261 (default: every oper-down trunk port)")
+    b.add_argument("--out", type=Path, help="evidence folder (default results/link-check/<rack>/bcm-<UTC time>)")
     a = ap.parse_args(argv)
-    return {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd}[a.cmd](a)
+    return {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd}[a.cmd](a)
 
 
 if __name__ == "__main__":

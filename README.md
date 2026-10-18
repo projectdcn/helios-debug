@@ -41,12 +41,17 @@ password in the file. Rack behind a bastion: `transport.jump`. The compute tray 
 .venv/bin/python tools/link_check.py scan --inventory inv.yaml --interval 120 --compare <earlier>/link_check.json
 .venv/bin/python tools/link_check.py pingmap --inventory inv.yaml --rounds 12 --wait 300
 .venv/bin/python tools/link_check.py path --inventory inv.yaml --src ct03 --src-bdf 0004:01:00.1 --dst-acc 8 --ports 25,26
+.venv/bin/python tools/link_check.py bcm --inventory inv.yaml --switch st6 --ports Ethernet257,Ethernet261
 ```
 
 - `scan`: every link; counters sampled twice (`--interval`, 30 s) so only growing errors count; patterns across
   problem links (several on one GPU, the same GPU position on many trays, adjacent ports on one ASIC); cabling checked
   against IFCP (miscabled). `--switches st6` checks one switch tray (432 links on a full rack: 72 GPUs x 6
   ports; every compute tray is still read, they are the other end); `--trays ct13,ct14` keeps only those trays' links.
+- `scan` also reads the Broadcom shell (`bcmcmd`, read-only lookups) for physical-layer problem links: signal
+  detect, receiver lock, link training, SNR / eye per lane - e.g. "no signal on any lane while transmitting" vs "one
+  lane dark". `--no-bcm` skips it, `--bcm-max` (64) caps it.
+- `bcm`: that Broadcom view for chosen ports of one switch (default: every oper-down trunk port).
 - `pingmap`: a ring of L2 pings repeated N rounds; loss per GPU port number / switch ASIC, sticky or moving.
 - `path`: one GPU-to-GPU path port by port: tray side, IFCP, forwarding entries, an L2 ping (`--no-ping` to skip)
   and the counters around it.
@@ -63,7 +68,7 @@ Output (`--out`, default `results/link-check/<rack>/<UTC time>/`): `report.html`
 ## Layout
 
 ```
-heliosdbg/   linkdiag.py (join + root cause), sonic.py / afmctl.py / parsers.py (read and parse), inventory.py,
+heliosdbg/   linkdiag.py (join + root cause), bcm.py (Broadcom shell view), sonic.py / afmctl.py / parsers.py (read and parse), inventory.py,
              transport.py (SSH, jump host), rack.py, compute.py
 tools/       link_check.py
 docs/        link-debug-guide.md, scaleup-topology.html
