@@ -60,8 +60,11 @@ password in the file. Rack behind a bastion: `transport.jump`. The compute tray 
 - `path`: one GPU-to-GPU path port by port: tray side, IFCP, forwarding entries, an L2 ping (`--no-ping` to skip)
   and the counters around it.
 
-Output (`--out`, default `results/link-check/<rack>/<UTC time>/`): `report.html` (self-contained, to share),
-`report.txt`, `link_check.json`, raw outputs (`raw/*.json.gz`). A scan needs ~50 MB free.
+Output (`--out`, default `results/link-check/<rack>/<UTC time>/`): `report.html` (self-contained, to share: notes on
+what was and was not checked, root causes, the switch ASIC to GPU map, every link with both ends' state, and a command
+log per switch / tray - each command, its exit code and output, trimmed to `--log-keep` lines), `report.txt`,
+`link_check.json`, raw outputs (`raw/*.json.gz`) and the full command log (`raw/commands.log.gz`; `commands.log.gz` for
+`path`, `pingmap` and `bcm`). A scan needs ~50 MB free.
 
 ## Tests
 

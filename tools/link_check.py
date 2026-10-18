@@ -210,6 +210,7 @@ def path_cmd(a) -> int:
     rack = Rack(inv)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / stamp
+    _OUTS.append(out)
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     say = []
@@ -335,6 +336,79 @@ def _not_checked(res) -> list[tuple[str, str, str, str]]:
     return out
 
 
+_OUTS: list = []        # report folders of the current command (the command log is saved there)
+
+
+class CommandLog:
+    """Every command the tool runs on a switch / tray (time, exit code, duration, output), like the test reports'
+    command logs: report.html shows each node's log (outputs trimmed to --log-keep lines), raw/commands.log.gz
+    keeps everything."""
+
+    def __init__(self):
+        import threading
+        self.entries: list[dict] = []
+        self._lock = threading.Lock()
+
+    def __enter__(self):
+        from heliosdbg import transport
+        transport.RECORDERS.append(self._add)
+        return self
+
+    def __exit__(self, *exc):
+        from heliosdbg import transport
+        if self._add in transport.RECORDERS:
+            transport.RECORDERS.remove(self._add)
+
+    def _add(self, host, cmd, res, err, t0):
+        e = {"host": host, "cmd": cmd, "t": t0, "rc": res.rc if res else None,
+             "s": round(res.duration, 2) if res else None, "out": res.stdout if res else "",
+             "err": (res.stderr if res else "") or "", "error": err}
+        with self._lock:
+            self.entries.append(e)
+
+    @staticmethod
+    def _when(t) -> str:
+        return time.strftime("%H:%M:%S", time.gmtime(t))
+
+    def text(self) -> str:
+        out = []
+        for e in sorted(self.entries, key=lambda e: (e["host"], e["t"])):
+            head = f"[{e['host']}] {self._when(e['t'])} UTC  $ {e['cmd']}"
+            tail = (f"  -> {e['error']}" if e["error"] else f"  -> rc={e['rc']} {e['s']}s")
+            out.append(head + "\n" + tail + "\n" + e["out"] + (("\n[stderr]\n" + e["err"]) if e["err"].strip() else ""))
+        return "\n".join(out)
+
+    def save(self, folder: Path) -> None:
+        import gzip
+        with gzip.open(folder / "commands.log.gz", "wt") as fh:
+            fh.write(self.text())
+
+    def html(self, order: list[str], keep: int = 200) -> str:
+        by: dict[str, list] = {}
+        for e in self.entries:
+            by.setdefault(e["host"], []).append(e)
+        hosts = [h for h in order if h in by] + sorted(h for h in by if h not in order)
+        parts = []
+        for h in hosts:
+            ents = sorted(by[h], key=lambda e: e["t"])
+            nlines = sum(e["out"].count("\n") + 1 for e in ents)
+            bad = sum(1 for e in ents if e["error"] or e["rc"] not in (0, None))
+            items = []
+            for e in ents:
+                lines = e["out"].splitlines()
+                shown = "\n".join(lines[:keep])
+                more = len(lines) - keep
+                st = (f"<span class='err'>{esc(e['error'])}</span>" if e["error"] else
+                      f"rc {e['rc']}" if e["rc"] == 0 else f"<span class='err'>rc {e['rc']}</span>")
+                items.append(f"<div class='ch'>{self._when(e['t'])} UTC · {st}{(' · ' + str(e['s']) + ' s') if e['s'] is not None else ''}</div>"
+                             f"<pre>$ {esc(e['cmd'])}\n{esc(shown)}"
+                             + (f"\n... {more} more lines (full output in raw/commands.log.gz)" if more > 0 else "")
+                             + (f"\n[stderr]\n{esc(e['err'].strip()[:4000])}" if e["err"].strip() else "") + "</pre>")
+            parts.append(f"<details><summary>Command log: <b>{esc(h)}</b> ({len(ents)} commands, {nlines} lines"
+                         f"{', ' + str(bad) + ' failed' if bad else ''})</summary>{''.join(items)}</details>")
+        return "".join(parts)
+
+
 def _ranges(nums) -> str:
     """[18, 19, 20, 22] -> '18-20, 22'."""
     nums = sorted({n for n in nums if n is not None})
@@ -386,7 +460,8 @@ def map_lines(links) -> list[str]:
     return out
 
 
-def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[dict]) -> None:
+def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[dict], cmdlog: "CommandLog | None" = None,
+               log_keep: int = 200) -> None:
     links = res["links"]
     n = {k: sum(1 for x in links if x.state == k) for k in ("ok", "degraded", "down")}
     rows = []
@@ -483,6 +558,8 @@ tr.ok td:first-child,td.ok{{color:var(--ok)}}
 .bar{{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}}input,select{{font:inherit;padding:4px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--fg)}}
 .scroll{{max-height:70vh;overflow:auto;border:1px solid var(--rule);border-radius:8px}}
 code,details div{{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}}
+details{{margin:4px 0}}summary{{cursor:pointer;color:var(--fg)}}.ch{{color:var(--mut);margin-top:8px}}.err{{color:var(--down);font-weight:600}}
+pre{{background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:8px;overflow-x:auto;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:2px 0 6px}}
 </style></head><body>
 <h1>Scale-up link report: {esc(rack_name)}</h1>
 <div class='mut'>{esc(when)} UTC · {_plural(nsw, 'switch')}, {_plural(ntr, 'compute tray')} · read-only</div>
@@ -506,6 +583,7 @@ code,details div{{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12
 <div class='scroll'><table id='all'><thead><tr><th>State</th><th>Switch</th><th>ASIC</th><th>Switch port</th><th>Admin/oper</th><th>Tray</th><th>GPU (BDF)</th>
 <th>GPU port</th><th>GPU admin/link</th><th>IFCP</th><th>FEC corr / uncorr (sample)</th><th>Matched by</th><th>Cause</th></tr></thead>
 <tbody>{''.join(all_rows)}</tbody></table></div>
+{("<h2>Command logs</h2><p class='mut'>Every command run on each switch and compute tray during this scan, with its output (trimmed to " + str(log_keep) + " lines per command here; everything is in raw/commands.log.gz).</p>" + cmdlog.html(sorted(res['switches']) + sorted(res['trays']), log_keep)) if cmdlog and cmdlog.entries else ''}
 <script>
 (function(){{var q=document.getElementById('q'),st=document.getElementById('st'),cnt=document.getElementById('cnt'),
 rows=Array.prototype.slice.call(document.querySelectorAll('#all tbody tr'));
@@ -562,12 +640,16 @@ def scan_cmd(a) -> int:
     inv, rack = _filtered_rack(a)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"scan-{stamp}"
+    _OUTS.append(out)
     _room(out)
     (out / "raw").mkdir(parents=True, exist_ok=True)
+    cmdlog = CommandLog()
     try:
-        res = linkdiag.scan(rack, a.interval, bcm_view=not a.no_bcm, bcm_max=a.bcm_max)
+        with cmdlog:
+            res = linkdiag.scan(rack, a.interval, bcm_view=not a.no_bcm, bcm_max=a.bcm_max)
     finally:
         rack.close()
+    cmdlog.save(out / "raw")
     if getattr(a, "trays", None):
         res["links"] = _only_selected_trays(res, rack)
     links, groups = res["links"], linkdiag.group_causes(res["links"])
@@ -635,7 +717,8 @@ def scan_cmd(a) -> int:
         "optics_reported": res["optics_reported"], "links": [linkdiag.link_dict(x) for x in links], "compare": res.get("compare"), "patterns": res.get("suspects"),
         "root_causes": [{k: v for k, v in g.items() if k != "links"} | {"links": [f"{x.switch} {x.sw_port}" for x in g["links"]]}
                         for g in groups]}, indent=1, default=str))
-    write_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), res, groups)
+    write_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), res, groups,
+               cmdlog, a.log_keep)
     return 2 if (sw_missing or not links) else 1 if groups else 0
 
 
@@ -644,6 +727,7 @@ def pingmap_cmd(a) -> int:
     inv, rack = _filtered_rack(a)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"pingmap-{stamp}"
+    _OUTS.append(out)
     _room(out, 10)
     out.mkdir(parents=True, exist_ok=True)
     try:
@@ -690,6 +774,7 @@ def bcm_cmd(a) -> int:
     want = {x.strip() for x in (a.ports or "").split(",") if x.strip()}
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"bcm-{stamp}"
+    _OUTS.append(out)
     _room(out, 5)
     lines, raw, bad = [f"Broadcom view {a.switch}  {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC", ""], {}, 0
     try:
@@ -736,6 +821,8 @@ def main(argv=None) -> int:
     s.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/scan-<UTC time>)")
     s.add_argument("--compare", type=Path, help="an earlier scan's link_check.json: list what changed since")
     s.add_argument("--no-bcm", action="store_true", help="skip the Broadcom shell view of physical-layer problem links")
+    s.add_argument("--log-keep", type=int, default=200, help="lines of each command's output shown in report.html (200; "
+                                                           "raw/commands.log.gz keeps all)")
     s.add_argument("--bcm-max", type=int, default=64, help="at most this many problem ports read in the Broadcom shell (64)")
     for x in (s,):
         x.add_argument("--switches", help="only these switches (comma-separated inventory names)")
@@ -765,7 +852,18 @@ def main(argv=None) -> int:
     b.add_argument("--ports", help="SONiC ports, e.g. Ethernet257,Ethernet261 (default: every oper-down trunk port)")
     b.add_argument("--out", type=Path, help="evidence folder (default results/link-check/<rack>/bcm-<UTC time>)")
     a = ap.parse_args(argv)
-    return {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd}[a.cmd](a)
+    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd}[a.cmd]
+    if a.cmd == "scan":                                  # the scan keeps its log in raw/ and in report.html
+        return fn(a)
+    log = CommandLog()
+    try:
+        with log:
+            return fn(a)
+    finally:
+        for out in _OUTS[-1:]:
+            if out.exists():
+                log.save(out)
+                print(f"command log: {out / 'commands.log.gz'}")
 
 
 if __name__ == "__main__":

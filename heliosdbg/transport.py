@@ -17,6 +17,18 @@ from .inventory import Host
 
 log = logging.getLogger("helios.cmd")
 
+# Command recorders (link_check's command log): each is called as fn(host, command, result_or_None, error_or_None,
+# started_epoch) after every command on a switch / tray, also when it failed to connect or timed out.
+RECORDERS: list = []
+
+
+def _record(host: str, cmd: str, res, err, t0: float) -> None:
+    for fn in list(RECORDERS):
+        try:
+            fn(host, cmd, res, err, t0)
+        except Exception:  # noqa: BLE001 - a recorder must never break a command
+            pass
+
 
 
 KEY_ENV = "HELIOS_SSH_KEY"      # this machine's SSH key for every node, whatever the inventory says
@@ -208,6 +220,17 @@ class SshTransport:
 
     def run(self, cmd: str, *, timeout: float = 120, sudo: bool = False,
             env: dict[str, Any] | None = None) -> CmdResult:
+        t0 = time.time()
+        try:
+            res = self._run(cmd, timeout=timeout, sudo=sudo, env=env)
+        except Exception as e:
+            _record(self.host.name, build_command(cmd, sudo, env), None, f"{type(e).__name__}: {e}", t0)
+            raise
+        _record(self.host.name, build_command(cmd, sudo, env), res, None, t0)
+        return res
+
+    def _run(self, cmd: str, *, timeout: float = 120, sudo: bool = False,
+             env: dict[str, Any] | None = None) -> CmdResult:
         full = build_command(cmd, sudo, env)
         # Enforce the timeout on the remote side too: closing the SSH channel does not kill a hung tool
         # (e.g. a GPU workload stuck in the driver), so coreutils `timeout` sends TERM, then KILL.
@@ -367,6 +390,7 @@ class ReplayTransport:
                 res = CmdResult(self.host.name, cmd, rule.rcs[n % len(rule.rcs)], out, rule.stderr)
                 break
         log.debug("[%s] rc=%s 0.00s%s", self.host.name, res.rc, _output_for_log(res))
+        _record(self.host.name, build_command(cmd, sudo, env), res, None, time.time())
         return res
 
     def close(self) -> None:

@@ -222,3 +222,22 @@ def test_asic_gpu_map_and_ranges():
     m = link_check.asic_gpu_map(links)
     assert m["st1 asic0"]["c1"]["0001:01:00.1"]["ok"] == 18 and m["st1 asic1"]["c1"]["0001:01:00.1"]["worst"] == "down"
     assert link_check.map_lines(links)[0] == "  st1 asic0: 18/18 links ok - c1 1 GPU x ports 18-35"
+
+
+def test_command_log_records_every_command_and_trims_the_html():
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import link_check
+    from heliosdbg import transport
+    log = link_check.CommandLog()
+    with log:
+        transport._record("st1", "show interfaces status", SimpleNamespace(rc=0, duration=0.5, stdout="a\nb\nc", stderr=""), None, 0)
+        transport._record("c1", "afmctl show device --json", None, "AuthenticationException: Authentication failed.", 1)
+    transport._record("st1", "after the scan", SimpleNamespace(rc=0, duration=0, stdout="", stderr=""), None, 2)
+    assert len(log.entries) == 2                                   # nothing recorded after the with block
+    h = log.html(["st1", "c1"], keep=2)
+    assert "Command log: <b>st1</b> (1 commands, 3 lines)" in h and "1 more lines" in h
+    assert "AuthenticationException" in h and "1 failed" in h
+    assert "$ show interfaces status" in log.text()
