@@ -249,7 +249,27 @@ def ifcp_peer_problem(ln: Link, ifcp_map: dict) -> str | None:
     return None
 
 
-def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, ifcp_map: dict | None = None) -> Link:
+def ifcp_running(trays: dict) -> bool:
+    """False when not a single LINK_UP GPU port of the rack has an IFCP session or knows a peer: IFCP is not running
+    on this rack (MR2 18 Oct: 288 links, every one ll_up no / no peer, yet the L2 ping passed on every port), so it
+    is reported once for the rack instead of as 288 degraded links. One port with a session = IFCP is in use and
+    every port without one is a problem (g02-g17: 2 of 2,445)."""
+    seen = False
+    for t in trays.values():
+        for g in t.get("gpus") or []:
+            for p in g.get("ports") or []:
+                if "LINK_UP" not in str(p.get("link") or "") or "NO_PHY" in str(p.get("link") or ""):
+                    continue
+                seen = True
+                i = p.get("ifcp") or {}
+                if i.get("ll_up") == "yes" or i.get("peer_enabled") not in (None, "", "None") \
+                        or i.get("peer_device_id") not in (None, ""):
+                    return True
+    return not seen
+
+
+def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, ifcp_map: dict | None = None,
+             ifcp_in_use: bool = True) -> Link:
     """Set state / cause / evidence / owner / action. First matching rule wins (bottom layer first)."""
     up = lambda v: str(v or "").lower() == "up"  # noqa: E731
     g, ev = ln.gpu, ln.evidence
@@ -319,7 +339,9 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
                     "Marginal cable / connector: reseat it, then sample again; if the errors follow the cable after a swap, "
                     "replace the cable.")
     i = g["ifcp"]
-    if i.get("ll_up") != "yes" or i.get("peer_enabled") != "yes" or "yes" in (i.get("in_error"), i.get("peer_in_error")):
+    if not ifcp_in_use:
+        ev.append("IFCP not judged: no GPU port on this rack has an IFCP session or peer (not running here)")
+    elif i.get("ll_up") != "yes" or i.get("peer_enabled") != "yes" or "yes" in (i.get("in_error"), i.get("peer_in_error")):
         return set_("degraded", "ifcp", f"physical link up but no IFCP session (ll_up {i.get('ll_up')}, peer_enabled "
                                 f"{i.get('peer_enabled')}, in_error {i.get('in_error')}, peer_in_error {i.get('peer_in_error')})",
                     GPU_VENDOR, "Collect `afmctl show port -b <bdf> --json` from the tray and the switch's forwarding entries "
@@ -418,6 +440,7 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
         vals = [v for a in s["asics"].values() for v in a["presence"].values()]
         optics[name] = bool(vals) and any(str(v).lower() == "present" for v in vals)
     ifcp_map = learn_ifcp(links)
+    ifcp_in_use = ifcp_running(tr_res)
     for ln in links:
         a0 = sw_res[ln.switch]["asics"].get(ln.asic, {})
         a1 = (again.get(ln.switch) or {}).get(ln.asic, {})
@@ -434,8 +457,9 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
             ln.fdb_static_late = any(r.get("Port") == ln.sw_port and str(r.get("Type", "")).lower() == "static" for r in a1["fdb"])
         t = tr_res.get(ln.tray) or {}
         ln.vpod_accelerators = next((g.get("vpod_accelerators") for g in t.get("gpus", []) if g["bdf"] == ln.bdf), None)
-        diagnose(ln, tr_res, optics.get(ln.switch, False), span, ifcp_map)
+        diagnose(ln, tr_res, optics.get(ln.switch, False), span, ifcp_map, ifcp_in_use)
     learned["ifcp"] = ifcp_map
+    learned["ifcp_in_use"] = ifcp_in_use
     if bcm_view:
         add_bcm(rack, links, sw_res, log, bcm_max)
     return {"switches": sw_res, "trays": tr_res, "links": links, "learned": learned, "optics_reported": optics,
@@ -602,6 +626,12 @@ def suspects(links: list[Link], min_links: int = 2) -> list[str]:
     - the same GPU position (BDF) on several trays: something shared by that position (cable bundle / cartridge)
     - several on one switch ASIC: that ASIC, the more so on adjacent ports (one connector / cage)."""
     bad = [x for x in links if x.state != "ok" and x.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing")]
+    judged = [x for x in links if x.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing")]
+    kinds = {x.kind for x in bad}
+    if len(bad) >= 8 and len(kinds) == 1 and len(bad) >= 0.9 * len(judged):
+        return [f"rack-wide: {len(bad)} of {len(judged)} links have the same cause ({KINDS.get(next(iter(kinds)), next(iter(kinds)))})"
+                f" - look for one common cause (configuration, a service, a software version) before suspecting "
+                f"individual GPUs, cables or switch ASICs"]
     out = []
     per_gpu: dict[str, list] = {}
     for x in bad:

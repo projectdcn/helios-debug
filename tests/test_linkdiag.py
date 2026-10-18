@@ -179,3 +179,32 @@ def test_trays_filter_keeps_only_links_of_the_selected_trays():
                                                desc=f"To ComputeTray Slot{slot}/GPU1[1]/Port0")
     res = {"links": [mk(261, 12, "ct13"), mk(262, 12), mk(170, 3), mk(171, 4)], "learned": {"slots": {"ct13": 12}}}
     assert [x.sw_port for x in link_check._only_selected_trays(res, rack)] == ["Ethernet261", "Ethernet262"]
+
+
+def test_ifcp_not_running_on_the_rack_is_one_note_not_degraded_links():
+    # MR2 18 Oct: every LINK_UP port ll_up no / no peer, yet the L2 ping passed on every port
+    t = _tray(ll_up="no", peer_enabled=None)
+    assert ld.ifcp_running({"ct03": t}) is False
+    assert ld.ifcp_running({"ct03": _tray()}) is True                 # one session = IFCP in use
+    links, _ = ld.join([_switch()], [t])
+    ln = ld.diagnose(links[0], {"ct03": t}, False, 30, None, ifcp_in_use=False)
+    assert ln.state == "ok" and any("IFCP not judged" in e for e in ln.evidence)
+
+
+def test_one_cause_on_every_link_is_reported_rack_wide():
+    mk = lambda i: ld.Link("st1", f"asic{i % 2}", f"Ethernet{i}", tray=f"c{i % 2 + 1}", bdf=f"000{i % 4 + 1}:01:00.1",  # noqa: E731
+                           gpu_port=i % 36, state="degraded", kind="ifcp")
+    s = ld.suspects([mk(i) for i in range(288)])
+    assert len(s) == 1 and s[0].startswith("rack-wide: 288 of 288 links have the same cause")
+
+
+def test_path_verdict_lets_a_passing_ping_win_over_ifcp_down():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import link_check
+    port = {"admin": "enabled", "link": "LINK_UP", "ll_up": "no", "peer_enabled": None}
+    e = {"hit": {"switch": "st1", "asic": "asic1", "port": "Ethernet422"}, "problem": None, "mac": "x"}
+    ok = link_check.judge(0, port, port, e, e, {"failed": []}, {})
+    assert ok.startswith("ok (L2 ping passes") and "IFCP down" in ok
+    assert link_check.judge(0, port, port, e, e, {"failed": ["IFoE Req"]}, {}).startswith("IFCP")

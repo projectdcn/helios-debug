@@ -159,10 +159,14 @@ def judge(p: int, s: dict, d: dict, src_entry, dst_entry, ping: dict | None, del
         return f"tray side: source GPU port {p} is {s and s.get('admin')}/{s and s.get('link')}"
     if not port_ok(d):
         return f"tray side: destination GPU port {p} is {d and d.get('admin')}/{d and d.get('link')}"
+    ifcp_note = ""
     for who, x in (("source", s), ("destination", d)):
         if x.get("ll_up") != "yes" or x.get("peer_enabled") != "yes" or "yes" in (x.get("in_error"), x.get("peer_in_error")):
-            return f"IFCP: {who} port {p} ll_up={x.get('ll_up')} peer_enabled={x.get('peer_enabled')} " \
-                   f"in_error={x.get('in_error')} peer_in_error={x.get('peer_in_error')}"
+            ifcp_note = (f"IFCP: {who} port {p} ll_up={x.get('ll_up')} peer_enabled={x.get('peer_enabled')} "
+                         f"in_error={x.get('in_error')} peer_in_error={x.get('peer_in_error')}")
+            if ping is None or ping["failed"]:      # the ping decides; IFCP down alone is reported with its result
+                return ifcp_note
+            break
     for who, e in (("destination", dst_entry), ("source", src_entry)):
         if not e["hit"]:
             return f"switch: no forwarding entry for the {who}'s MAC {e['mac'] or '(afmctl gave none)'} on port {p}"
@@ -175,7 +179,7 @@ def judge(p: int, s: dict, d: dict, src_entry, dst_entry, ping: dict | None, del
     if ping["failed"]:
         moved = {k: v for k, v in deltas.items() if v}
         return f"data path: ping failed ({', '.join(ping['failed'])}){' - counters moved: ' + json.dumps(moved) if moved else ''}"
-    return "ok"
+    return f"ok (L2 ping passes; {ifcp_note} - IFCP down but the data path works)" if ifcp_note else "ok"
 
 
 def check_entry(hits: list[dict], want_slot: int | None, port: int) -> dict:
@@ -290,7 +294,7 @@ def path_cmd(a) -> int:
             result.append({"port": p, "station": p // 2, "source_port": sp.get(p), "destination_port": dp.get(p),
                            "source_entry": se, "destination_entry": de, "ping": ping, "counter_deltas": dl,
                            "verdict": verdict})
-        bad = [r for r in result if r["verdict"] != "ok" and not r["verdict"].startswith("ok up to")]
+        bad = [r for r in result if not (r["verdict"] == "ok" or r["verdict"].startswith(("ok up to", "ok (")))]
         log("")
         log(f"{len(result) - len(bad)} of {len(result)} ports ok" + (f"; first problem: port {bad[0]['port']}: {bad[0]['verdict']}" if bad else ""))
         log(f"evidence: {out}")
@@ -350,7 +354,9 @@ def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[di
             per_asic[k] = per_asic.get(k, 0) + 1
     asic_rows = "".join(f"<tr><td>{esc(k)}</td><td>{n}</td></tr>" for k, n in sorted(per_asic.items(), key=lambda x: -x[1]))
     cab = res["learned"].get("ifcp") or {}
-    cab_txt = (f"checked against IFCP on {cab.get('checked_links', 0)} links" if cab.get("device") else "not checked (no IFCP peer data)")
+    cab_txt = (f"checked against IFCP on {cab.get('checked_links', 0)} links" if cab.get("device") else
+               "not checked: IFCP is not running on this rack (no GPU port has an IFCP session or peer)"
+               if not res["learned"].get("ifcp_in_use", True) else "not checked (no IFCP peer data)")
     unreach = [t["name"] for t in res["trays"].values() if t.get("error")] + \
               [s["name"] for s in res["switches"].values() if s.get("error")]
     optics = "yes" if any(res["optics_reported"].values()) else "no (this platform reports no transceiver presence or optic power)"
@@ -461,6 +467,9 @@ def scan_cmd(a) -> int:
         lines.append("")
         lines.append("problem links per switch ASIC (trays out of service left out): " +
                      ", ".join(f"{k} {n}" for k, n in sorted(per_asic.items(), key=lambda x: -x[1])))
+    if not res["learned"].get("ifcp_in_use", True):
+        lines.append("note: IFCP is not running on this rack - no GPU port has an IFCP session or peer; links are judged "
+                     "on the other layers (check with `path`: an L2 ping that passes means the data path works without it)")
     nc = _not_checked(res)
     sw_missing = [n for n, r, _e, _h in nc if r == "switch"]
     if nc:
