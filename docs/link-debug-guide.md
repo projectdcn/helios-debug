@@ -200,8 +200,8 @@ AFM shows each link from both sides, and the two should agree. Read them through
 Three things to know when reading AFM:
 
 - **Events come back unsorted.** AFM ignores `sort-by`, `sort-order` and `page-size` on the events list and returns it in uuid order; sort by `meta.creation-time` yourself before reading "the latest".
-- **PortFailed comes before the link-fail threshold.** A shut port is PortFailed about 2 s later, even with a 30 s threshold; only the vPOD reconfiguration waits for the threshold (17 Oct finding F3). A port that flapped for a few seconds can therefore stay PortFailed.
-- **A fully cut-off GPU is not always reported in full.** With all 36 ports of one GPU down, AFM left 2 (first run) and 6 (rerun) of them not PortFailed (finding F4). Check the switch side before trusting AFM's count.
+- **PortFailed comes before the link-fail threshold.** A shut port is PortFailed about 2 s later, even with a 30 s threshold; only the vPOD reconfiguration waits for the threshold (product issue 3 of the 17-18 Oct disruptive run). A port that flapped for a few seconds can therefore stay PortFailed.
+- **A fully cut-off GPU is not always reported in full.** With all 36 ports of one GPU down, AFM left 2 (first run) and 6 (rerun) of them not PortFailed (product issue 4 of the same run). Check the switch side before trusting AFM's count.
 
 ## Data path: L2 ping
 
@@ -298,15 +298,15 @@ Check this list first: these are already known, so a new symptom on one of them 
 | Where | Symptom | Status |
 | --- | --- | --- |
 | st4 asic0 Ethernet70 = CT17 0002:01:00.1 port 24 | no physical link on either end, down since about 17:50 UTC 17 Oct | new, found by the link check 18 Oct; the time matches the batch 2 link tests, which shut and restored ports around 17:50 UTC: the link likely did not train again |
-| st6 asic1 Ethernet261 = CT13 0002:01:00.1 port 0 | no physical link on either end, down since about 21:20 UTC 17 Oct | coupled to Ethernet257: did not come back after the TC-AFM-013 rerun flapped 257 (finding F6) |
-| st6 asic1 Ethernet257 = CT14 0002:01:00.1 port 2 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped its coupled neighbour Ethernet261 to recover it (finding F12); not touched since. Broadcom view 18 Oct 13:45 UTC: no signal on lane 0 only, lane 1 has signal: one lane of the cable path |
-| st4 asic0 Ethernet66 = CT18 0002:01:00.1 port 28 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped st4 Ethernet70 to recover it: 66 and 70 look coupled (finding F12); not touched since |
+| st6 asic1 Ethernet261 = CT13 0002:01:00.1 port 0 | no physical link on either end, down since about 21:20 UTC 17 Oct | coupled to Ethernet257: did not come back after the TC-AFM-013 rerun flapped 257 (product issue 6: coupled switch ports) |
+| st6 asic1 Ethernet257 = CT14 0002:01:00.1 port 2 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped its coupled neighbour Ethernet261 to recover it (product issue 12: down links do not recover remotely); not touched since. Broadcom view 18 Oct 13:45 UTC: no signal on lane 0 only, lane 1 has signal: one lane of the cable path |
+| st4 asic0 Ethernet66 = CT18 0002:01:00.1 port 28 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped st4 Ethernet70 to recover it: 66 and 70 look coupled (product issue 12: down links do not recover remotely); not touched since |
 | CT16 GPU port 5 = st5 asic1 Ethernet494 | NO\_PHY\_LINK, never up since the tray booted | AMD 16 Oct: mechanical inspection needed |
 | CT14 GPU port 33 | NO\_PHY\_LINK on 16 Oct | LINK\_UP in the 18 Oct 06:51 link check |
 | CT02 0004:01:00.1 port 30 | LINK\_UP, no IFCP session (16 Oct) | open with AMD; IFCP up in the 18 Oct link check |
 | CT06 0002:01:00.1 port 12 | LINK\_UP, no IFCP session; one-way link-level control on accelerator 21 (TC-SBM-062) (16 Oct) | open with AMD; IFCP up in the 18 Oct link check |
 | Any tray pair | L2 ping loss on 1 to 2 ports, moving between pairs (TC-AFM-001) | open with AMD |
-| st6 asic1 Ethernet257 and Ethernet261 | shutting 257 takes 261 down | HPE switch, finding F6 |
+| st6 asic1 Ethernet257 and Ethernet261 | shutting 257 takes 261 down | HPE switch, product issue 6 (coupled switch ports) |
 | st4 Ethernet243 / 251, st4 Ethernet66 / 70 (seen 18 Oct), st2 Ethernet170 / 162 | coupled pairs | excluded from tests (`avoid_ports`) |
 | CT05 (slot 4, pod-1-4) | tray down since 13 Oct: all 144 of its links down | quarantined in the inventory; expected |
 | Every switch | stale Vlan2 + static FDB entries left from the ARC run | not AFM's; ignored by the tests (`non_afm_vlans`) |
