@@ -1,0 +1,51 @@
+# Full rack (AMD Helios): 6 switch trays (SONiC, 2 ASICs each) + 18 compute trays (4 GPUs each) = 2,592 GPU links.
+# Copy to inventory/<rack>.local.yaml (git-ignored) and replace the addresses / users with your rack's.
+#   python tools/link_check.py scan --inventory inventory/<rack>.local.yaml
+rack: my-fullrack
+
+transport:
+  kind: ssh
+  connect_timeout: 20
+  # jump: {host: <bastion>, port: 22, user: <you>}   # when the rack is only reachable through a bastion
+
+# Keys: your own SSH setup is used (~/.ssh/config, ssh-agent, ~/.ssh/id_*), or key_file. Passwords: password_env
+# names an environment variable you set yourself - never write a password in this file.
+defaults:
+  switch:
+    user: admin
+    # key_file: ~/.ssh/id_rack
+    # password_env: LINKCHECK_SWITCH_PASSWORD
+  compute:
+    user: root                   # needs sudo without a prompt for afmctl
+    # password_env: LINKCHECK_COMPUTE_PASSWORD
+
+switches:
+  - {name: st1, host: 10.0.1.71}
+  - {name: st2, host: 10.0.1.72}
+  - {name: st3, host: 10.0.1.73}
+  - {name: st4, host: 10.0.1.74}
+  - {name: st5, host: 10.0.1.75}
+  - {name: st6, host: 10.0.1.76}
+
+# slot = the tray's AFM slot-id (optional: learned from the switch port descriptions / MACs when left out, checked
+# when given). Mark a tray known to be out of service so its links show as one cause, not 144 faults:
+#   quarantine: {reason: "powered off for RMA", until: 2026-12-31}
+computes:
+  - {name: ct01, host: 10.0.1.47, slot: 0}
+  - {name: ct02, host: 10.0.1.48, slot: 1}
+  - {name: ct03, host: 10.0.1.49, slot: 2}
+  - {name: ct04, host: 10.0.1.50, slot: 3}
+  - {name: ct05, host: 10.0.1.51, slot: 4}
+  - {name: ct06, host: 10.0.1.52, slot: 5}
+  - {name: ct07, host: 10.0.1.53, slot: 6}
+  - {name: ct08, host: 10.0.1.54, slot: 7}
+  - {name: ct09, host: 10.0.1.55, slot: 8}
+  - {name: ct10, host: 10.0.1.56, slot: 9}
+  - {name: ct11, host: 10.0.1.57, slot: 10}
+  - {name: ct12, host: 10.0.1.58, slot: 11}
+  - {name: ct13, host: 10.0.1.59, slot: 12}
+  - {name: ct14, host: 10.0.1.60, slot: 13}
+  - {name: ct15, host: 10.0.1.61, slot: 14}
+  - {name: ct16, host: 10.0.1.62, slot: 15}
+  - {name: ct17, host: 10.0.1.63, slot: 16}
+  - {name: ct18, host: 10.0.1.64, slot: 17}

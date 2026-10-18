@@ -1,0 +1,37 @@
+# Link check inventory: the switch trays and compute trays of ONE rack. Copy to inventory/<rack>.local.yaml
+# (git-ignored) and fill in the management addresses. Nothing else is needed: no AFM password, no test settings.
+rack: my-rack
+
+transport:
+  kind: ssh
+  connect_timeout: 15
+  # jump: {host: 10.0.0.1, user: me, port: 22}   # bastion in front of the rack (key / agent login, no password)
+
+# SSH logins. Keys: your own SSH setup is used (~/.ssh/config, ssh-agent, ~/.ssh/id_*). Name a key_file only when
+# needed. Passwords: password_env names an environment variable you set yourself - never write a password here.
+defaults:
+  switch:
+    user: admin
+    # password_env: LINKCHECK_SWITCH_PASSWORD
+  compute:
+    user: root                  # needs sudo without a prompt for afmctl
+    # password_env: LINKCHECK_COMPUTE_PASSWORD
+
+# Switch trays (SONiC): name = how the report names it, host = management IP / hostname.
+switches:
+  - {name: st1, host: 10.0.0.71}
+  - {name: st2, host: 10.0.0.72}
+  - {name: st3, host: 10.0.0.73}
+  - {name: st4, host: 10.0.0.74}
+  - {name: st5, host: 10.0.0.75}
+  - {name: st6, host: 10.0.0.76}
+
+# Compute trays. slot: the tray's AFM slot (optional - learned from the switch port descriptions / MACs if left out;
+# when given, the scan checks it). quarantine: a tray known to be out of service, so its links are reported as one
+# cause and not as dozens of faults.
+computes:
+  - {name: ct01, host: 10.0.0.47, slot: 0}
+  - {name: ct02, host: 10.0.0.48, slot: 1}
+  - {name: ct03, host: 10.0.0.49, slot: 2}
+  # - {name: ct05, host: 10.0.0.51, slot: 4, quarantine: {reason: "powered off for RMA", until: 2026-12-31}}
+  # ... one line per tray (ct01-ct18 on a full rack)
