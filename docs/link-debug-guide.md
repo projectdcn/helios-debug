@@ -46,6 +46,22 @@ For loss that comes and goes, `pingmap` repeats a ring of L2 pings and maps the 
 python tools/link_check.py pingmap --inventory <inventory> --rounds 12 --wait 300
 ```
 
+**One switch tray or one compute tray.** A scan does not have to cover the whole rack. Name trays as the inventory names them; several are comma-separated (`--switches st4,st6`):
+
+```
+python tools/link_check.py scan --inventory <inventory> --switches st6
+python tools/link_check.py scan --inventory <inventory> --trays ct13
+python tools/link_check.py scan --inventory <inventory> --switches st6 --trays ct13,ct14
+```
+
+| Option | Checks | Links on a full rack | Still reads |
+| --- | --- | --- | --- |
+| `--switches st6` | every link of that switch tray | 432 (72 GPUs x 6 ports) | every compute tray, because they are the other ends |
+| `--trays ct13` | every link of that compute tray | 144 (4 GPUs x 36 ports) | every switch tray, for the same reason |
+| `--switches st6 --trays ct13,ct14` | only the links between them | 48 (2 trays x 4 GPUs x 6 ports) | only the named trays |
+
+A partial scan is quicker and lighter on the jump host; links of trays left out are not reported. The patterns across trays (the same GPU position failing on several trays) need the full scan. `pingmap` takes the same two options.
+
 Two more options help during a repair. `scan --compare <earlier link_check.json>` lists what changed since that scan: new problems, recovered links and causes that changed. The scan also names **patterns** across problem links:
 
 - several problem links on one GPU point at that GPU or tray, or at either end when they all sit on one ASIC
