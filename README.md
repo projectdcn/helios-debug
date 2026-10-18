@@ -13,9 +13,13 @@ Debug tools for the AMD Helios scale-up fabric, separate from the test-case auto
 ## Install
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .            # paramiko, PyYAML
+/opt/homebrew/bin/python3 -m venv .venv    # Python 3.10 or newer
+.venv/bin/pip install -e .                  # paramiko, PyYAML
 ```
+
+On macOS the system `python3` (`/usr/bin/python3`) is 3.9, too old: `pip install -e .` refuses it and the tool then
+fails with `No module named 'yaml'`. Create the venv with a newer Python (Homebrew, python.org, pyenv). The YAML
+package is called `PyYAML` on pip, not `yaml`.
 
 ## Inventory
 
