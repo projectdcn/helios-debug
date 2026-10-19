@@ -81,7 +81,29 @@ python tools/link_check.py scan --inventory <inventory> --switches st6 --trays c
 
 A partial scan is quicker and lighter on the jump host; links of trays left out are not reported. The patterns across trays (the same GPU position failing on several trays) need the full scan. `pingmap` takes the same two options.
 
-**From a browser, on the switch tray.** The same tools have a web UI that installs on a switch tray (README: Web UI on a switch tray): pick the rack, run a scan, a Broadcom view, a GPU path check or a ping map, watch the output live, and open any earlier run's report. It listens on the switch's localhost only; open it with `ssh -L 8780:localhost:8780 admin@<switch>` and http://localhost:8780.
+**One link, end to end.** `link` takes whatever you have for a link and reads only its switch tray and its compute tray:
+
+```
+python tools/link_check.py link --inventory <inventory> "st6 Ethernet257"
+python tools/link_check.py link --inventory <inventory> "ct13 0002:01:00.1 33"      # or: ct13 gpu1 port33, slot17/gpu3/port33,
+                                                                                     # or an AFM event: "acc-id: 5, port-id: 32"
+```
+
+It gives the same diagnosis as the scan plus: the Broadcom lanes of the port next to a working port on the same ASIC; **around the link** (afm-agent, the node agent of the tray's slot, NTP and the clock offset between the two ends, the static forwarding entry, IFCP); and a **timeline** of the last 24 h (`--hours`): admin and link changes and the flap count from the switch syslog, who ran which command on the port (auth.log), the GPU's kernel / ifoe driver lines and afmctl's disruptive actions on the tray, and - with the AFM password - AFM's events and audit records for the link. Admin changes with no matching command mean something other than the CLI wrote CONFIG_DB (how the g02-g17 port bouncing showed). MR3 19 Oct: st1 and c2 NTP unsynchronised, c2 16.4 s behind st1 - read the two sides of a timeline with that offset.
+
+**Links that come and go.** `watch` reads chosen links again and again and records every change (link, admin, IFCP, error and FEC counters):
+
+```
+python tools/link_check.py watch --inventory <inventory> "st6 Ethernet257; ct13 0002:01:00.1 33" --every 10 --duration 1800
+```
+
+**Cabling against the plan.** `cabling --export plan.csv` writes what the latest scan saw as a plan (switch, port, slot, gpu, gpu_port); correct it against the site's records and `cabling --plan plan.csv` lists ports missing, wrong descriptions, links that reach a different GPU port than planned (with the move to make) and links not in the plan. No login needed.
+
+**Isolating a fault (DISRUPTIVE).** `isolate "<link>" --action switch-flap|gpu-flap --hold 10 --yes-disruptive` takes one end of ONE GPU link down and back: GPU links only, never a port in the inventory's `avoid_ports`, the end is always brought back, and every port of that ASIC that was up before must be up again (collateral is reported). Only with the people using the rack in the loop.
+
+**Evidence for a ticket.** Every run folder can be zipped with its raw outputs and a `ticket.txt` (the UI's bundle.zip link); password-like text is redacted.
+
+**From a browser, on the switch tray.** The same tools have a web UI that installs on a switch tray (README: Web UI on a switch tray): an overview of all racks, a clickable rack map (by compute tray or switch ASIC, with what changed since the scan before), Diagnose a link, Watch links, Cabling plan, the scan / Broadcom / path / ping map tools, Isolate (disruptive, typed confirmation), History with evidence bundles, SSH access (check + install keys) and Add a rack (draft an inventory from the switch trays). It listens on the switch's localhost only; open it with `ssh -L 8780:localhost:8780 admin@<switch>` and http://localhost:8780.
 
 **As part of the rack health check.** The health check of the test automation (`tools/rack_health.py` in helios-tests) runs this scan as case HC-012, a warning next to HC-001 to HC-011: it calls `tools/link_check.py scan` from this repo as a separate program (found next to the test repo, in `~/helios-debug`, or where `thresholds.health.link_check.dir` points) and turns each root cause into a failure line. g02-g17 19 Oct 01:22 UTC: 2,592 links, 2,443 ok, 144 CT05 (quarantined), 5 real down links on GPU position `0002:01:00.1` - FAIL as expected; MR2: PASS, 288 / 288.
 

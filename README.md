@@ -2,7 +2,7 @@
 
 Debug tools for the AMD Helios scale-up fabric, separate from the test-case automation (helios-tests).
 
-- **Link check** (`tools/link_check.py`): every GPU link of a rack (switch port <-> GPU port), its state
+- **Link check** (`tools/link_check.py` scan | link | watch | cabling | bcm | path | pingmap | isolate): every GPU link of a rack (switch port <-> GPU port), its state
   (ok / degraded / down) and, for each problem, one root cause with the evidence, who owns the fix and the next step.
   Also each GPU's state (`afmctl` config phase), and with the AFM password set (optional, `afm:` block in the
   inventory) AFM's view: vPOD membership, accelerator ids and port state. Read-only, SSH (+ AFM GETs). Runs on
@@ -70,8 +70,9 @@ log per switch / tray - each command, its exit code and output, trimmed to `--lo
 
 ## Web UI on a switch tray
 
-`ui/` is a small web UI for the same tools (scan, Broadcom shell view, GPU path, ping map, and a history of earlier
-runs with their reports). Standard library only: it installs on a SONiC switch tray and runs on the switch's own
+`ui/` is a small web UI for the same tools: Overview of all racks, Rack map, Diagnose a link (with timeline and
+what is around it), Watch links, Cabling plan, scan / Broadcom / GPU path / ping map, Isolate (disruptive, typed
+confirmation), History with evidence bundles, SSH access, Add a rack. Standard library only: it installs on a SONiC switch tray and runs on the switch's own
 python3, PyYAML and paramiko - no sudo, nothing outside the user's home.
 
 ```
