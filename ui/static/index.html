@@ -38,7 +38,11 @@ a{color:var(--acc)}.err{color:var(--down);font-weight:600}.hide{display:none}
 code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:1px 4px;border-radius:4px}
 .map{display:flex;flex-direction:column;gap:12px;margin-top:8px}.mblk h3{font-size:.9rem;margin:0 0 4px}
 .mrow{display:flex;align-items:center;gap:6px;margin:2px 0}.mrow .lab{width:120px;flex:none;font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cells{display:flex;flex-wrap:wrap;gap:2px}.cell{width:14px;height:14px;border-radius:3px;border:0;padding:0;cursor:pointer;background:var(--rule)}
+.cells{display:flex;flex-wrap:wrap;gap:2px}
+.cnts{display:inline-flex;flex-wrap:wrap;gap:4px;font-size:12px;font-weight:400;margin-left:8px;vertical-align:middle}
+.cnts span{padding:0 6px;border-radius:8px;background:var(--code);white-space:nowrap}.cnts .ok{color:var(--ok);background:var(--okbg)}
+.cnts .degraded{color:var(--deg);background:var(--degbg)}.cnts .down{color:var(--down);background:var(--downbg)}.cnts .unknown{color:var(--mut)}
+.mrow .cnts{margin-left:6px;flex:none;min-width:250px}.cell{width:14px;height:14px;border-radius:3px;border:0;padding:0;cursor:pointer;background:var(--rule)}
 .cell.ok{background:var(--ok);opacity:.55}.cell.unknown{background:var(--mut);opacity:.45}.cell.degraded{background:var(--deg)}.cell.down{background:var(--down)}
 .cell.hit{outline:2px solid var(--acc);outline-offset:1px;opacity:1}.cell.chg{box-shadow:0 0 0 2px var(--fg)}.cell.dim{opacity:.15}
 .legend span{display:inline-flex;align-items:center;gap:4px;margin-right:12px}.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
@@ -879,21 +883,32 @@ function drawMap(){
     return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf||"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
   }
   var html="";
+  function eff(l){return (lv&&lv[lkey(l)]&&lv[lkey(l)].state)||l.state}
+  function counts(ls){var c={ok:0,degraded:0,down:0,unknown:0};ls.forEach(function(l){var x=eff(l);c[x]=(c[x]||0)+1});
+    return '<span class="cnts" title="links of this '+(view==="tray"?"tray / GPU":"switch chip")+'"><span>'+ls.length+" links</span>"+
+      (c.ok?'<span class="ok">'+c.ok+" ok</span>":"")+(c.degraded?'<span class="degraded">'+c.degraded+" degraded</span>":"")+
+      (c.down?'<span class="down">'+c.down+" down</span>":"")+(c.unknown?'<span class="unknown">'+c.unknown+" not known</span>":"")+"</span>"}
+  function gpuLab(l){if(l.bdf)return l.bdf;var x=dsc(l);return x?"GPU"+x.gpu+" (described)":"?"}
+  function gpuPort(l){if(l.bdf)return l.gpu_port||0;var x=dsc(l);return x?x.port:0}
   if(view==="tray"){
-    var by={};d.links.forEach(function(l){var t=l.tray||"(no tray)";(by[t]=by[t]||{});var g=l.bdf||"?";(by[t][g]=by[t][g]||[]).push(l)});
+    var by={};d.links.forEach(function(l){var t=l.tray||"(no tray)";(by[t]=by[t]||{});var g=gpuLab(l);(by[t][g]=by[t][g]||[]).push(l)});
     Object.keys(by).sort().forEach(function(t){
-      html+='<div class="mblk"><h3>'+esc(trayName(t==="(no tray)"?"":t,d.slots)||t)+"</h3>";
+      var all=[];Object.keys(by[t]).forEach(function(g){all=all.concat(by[t][g])});
+      html+='<div class="mblk"><h3>'+esc(trayName(t==="(no tray)"?"":t,d.slots)||t)+counts(all)+"</h3>";
       Object.keys(by[t]).sort().forEach(function(g){
-        var ls=by[t][g].sort(function(a,b){return (a.gpu_port||0)-(b.gpu_port||0)});
-        html+='<div class="mrow"><span class="lab">'+esc(g)+'</span><div class="cells">'+ls.map(cell).join("")+"</div></div>";
+        var ls=by[t][g].sort(function(a,b){return gpuPort(a)-gpuPort(b)});
+        html+='<div class="mrow"><span class="lab" title="'+esc(g)+'">'+esc(g)+'</span><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
       });html+="</div>";
     });
   }else{
-    var bs={};d.links.forEach(function(l){var k=l.switch+" "+(l.asic||"");(bs[k]=bs[k]||[]).push(l)});
+    var bs={},bsw={};d.links.forEach(function(l){var k=l.switch+" "+(l.asic||"");(bs[k]=bs[k]||[]).push(l);(bsw[l.switch]=bsw[l.switch]||[]).push(l)});
+    var lastSw=null;
     Object.keys(bs).sort().forEach(function(k){
-      var ls=bs[k].sort(function(a,b){return (+a.sw_port.replace(/\D/g,""))-(+b.sw_port.replace(/\D/g,""))});
-      html+='<div class="mblk"><div class="mrow"><span class="lab"><b>'+esc(k)+'</b></span><div class="cells">'+ls.map(cell).join("")+"</div></div></div>";
+      var ls=bs[k].sort(function(a,b){return (+a.sw_port.replace(/\D/g,""))-(+b.sw_port.replace(/\D/g,""))}),sw=ls[0].switch;
+      if(sw!==lastSw){if(lastSw!==null)html+="</div>";html+='<div class="mblk"><h3>'+esc(sw)+counts(bsw[sw])+"</h3>";lastSw=sw}
+      html+='<div class="mrow"><span class="lab"><b>'+esc(k)+'</b></span><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
     });
+    if(lastSw!==null)html+="</div>";
   }
   $("map").innerHTML=html||'<p class="mut">No links in this scan.</p>';
   if(mapPrev){
