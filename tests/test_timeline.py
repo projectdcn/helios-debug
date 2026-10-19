@@ -56,4 +56,5 @@ def test_different_ports_not_merged():
              "2026-10-19T01:15:44.000000+00:00 c1 kernel: ifoe 0004:01:00.1: port 108: link down event (seq 6)\n"
              "2026-10-19T01:15:45.000000+00:00 c1 kernel: ifoe 0004:01:00.1: port 104: link down event (seq 7)\n")
     ev = timeline.parse_tray(lines, SINCE)
-    assert [(e["text"].split(":")[2].strip(), e.get("count")) for e in ev] == [("port 104", 2), ("port 108", None)]
+    import re
+    assert [(re.search(r"port \d+", e["text"]).group(0), e.get("count")) for e in ev] == [("port 104", 2), ("port 108", None)]

@@ -133,7 +133,7 @@ def _collapse(evs: list[dict], window_s: float = 10.0) -> list[dict]:
     'Unhandled mcdi_event' every second, 300 lines)."""
     out, last = [], {}
     for e in evs:
-        key = (e["side"], e["kind"], re.sub(r"(?<!port )(0x[0-9a-f]+|\d+)", "#", e["text"]))   # 'port N' kept apart
+        key = (e["side"], e["kind"], re.sub(r"(?<!port )\b(0x[0-9a-f]+|\d+)\b", "#", e["text"]))   # 'port N' kept apart
         t = datetime.fromisoformat(e["t"])
         j = last.get(key)
         if j is not None and (t - datetime.fromisoformat(out[j]["until"] or out[j]["t"])).total_seconds() <= window_s:
