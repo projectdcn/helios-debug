@@ -40,6 +40,7 @@ KINDS = {
     "ifcp": "physical link up but no IFCP session",
     "not_programmed": "link up but not programmed by AFM",
     "miscabled": "GPU port reaches a different switch port than described",
+    "tray_not_programmed": "the switch has no forwarding entry for any GPU port of the tray (not programmed by AFM)",
     "gpu_not_active": "GPU not configured on the tray (afmctl config_phase not ACTIVE)",
     "gpu_not_programmed": "GPU in a vPOD in AFM but not programmed on the tray",
     "afm_port_failed": "AFM reports the GPU port failed although the link and IFCP are up",
@@ -438,6 +439,33 @@ def quarantined_slots(inv) -> dict:
     return out
 
 
+def mark_unprogrammed_trays(links: list, trays: dict) -> list[str]:
+    """A tray that was read, whose GPU ports appear in NO switch forwarding table while other trays' do: its switch ports
+    cannot be paired with GPU ports by MAC, and the reason is that AFM has not programmed it - not missing GPUs.
+    MR3 19 Oct 09:09: c2's 144 static entries gone from st1, its GPU port MACs changed to 00:1f:0e:..; the scan had said
+    'GPU port not found' 144 times."""
+    by_tray: dict = {}
+    for ln in links:
+        if ln.tray:
+            by_tray.setdefault(ln.tray, []).append(ln)
+    matched = {t for t, ls in by_tray.items() if any(x.matched_by == "mac" for x in ls)}
+    out = []
+    for t, ls in by_tray.items():
+        tr = trays.get(t) or {}
+        if t in matched or tr.get("error") or not tr.get("gpus") or not matched:
+            continue
+        out.append(t)
+        for ln in ls:
+            if ln.kind in ("gpu_missing", ""):
+                ln.state = "down" if str(ln.sw_oper or "").lower() != "up" else "degraded"
+                ln.kind, ln.owner = "tray_not_programmed", OPERATOR
+                ln.cause = (f"the switch has no forwarding entry for any GPU port of {t} (other trays have theirs): AFM is not "
+                            f"programming {t} - its GPUs in no vPOD, or a reconfigure / reset not finished")
+                ln.action = (f"Check {t} in AFM (vPOD membership, admission, a pending reconfigure) and reconfigure the tray from "
+                             "AFM if its GPUs should be in use; then check again.")
+    return out
+
+
 def afm_pairs(trays: dict, slots: dict, afm_nodes: list[dict], inv_afm_names: dict) -> tuple[dict, dict]:
     """Pair tray GPUs with AFM GPUs. Trays -> ComputeNodes by inventory afm_name, else slot (learned from the switch
     port descriptions, = AFM spec.slot-id). GPUs within a pair by accelerator id = AFM acc-id; one GPU left over on
@@ -607,6 +635,7 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
             ln.action = ("Scan again in a minute; or set slot: for every compute tray in the inventory, so ports are matched "
                          "by their description even without forwarding entries.")
     learned["fdb_empty_switches"] = sorted(fdb_empty)
+    mark_unprogrammed_trays(links, tr_res)
     afm_view, pairs = {"checked": False, "reason": "not asked for"}, None
     if afm_cfg is not None:
         from .afm import Afm, AfmUnavailable

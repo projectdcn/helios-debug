@@ -87,3 +87,12 @@ def test_afm_view_skipped_without_url_or_password(monkeypatch):
     monkeypatch.delenv("HELIOS_AFM_PASSWORD", raising=False)
     with pytest.raises(afm_mod.AfmUnavailable, match="export HELIOS_AFM_PASSWORD"):
         afm_mod.Afm({"url": "https://afm.example"})
+
+
+def test_tray_not_programmed_named():
+    from heliosdbg.linkdiag import mark_unprogrammed_trays
+    a = Link("st1", "asic0", "Ethernet1", tray="c1", bdf="0001:01:00.1", gpu_port=1, matched_by="mac")
+    b = Link("st1", "asic0", "Ethernet46", tray="c2", sw_oper="up", matched_by="", kind="gpu_missing", state="degraded")
+    trays = {"c1": {"gpus": [{}]}, "c2": {"gpus": [{}], "error": None}}
+    assert mark_unprogrammed_trays([a, b], trays) == ["c2"]
+    assert b.kind == "tray_not_programmed" and "AFM is not programming c2" in b.cause and a.kind == ""

@@ -36,7 +36,7 @@ def collect(sw, tray, slot: int | None, ln, switches_in_rack: int = 1) -> list[d
             m = re.search(rf"^\s*\d+\s+(\d+)\s+\S*sb-node-agent\s+-slot-id\s+{slot}\b.*?(?:-controllers\s+(\S+))?$", ps, re.M)
             add(f"node agent of slot {slot}", True if m else (False if switches_in_rack == 1 else None),
                 (f"on {ln.switch}, up {int(m.group(1)) // 60} min" + (f", controllers {m.group(2)}" if m.group(2) else ""))
-                if m else (f"not running on {ln.switch}, the rack's only switch tray (MR2 19 Oct: switch-agent only) - "
+                if m else (f"not running on {ln.switch}, the rack's only switch tray - "
                            "the tray's GPUs have no node agent" if switches_in_rack == 1 else
                            f"not on {ln.switch} (it may run on another switch tray of the rack)"))
     except Exception as e:  # noqa: BLE001

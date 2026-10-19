@@ -60,6 +60,7 @@ class State:
         self.inventory_dir, self.results_dir = inventory_dir, results_dir
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
+        self.access_checks: dict[str, dict] = {}     # inventory file -> {time, results} of its last access check
         self.current: str | None = None
 
     def inventories(self) -> list[dict]:
@@ -278,7 +279,13 @@ def overview(state: State) -> list[dict]:
             try:
                 d = json.loads(runs[0].read_text())
                 c = {k: sum(1 for x in d.get("links") or [] if x.get("state") == k) for k in ("ok", "degraded", "down")}
+                sc = d.get("scope") or {}
+                part = ", ".join(x for x in (sc.get("switches"), sc.get("trays")) if x)
+                if not sc and len(d.get("links") or []) and not part:   # older scans: no scope recorded
+                    trays = {x.get("tray") for x in d.get("links") or [] if x.get("tray")}
+                    part = ", ".join(sorted(trays)) if trays and len(trays) < len(i["computes"]) else ""
                 row |= {"latest": f"link-check/{i['rack']}/{runs[0].parent.name}", "time_utc": d.get("time_utc"), **c,
+                        "only": part,
                         "links": len(d.get("links") or []), "gpus_not_right": len(d.get("gpus") or [])}
             except (OSError, ValueError) as e:
                 row["error"] = f"latest scan unreadable: {e}"
@@ -293,6 +300,7 @@ def scan_view(state: State, rel: str) -> dict:
     links = [{k: ln.get(k) for k in LINK_KEYS} | {"evidence": (ln.get("evidence") or [])[:8]} for ln in d.get("links") or []]
     return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
+            "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
             "slots": (d.get("learned") or {}).get("slots") or {}}
 
 
@@ -483,8 +491,15 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json(404, {"error": "no such job"})
                     return self._json(200, public(job, int((q.get("since") or ["0"])[0] or 0)))
             if u.path == "/api/access":
-                _f, inv = st.inventory((q.get("inventory") or [""])[0])
-                return self._json(200, access.describe(inv))
+                name = (q.get("inventory") or [""])[0]
+                _f, inv = st.inventory(name)
+                return self._json(200, access.describe(inv) | {"last_check": st.access_checks.get(name)})
+            if u.path == "/guide":
+                g = ROOT / "docs" / "link-debug-guide.html"
+                if not g.is_file():
+                    return self._json(404, {"error": "the debug guide is not installed"})
+                return self._send(200, g.read_bytes(), "text/html; charset=utf-8",
+                                  {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'"})
             if u.path == "/api/bundle":
                 from heliosdbg import bundle
                 rel = (q.get("path") or [""])[0]
@@ -540,7 +555,10 @@ class Handler(BaseHTTPRequestHandler):
                 _f, inv = self.state.inventory(req.get("inventory", ""))
                 if u.path.endswith("check"):
                     names = req.get("hosts") or None
-                    return self._json(200, {"results": access.check(inv, names if isinstance(names, list) else None)})
+                    res = access.check(inv, names if isinstance(names, list) else None)
+                    if not names:
+                        self.state.access_checks[req.get("inventory", "")] = {"time": time.time(), "results": res}
+                    return self._json(200, {"results": res})
                 pw = req.pop("password", None)
                 return self._json(200, access.install(inv, str(req.get("host", "")), str(pw or "")))
             if u.path == "/api/discover":

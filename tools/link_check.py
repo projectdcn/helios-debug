@@ -743,7 +743,9 @@ def scan_cmd(a) -> int:
         "time_utc": stamp, "rack": inv.rack, "interval_s": res["interval_s"], "learned": res["learned"],
         "optics_reported": res["optics_reported"], "gpus": res.get("gpus") or [], "links": [linkdiag.link_dict(x) for x in links], "compare": res.get("compare"), "patterns": res.get("suspects"),
         "root_causes": [{k: v for k, v in g.items() if k != "links"} | {"links": [f"{x.switch} {x.sw_port}" for x in g["links"]]}
-                        for g in groups]}, indent=1, default=str))
+                        for g in groups],
+        "not_checked": [{"node": n, "role": r, "error": e, "hint": h} for n, r, e, h in _not_checked(res)],
+        "scope": {"switches": getattr(a, "switches", None), "trays": getattr(a, "trays", None)}}, indent=1, default=str))
     write_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), res, groups,
                cmdlog, a.log_keep)
     return 2 if (sw_missing or not links) else 1 if groups else 0

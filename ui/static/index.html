@@ -42,39 +42,74 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 .cell.ok{background:var(--ok);opacity:.55}.cell.degraded{background:var(--deg)}.cell.down{background:var(--down)}
 .cell.hit{outline:2px solid var(--acc);outline-offset:1px;opacity:1}.cell.chg{box-shadow:0 0 0 2px var(--fg)}.cell.dim{opacity:.15}
 .legend span{display:inline-flex;align-items:center;gap:4px;margin-right:12px}.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+details.help{background:var(--code);border-radius:6px;padding:6px 10px;margin:0 0 10px;font-size:13px}details.help summary{cursor:pointer;color:var(--acc);font-weight:600}
+details.help dl{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin:8px 0 2px}details.help dt{color:var(--mut)}details.help dd{margin:0}
+.steps{list-style:none;padding:0;margin:8px 0;counter-reset:s}.steps li{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--rule)}
+.steps li:last-child{border-bottom:0}.steps .n{flex:none;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;background:var(--code)}
+.steps li.done .n{background:var(--okbg);color:var(--ok)}.steps li.todo .n{background:var(--degbg);color:var(--deg)}.steps li .body{flex:1}.steps li b{display:block}
+.verdict{border-left:6px solid var(--rule);background:var(--card);border-radius:8px;padding:10px 14px;margin:10px 0}
+.verdict.ok{border-color:var(--ok)}.verdict.degraded{border-color:var(--deg)}.verdict.down{border-color:var(--down)}
+.verdict h3{margin:0 0 4px;font-size:1rem}.verdict ol{margin:6px 0 0 18px;padding:0}.verdict .who{font-size:13px;color:var(--mut);margin-top:6px}
+.finding{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--rule)}.finding:last-child{border-bottom:0}
+.finding .cnt{flex:none;min-width:44px;text-align:center;font-weight:700;border-radius:6px;padding:2px 6px}
+.finding.down .cnt{background:var(--downbg);color:var(--down)}.finding.degraded .cnt{background:var(--degbg);color:var(--deg)}.finding .body{flex:1}
+.mode{display:inline-flex;border:1px solid var(--rule);border-radius:6px;overflow:hidden}.mode button{border:0;background:var(--card);color:var(--fg);padding:5px 10px;cursor:pointer;font:inherit}
+.mode button[aria-pressed=true]{background:var(--acc);color:#fff}
+.hdr-right{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+dialog{border:1px solid var(--rule);border-radius:10px;background:var(--card);color:var(--fg);max-width:720px;width:calc(100% - 32px)}
+dialog dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}dialog dt{font-weight:700}dialog dd{margin:0}
+.pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 12px;margin:6px 0 10px}
+.progress{font-size:13px;color:var(--mut);margin-left:6px}
+nav button.exp{border-style:dashed}
 </style>
 </head>
 <body>
 <header>
-  <div><h1>Helios link debug</h1><div class="mut" id="where">read-only link checks of the scale-up fabric</div></div>
-  <div style="min-width:240px"><label for="inv">Rack inventory</label><select id="inv"></select></div>
+  <div><h1>Helios link debug</h1><div class="mut" id="where">checks of the links between the GPUs and the switch trays</div></div>
+  <div class="hdr-right">
+    <div style="min-width:240px"><label for="inv">Rack</label><select id="inv"></select></div>
+    <div><label>Mode</label><div class="mode" role="group" aria-label="Mode"><button id="m-simple" aria-pressed="true" title="The main tasks only">Simple</button><button id="m-expert" aria-pressed="false" title="Every tool, including the disruptive one">Expert</button></div></div>
+    <div class="row" style="margin:0"><button class="sec" id="glossary-open">Glossary</button><a class="sec" style="text-decoration:none;padding:6px 12px;border:1px solid var(--rule);border-radius:6px" href="/guide" target="_blank" rel="noopener">Debug guide</a></div>
+  </div>
 </header>
 <main>
   <div id="inverr" class="card err hide"></div>
   <nav role="tablist">
-    <button role="tab" data-t="overview">Overview</button>
+    <button role="tab" data-t="home" aria-selected="true">Start here</button>
+    <button role="tab" data-t="scan">Check all links</button>
     <button role="tab" data-t="map">Rack map</button>
     <button role="tab" data-t="link">Diagnose a link</button>
-    <button role="tab" data-t="watch">Watch links</button>
-    <button role="tab" data-t="cabling">Cabling plan</button>
-    <button role="tab" data-t="scan" aria-selected="true">Scan</button>
-    <button role="tab" data-t="bcm">Broadcom shell</button>
-    <button role="tab" data-t="path">GPU path</button>
-    <button role="tab" data-t="pingmap">Ping map</button>
-    <button role="tab" data-t="isolate" style="color:var(--down)">Isolate (disruptive)</button>
-    <button role="tab" data-t="history">History</button>
-    <button role="tab" data-t="access">SSH access</button>
+    <button role="tab" data-t="history">Earlier results</button>
+    <button role="tab" data-t="access">Access to the rack</button>
     <button role="tab" data-t="newrack">Add a rack</button>
+    <button role="tab" data-t="overview" class="exp" data-x>All racks</button>
+    <button role="tab" data-t="watch" class="exp" data-x>Watch links</button>
+    <button role="tab" data-t="cabling" class="exp" data-x>Cabling plan</button>
+    <button role="tab" data-t="bcm" class="exp" data-x>Switch signal</button>
+    <button role="tab" data-t="path" class="exp" data-x>GPU-to-GPU path</button>
+    <button role="tab" data-t="pingmap" class="exp" data-x>Ping map</button>
+    <button role="tab" data-t="isolate" class="exp" data-x style="color:var(--down)">Isolate (disruptive)</button>
   </nav>
+
+  <section class="card" data-p="home">
+    <h2>Start here</h2>
+    <p class="mut">This tool checks every link between the GPUs (in the compute trays) and the switch trays of a rack, tells you
+      which links are not working and why, and what to do about it. It only reads - nothing on the rack is changed - except the
+      one tool marked "disruptive" (Expert mode).</p>
+    <ol class="steps" id="home-steps"></ol>
+    <div id="home-sum"></div>
+  </section>
 
   <section class="card hide" data-p="overview">
     <h2>All racks</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Every rack this machine knows, with its latest check.</dd><dt>When</dt><dd>To see which rack needs attention.</dd><dt>How long</dt><dd>Instant (reads saved results).</dd><dt>Safe?</dt><dd>Yes - only reads saved results.</dd></dl></details>
     <p class="mut">Every inventory on this machine with its latest scan. Click a rack to open its map.</p>
     <div class="wrap"><table><thead><tr><th>Rack</th><th>Trays</th><th>Latest scan (UTC)</th><th>Links</th><th>ok</th><th>degraded</th><th>down</th><th>GPU state</th></tr></thead><tbody id="ov"></tbody></table></div>
   </section>
 
   <section class="card hide" data-p="map">
     <h2>Rack map</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>A picture of every link of a check: one small square per link, green fine, amber degraded, red down. Click a square for what is wrong and what to do.</dd><dt>When</dt><dd>After a check, to see where the problems are and whether they share something (one GPU, one switch chip).</dd><dt>How long</dt><dd>Instant.</dd><dt>Safe?</dt><dd>Yes.</dd></dl></details>
     <p class="mut">Every GPU link of a scan, by compute tray (GPU x port) or by switch ASIC. Click a link for its cause and to diagnose it now.</p>
     <div class="grid">
       <div><label for="map-scan">Scan</label><select id="map-scan"></select></div>
@@ -90,8 +125,17 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="link">
     <h2>Diagnose one link</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Everything about ONE link: both ends, the switch chip's signal, what is around it, and a 24-hour timeline of what happened to it.</dd><dt>When</dt><dd>When one link is reported bad, or someone asks about a specific port.</dd><dt>How long</dt><dd>About 30-60 seconds.</dd><dt>Safe?</dt><dd>Yes - it only reads.</dd></dl></details>
     <p class="mut">Paste whatever you have for the link; only its switch tray and its compute tray are read. Read-only.</p>
     <div class="grid">
+      <div style="grid-column:1/-1"><label>Pick the link (from the latest check of this rack) - or type it below</label>
+        <div class="pick">
+          <div><label for="pk-sw">Switch tray</label><select id="pk-sw"></select></div>
+          <div><label for="pk-port">Switch port</label><select id="pk-port"></select></div>
+          <div><label for="pk-ct">or compute tray</label><select id="pk-ct"></select></div>
+          <div><label for="pk-gpu">GPU</label><select id="pk-gpu"></select></div>
+          <div><label for="pk-gp">GPU port</label><select id="pk-gp"></select></div>
+        </div></div>
       <div style="grid-column:1/-1"><label for="link-target">Link</label><input id="link-target" placeholder="st6 Ethernet257 | ct13 0002:01:00.1 33 | ct13 gpu1 port33 | slot17/gpu3/port33 | acc-id: 5, port-id: 32"></div>
       <div><label for="link-interval">Counter sample (s)</label><input id="link-interval" type="number" min="0" max="120" value="10"></div>
       <div class="checks" style="align-items:end"><label><input type="checkbox" id="link-bcm" checked>Broadcom lanes</label></div>
@@ -105,6 +149,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="watch">
     <h2>Watch links</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Reads chosen links again and again and records every change.</dd><dt>When</dt><dd>For links that go up and down now and then.</dd><dt>How long</dt><dd>As long as you choose (default 10 min).</dd><dt>Safe?</dt><dd>Yes - it only reads.</dd></dl></details>
     <p class="mut">For links that come and go: both ends are read again every few seconds and every change is recorded (link
       up / down, admin, IFCP, error and FEC counters). Read-only.</p>
     <div class="grid">
@@ -117,6 +162,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="cabling">
     <h2>Cabling plan check</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Compares how the rack SHOULD be cabled (a list from the site) with what the check found.</dd><dt>When</dt><dd>After re-cabling, or when links reach the wrong GPU.</dd><dt>How long</dt><dd>Instant (uses the latest check).</dd><dt>Safe?</dt><dd>Yes - nothing is logged into.</dd></dl></details>
     <p class="mut">The expected cabling against what the latest scan of this rack found (no login): ports missing, wrong
       descriptions, links that reach a different GPU port than planned (with the move to make), links not in the plan.</p>
     <p><a id="cab-export" href="#">Download the current cabling as a plan CSV</a> <span class="mut">(a starting point to correct against the site's records)</span></p>
@@ -127,6 +173,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="scan">
     <h2>Link scan</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Checks every link of the rack and names one root cause per problem.</dd><dt>When</dt><dd>First thing on a rack, and after any change.</dd><dt>How long</dt><dd>1-3 minutes on a mini rack, longer on a full rack.</dd><dt>Safe?</dt><dd>Yes - it only reads.</dd></dl></details>
     <p class="mut">Every GPU link (switch port to GPU port), one root cause per problem link, GPU state. Read-only.</p>
     <div class="grid">
       <div><label>Switch trays (none = all)</label><div class="checks" id="scan-sw"></div></div>
@@ -144,6 +191,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="bcm">
     <h2>Broadcom shell view</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Reads, from the switch chip itself, whether light / signal arrives on each lane of a port and how good it is.</dd><dt>When</dt><dd>When a link has no physical link and you need to know which side is at fault.</dd><dt>How long</dt><dd>About 20 seconds.</dd><dt>Safe?</dt><dd>Yes - read-only lookups.</dd></dl></details>
     <p class="mut">Lane-by-lane signal, receiver lock, link training and signal quality from the switch ASIC (bcmcmd lookups, read-only).</p>
     <div class="grid">
       <div><label>Switch trays (none = all)</label><div class="checks" id="bcm-sw"></div></div>
@@ -155,6 +203,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="path">
     <h2>One GPU-to-GPU path</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Checks one GPU-to-GPU path port by port and sends a few test packets (L2 ping) over it.</dd><dt>When</dt><dd>When links look fine but traffic does not get through.</dd><dt>How long</dt><dd>About 30 seconds.</dd><dt>Safe?</dt><dd>Sends a few test packets; changes nothing.</dd></dl></details>
     <p class="mut">Checks a path port by port: both forwarding entries, an L2 ping (afmctl ping) and the counters around it. The ping sends a few packets on the scale-up fabric.</p>
     <div class="grid">
       <div><label for="path-src">Source tray</label><select id="path-src"></select></div>
@@ -171,6 +220,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="pingmap">
     <h2>Repeated ping map</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Sends test packets around all GPUs several times and maps the failures to ports and switch chips.</dd><dt>When</dt><dd>For loss that comes and goes.</dd><dt>How long</dt><dd>Rounds x wait (default about 3 minutes).</dd><dt>Safe?</dt><dd>Sends test packets; changes nothing.</dd></dl></details>
     <p class="mut">A ring of L2 pings, repeated; failures mapped to GPU port numbers and switch ASICs, sticky (every round) or moving.</p>
     <div class="grid">
       <div><label>Switch trays (none = all)</label><div class="checks" id="pm-sw"></div></div>
@@ -183,6 +233,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="isolate" style="border-color:var(--down)">
     <h2 style="color:var(--down)">Isolate one link - takes it DOWN</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Takes one end of one link DOWN for a few seconds and brings it back, to see which end a fault follows.</dd><dt>When</dt><dd>Only when asked to, with the people using the rack informed.</dd><dt>How long</dt><dd>About a minute.</dd><dt>Safe?</dt><dd>NO - it interrupts that link. Guarded: GPU links only, avoid-list honoured, always brought back.</dd></dl></details>
     <p>Takes ONE end of ONE GPU link down for a short hold and brings it back, to see which end a fault follows. Only
       ports described as cabled to a compute tray; never a port in the inventory's avoid list; the end is always brought
       back (also on Stop); afterwards every port of that switch ASIC that was up before must be up again. Traffic over
@@ -198,11 +249,13 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="history">
     <h2>Earlier runs</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Every earlier run on this machine, with its reports and an evidence bundle (zip) to attach to a ticket.</dd><dt>When</dt><dd>To find or share an earlier result.</dd><dt>How long</dt><dd>Instant.</dd><dt>Safe?</dt><dd>Yes.</dd></dl></details>
     <div class="wrap"><table><thead><tr><th>When (local)</th><th>Rack</th><th>Tool</th><th>Summary</th><th>Files</th></tr></thead><tbody id="hist"></tbody></table></div>
   </section>
 
   <section class="card hide" data-p="access">
     <h2>SSH access</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Checks that this machine can log in to every tray of the rack (needed for every check). Where it cannot, type that tray's password once and the key is installed.</dd><dt>When</dt><dd>Once per rack, before the first check - and when a check says 'login refused'.</dd><dt>How long</dt><dd>A few seconds per tray.</dd><dt>Safe?</dt><dd>Adds this machine's key to the tray (like ssh-copy-id); nothing else.</dd></dl></details>
     <p class="mut">The tools log in with an SSH key and need sudo without a password prompt. Check each node; where the key
       is missing, type that node's password once and install the key (like ssh-copy-id). The password is used for that one
       login and not kept.</p>
@@ -213,6 +266,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 
   <section class="card hide" data-p="newrack">
     <h2>Add a rack</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Builds the rack description (inventory) by reading the switch trays.</dd><dt>When</dt><dd>When a rack is not in the list at the top.</dd><dt>How long</dt><dd>About 10 seconds per switch tray.</dd><dt>Safe?</dt><dd>Yes - it only reads; you save the result.</dd></dl></details>
     <p class="mut">Give the rack's switch tray address(es): the UI logs in with this machine's SSH key, reads the switch port
       descriptions (which tray slots exist, how many GPU links) and - with the AFM password - AFM's compute nodes (their
       names and addresses), and drafts the inventory. Check it, fill in what it could not know, save. Then the SSH access tab.</p>
@@ -238,10 +292,29 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
   <section class="card" id="jobcard">
     <h2>Run <span id="jobbadge"></span></h2>
     <div id="jobinfo" class="mut">Nothing running.</div>
+    <div id="result"></div>
     <div class="row"><button class="sec hide" id="stop">Stop</button><span id="joblinks"></span></div>
-    <pre id="log" class="hide" aria-live="polite"></pre>
+    <details id="logbox" class="hide"><summary>Technical output</summary><pre id="log" aria-live="polite"></pre></details>
   </section>
 </main>
+<dialog id="glossary" aria-labelledby="gl-h">
+  <h2 id="gl-h" style="margin-top:0">Glossary</h2>
+  <dl>
+    <dt>Switch tray (st1, st6)</dt><dd>The network switch of the rack. Each has 2 switch chips (ASICs: asic0, asic1) with many ports (Ethernet1, Ethernet257, ...).</dd>
+    <dt>Compute tray (c1, ct13)</dt><dd>A server with 4 GPUs. Its position in the rack is its slot number.</dd>
+    <dt>GPU port</dt><dd>Each GPU has 36 network ports (0-35); each is cabled to one switch port. That pair is a link.</dd>
+    <dt>BDF (0002:01:00.1)</dt><dd>The address of a GPU inside its tray. A tray's 4 GPUs are 0001, 0002, 0003, 0004.</dd>
+    <dt>Plane</dt><dd>All links that use the same GPU port number form one plane. Losing a link reduces the planes a group of GPUs can use.</dd>
+    <dt>AFM</dt><dd>The fabric manager software: it programs the switches and GPUs. Its view (optional) needs its admin password.</dd>
+    <dt>vPOD</dt><dd>A group of GPUs that work together; AFM programs the links of the GPUs in it.</dd>
+    <dt>IFCP</dt><dd>The control protocol each GPU port runs with the switch once the cable is up. No IFCP session = the link carries no traffic.</dd>
+    <dt>FEC</dt><dd>Error correction on the link. Corrected errors are normal; uncorrected ones are a problem.</dd>
+    <dt>Broadcom view / lanes</dt><dd>Reading the switch chip directly: whether signal (light) arrives on each lane of a port, and its quality (SNR).</dd>
+    <dt>Node agent</dt><dd>The AFM software on the switch tray that manages one compute tray's GPUs.</dd>
+    <dt>degraded / down</dt><dd>Down: the link does not work. Degraded: it works but something is wrong (errors, not programmed, no IFCP...).</dd>
+  </dl>
+  <div class="row"><button class="go" id="glossary-close">Close</button></div>
+</dialog>
 <script>
 (function(){
 "use strict";
@@ -268,9 +341,12 @@ function fillInv(){
   if(!i.afm){$("scan-afm").checked=false;$("afm-pw-box").classList.add("hide")}
   $("link-afm").disabled=!i.afm;if(!i.afm){$("link-afm").checked=false;$("link-pw-box").classList.add("hide")}
   try{localStorage.setItem("hdbg-inv",i.file)}catch(e){}
+  try{history.replaceState(null,"",location.hash.replace(/inv=[^&]*/,"inv="+encodeURIComponent(i.file))||("#inv="+encodeURIComponent(i.file)))}catch(e){}
   loadHistory();
   if(!document.querySelector('section[data-p="access"]').classList.contains("hide"))loadAccess();
   if(!document.querySelector('section[data-p="map"]').classList.contains("hide"))loadMap();
+  if(!document.querySelector('section[data-p="home"]').classList.contains("hide"))renderHome();
+  if(!document.querySelector('section[data-p="link"]').classList.contains("hide"))loadPickers();
 }
 function tab(t){
   document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===t)});
@@ -278,6 +354,9 @@ function tab(t){
   if(t==="history")loadHistory();
   if(t==="map")loadMap();
   if(t==="overview")loadOverview();
+  if(t==="home")renderHome();
+  if(t==="link")loadPickers();
+  if(document.querySelector("section[data-p=\""+t+"\"]"))moveJobcard();
   try{history.replaceState(null,"","#tab="+t+"&inv="+encodeURIComponent($("inv").value||""))}catch(e){}
   if(t==="access")loadAccess();
   try{localStorage.setItem("hdbg-tab",t)}catch(e){}
@@ -299,9 +378,14 @@ function req(tool){
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;
 }
+var EST={scan:150,link:60,bcm:25,path:40,cabling:5,isolate:60};
+function estimate(tool){if(tool==="watch")return Math.round(+$("watch-dur").value*60);if(tool==="pingmap")return (+$("pm-rounds").value)*(+$("pm-wait").value+20);return EST[tool]||60}
+function moveJobcard(){var sec=document.querySelector("section[data-p]:not(.hide)");if(sec&&sec.nextElementSibling!==$("jobcard"))sec.insertAdjacentElement("afterend",$("jobcard"))}
 function run(tool){
-  api("/api/run",req(tool)).then(function(j){$("scan-afmpw").value="";$("link-afmpw").value="";show(j,true)}).catch(function(e){
-    $("jobinfo").innerHTML='<span class="err">'+esc(e.message)+'</span>'})
+  moveJobcard();$("result").innerHTML="";
+  var r=req(tool);
+  api("/api/run",r).then(function(j){$("scan-afmpw").value="";$("link-afmpw").value="";j._est=estimate(tool);show(j,true);$("jobcard").scrollIntoView({block:"nearest",behavior:"smooth"})}).catch(function(e){
+    $("jobinfo").innerHTML='<span class="err">'+friendly(e.message)+'</span>';$("jobbadge").innerHTML="";$("joblinks").innerHTML="";$("logbox").classList.add("hide");$("jobcard").scrollIntoView({block:"nearest"})})
 }
 function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<span class="badge '+c+'">'+esc(s)+'</span>'}
 function links(j){
@@ -315,18 +399,21 @@ function show(j,fresh){
   if(fresh){job=j;since=0;$("log").textContent=""}
   job=j;
   $("jobbadge").innerHTML=badge(j.status);
-  $("jobinfo").textContent=j.tool+" on "+j.rack+" ("+j.inventory+"), started "+new Date(j.started*1000).toLocaleTimeString()+
-    (j.ended?", ended "+new Date(j.ended*1000).toLocaleTimeString():"")+(j.rc!=null?", exit "+j.rc:"");
+  var el=Math.round(((j.ended||Date.now()/1000)-j.started)),mm=function(x){return Math.floor(x/60)+":"+("0"+(x%60)).slice(-2)};
+  if(fresh&&j._est)job._est=j._est;
+  $("jobinfo").innerHTML=esc(({scan:"Check all links",link:"Diagnose a link",watch:"Watch links",bcm:"Switch signal",path:"GPU-to-GPU path",pingmap:"Ping map",cabling:"Cabling plan",isolate:"Isolate"})[j.tool]||j.tool)+
+    " on "+esc(j.rack)+", started "+esc(new Date(j.started*1000).toLocaleTimeString())+
+    (j.status==="running"?'<span class="progress">running '+mm(el)+(job._est?" (usually about "+mm(job._est)+")":"")+"</span>":" - took "+mm(el));
   $("stop").classList.toggle("hide",j.status!=="running");
-  $("log").classList.remove("hide");
+  $("logbox").classList.remove("hide");if(j.status==="running"&&fresh)$("logbox").open=false;
   $("joblinks").innerHTML=links(j);
-  if(j.status==="running"){clearTimeout(timer);timer=setTimeout(poll,1000)}else{loadHistory()}
+  if(j.status==="running"){clearTimeout(timer);timer=setTimeout(poll,1000)}else{loadHistory();if(!job._shown){job._shown=true;renderResult(j);if(j.tool==="scan")renderHome()}}
 }
 function poll(){
-  if(!job)return;
+  if(!job)return;var keepEst=job._est,keepShown=job._shown;
   api("/api/job/"+job.id+"?since="+since).then(function(j){
     if(j.log){var pre=$("log"),end=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-20;pre.textContent+=j.log;if(end)pre.scrollTop=pre.scrollHeight}
-    since=j.log_len;show(j,false)}).catch(function(){clearTimeout(timer);timer=setTimeout(poll,3000)})
+    since=j.log_len;j._est=keepEst;j._shown=keepShown;show(j,false)}).catch(function(){clearTimeout(timer);timer=setTimeout(poll,3000)})
 }
 function loadHistory(){
   api("/api/results").then(function(r){
@@ -340,12 +427,155 @@ function loadHistory(){
     $("scan-cmp").innerHTML='<option value="">no</option>'+scans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+"</option>"}).join("");
   }).catch(function(){})
 }
+
+// ================================================================ help for a new user
+var OWNER={"operator":"the people running this rack (you)","site (cabling)":"the site / data-centre team (cables, optics, power)",
+  "GPU / AFM vendor":"AMD (GPU and AFM software)","switch vendor":"the switch vendor / HPE"};
+var KIND_HELP={
+  ok:{t:"Working",m:"The link is up on every layer checked."},
+  tray_unreachable:{t:"Compute tray could not be read",m:"This machine could not log in to the tray, so its links could not be checked.",s:["If the message says 'login refused': open Access to the rack and install the key with the tray's password.","Otherwise check the tray is powered on and on the network."]},
+  tray_quarantined:{t:"Compute tray is out of service",m:"The rack description marks this tray as quarantined - its links are expected to be down.",s:["Nothing to do until the tray is back; then remove the quarantine and check again."]},
+  tray_missing:{t:"No compute tray known for these switch ports",m:"Switch ports are cabled to a tray slot that is not in the rack description.",s:["Add the tray in Add a rack (or the inventory file), then check again."]},
+  sw_admin_down:{t:"Switch port is switched off",m:"Someone or something set the switch port administratively down.",s:["Diagnose the link: its timeline shows who switched it off and when.","Switch it on again (config interface startup) if nobody needs it off."]},
+  gpu_admin:{t:"GPU port is switched off",m:"The GPU port is administratively disabled on the compute tray.",s:["Enable it with the command shown in the details, then check again."]},
+  phys_never_up:{t:"No physical link - never came up",m:"Neither end sees the other since the tray started: typically a cable / optic not seated, damaged or missing.",s:["Ask the site to reseat or replace the cable / optic between the two ports.","If the fault stays with the port after swapping cables, that port (switch or GPU side) is faulty."]},
+  phys_went_down:{t:"No physical link - it went down",m:"The link worked and then dropped.",s:["Diagnose the link: the timeline shows when it dropped and whether someone switched it off.","If nothing was changed: ask the site to reseat / replace the cable."]},
+  phys_no_optic:{t:"No cable / optic detected in the switch port",m:"The switch does not see a cable or optic in this port (or this switch cannot tell).",s:["Diagnose the link - its switch-signal part shows whether light arrives anyway.","Ask the site to seat or replace the cable / optic."]},
+  one_sided:{t:"The two ends disagree",m:"One end says up and the other down: often a cable landed on a different port than its label says, or a half-broken cable.",s:["Ask the site to verify where the cable lands, then reseat it."]},
+  bit_errors:{t:"Errors on a working link",m:"The link is up but errors keep growing: a marginal cable, optic or connector.",s:["Ask the site to clean / reseat the connectors; replace the cable if errors continue.","Watch links shows whether it keeps happening."]},
+  ifcp:{t:"Cable is up but the link carries no traffic",m:"The GPU port's control session with the switch (IFCP) did not come up.",s:["Collect the details (evidence bundle) and raise it with AMD."]},
+  not_programmed:{t:"Link is up but not set up by AFM",m:"AFM has not programmed this port (the GPU may not be in a group of GPUs).",s:["Check in AFM that the GPU is in a vPOD; raise it with AMD if it is."]},
+  miscabled:{t:"Cable goes to a different switch port",m:"The GPU port reaches another switch port than the one labelled for it.",s:["Use Cabling plan to list the exact moves, then ask the site to re-cable."]},
+  tray_not_programmed:{t:"The switch is not set up for this compute tray",m:"The switch has no forwarding entries for any GPU port of this tray (the other trays have theirs): AFM is not programming it - its GPUs are in no GPU group, or a reconfigure / reset did not finish.",s:["Check the tray in AFM (is it in a vPOD, admitted, a reconfigure pending?).","Reconfigure the compute tray from AFM if its GPUs should be in use, then check again."]},
+  gpu_missing:{t:"GPU not found on the tray",m:"The tray does not list this GPU (or its numbering could not be learned).",s:["Check the GPU on the tray (afmctl show device); raise it with AMD."]},
+  gpu_not_active:{t:"GPU not set up on its tray",m:"The GPU is not configured: it is in no GPU group, or it was reset and not set up again.",s:["Turn on the AFM view (AFM password) to tell which.","If it should be in use: reconfigure the tray from AFM."]},
+  gpu_not_programmed:{t:"GPU not programmed although AFM uses it",m:"AFM has the GPU in a group, but the tray reports it not set up - e.g. after a GPU reset.",s:["Reconfigure the compute tray from AFM.","If a GPU reset keeps leaving it like this, raise it with AMD."]},
+  afm_port_failed:{t:"AFM reports the port failed while it works",m:"The link is up with traffic control, but AFM marks it failed.",s:["Compare with AFM's events for the port; raise it with AMD if the link stays up."]},
+  afm_port_stale:{t:"AFM still reports a dead link as fine",m:"AFM's view lags behind the real link state.",s:["Raise it with AMD with the evidence bundle."]},
+  fdb_empty:{t:"Switch had no forwarding table when read",m:"AFM was probably reprogramming the switch at that moment.",s:["Check again in a minute."]}
+};
+function kindHelp(k){return KIND_HELP[k]||{t:k||"Problem",m:"",s:[]}}
+function who(owner){return OWNER[owner]||owner||""}
+function friendly(msg){
+  var m=String(msg||""),R=[
+   [/authenticat|permission denied|login refused/i,"Could not log in - this machine's SSH key is not installed there. Open Access to the rack, check, and install the key with that tray's password."],
+   [/unable to connect|no route|timed out|timeout|unreachable|refused|novalidconnections/i,"Could not reach it over the network - check it is powered on and reachable from this machine."],
+   [/sudo/i,"Logged in, but sudo asks for a password there - the user needs sudo without a password."],
+   [/already running/i,"Another run is still going - wait for it or press Stop."],
+   [/password not set|no afm\.url/i,"The AFM view needs the AFM admin password (tick AFM view and type it)."],
+   [/no scan|run a scan first|run one first/i,"This needs a check of the rack first - open Check all links."],
+   [/type the link/i,"To take a link down you must type the link again exactly, to confirm."]];
+  for(var i=0;i<R.length;i++)if(R[i][0].test(m))return R[i][1]+' <span class="mut">('+esc(m.slice(0,160))+")</span>";
+  return esc(m);
+}
+function stampLocal(st){var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(st||"");if(!m)return st||"";
+  return new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])).toLocaleString()}
+function trayName(t,slots){return t?(t+(slots&&slots[t]!=null?" (slot "+slots[t]+")":"")):"?"}
+function verdictHtml(state,kind,detail,owner,extraSteps){
+  var h=kindHelp(state==="ok"?"ok":kind),steps=(h.s||[]).concat(extraSteps||[]);
+  return '<div class="verdict '+esc(state)+'"><h3>'+esc(h.t)+" "+badge(state)+"</h3>"+(h.m?"<div>"+esc(h.m)+"</div>":"")+
+    (steps.length?"<b>What to do</b><ol>"+steps.map(function(x){return "<li>"+esc(x)+"</li>"}).join("")+"</ol>":"")+
+    (owner&&state!=="ok"?'<div class="who">Who fixes it: '+esc(who(owner))+"</div>":"")+
+    (detail?'<details><summary class="mut">Technical detail</summary><div class="mut">'+esc(detail)+"</div></details>":"")+"</div>";
+}
+function findingsHtml(d){
+  var n={ok:0,degraded:0,down:0};(d.links||[]).forEach(function(l){n[l.state]=(n[l.state]||0)+1});
+  var tot=(d.links||[]).length,h="";
+  h+='<p><b>'+tot+' links checked</b> on '+esc(stampLocal(d.time_utc))+': <span style="color:var(--ok)">'+n.ok+' working</span>, <span style="color:var(--deg)">'+(n.degraded||0)+' degraded</span>, <span style="color:var(--down)">'+(n.down||0)+" down</span>.</p>";
+  (d.not_checked||[]).forEach(function(x){h+='<div class="finding down"><span class="cnt">!</span><div class="body"><b>'+esc(x.role+" "+x.node)+" could not be read</b><div>"+friendly(x.error)+"</div></div></div>"});
+  if(tot&&!n.degraded&&!n.down&&!(d.not_checked||[]).length)h+='<div class="verdict ok"><h3>All links are working</h3></div>';
+  (d.root_causes||[]).slice(0,10).forEach(function(g){
+    var k=kindHelp(g.kind),first=(g.links||[])[0]||"";
+    h+='<div class="finding '+esc(g.state)+'"><span class="cnt">'+g.count+'</span><div class="body"><b>'+esc(k.t)+"</b>"+
+      (k.m?'<div class="mut">'+esc(k.m)+"</div>":"")+(k.s&&k.s.length?"<div>Next: "+esc(k.s[0])+"</div>":"")+
+      '<div class="who">Who: '+esc(who(g.owner))+" · e.g. "+esc((g.links||[]).slice(0,4).join(", "))+(g.count>4?" ...":"")+"</div>"+
+      '<div class="row" style="margin-top:6px"><button class="sec" data-mapq="'+esc(first)+'">Show on the map</button>'+(first?'<button class="sec" data-diag="'+esc(first)+'">Diagnose '+esc(first)+"</button>":"")+"</div></div></div>";
+  });
+  (d.gpus||[]).forEach(function(g){var k=kindHelp(g.kind);h+='<div class="finding '+esc(g.state)+'"><span class="cnt">GPU</span><div class="body"><b>'+esc(k.t)+": "+esc(g.tray+" "+g.bdf)+'</b><div class="mut">'+esc(k.m)+"</div></div></div>"});
+  return h;
+}
+function wireFindingButtons(root){
+  root.querySelectorAll("button[data-diag]").forEach(function(b){b.addEventListener("click",function(){$("link-target").value=b.dataset.diag;tab("link");run("link")})});
+  root.querySelectorAll("button[data-mapq]").forEach(function(b){b.addEventListener("click",function(){tab("map");setTimeout(function(){$("map-q").value=(b.dataset.mapq||"").split(" ").pop();drawMap()},600)})});
+}
+// ---------------------------------------------------------------- Start here
+function renderHome(){
+  var i=inv(),st=$("home-steps"),sum=$("home-sum");if(!st)return;
+  if(!invs.length||!i){st.innerHTML='<li class="todo"><span class="n">1</span><div class="body"><b>Describe your rack</b>No rack is known on this machine yet. Give the address of the rack\'s switch tray and the tool reads the rest.<div class="row"><button class="go" data-goto="newrack">Add a rack</button></div></div></li>';sum.innerHTML="";wireGoto(st);return}
+  var s1='<li class="done"><span class="n">&#10003;</span><div class="body"><b>Rack: '+esc(i.rack)+"</b>"+i.switches.length+" switch tray(s), "+i.computes.length+' compute tray(s). <a href="#" data-goto="newrack">Add another rack</a></div></li>';
+  st.innerHTML=s1+'<li><span class="n">2</span><div class="body"><b>Access</b>checking ...</div></li><li><span class="n">3</span><div class="body"><b>Check all links</b>...</div></li>';
+  sum.innerHTML="";
+  Promise.all([api("/api/access?inventory="+encodeURIComponent(i.file)).catch(function(){return null}),api("/api/overview").catch(function(){return {racks:[]}})]).then(function(r){
+    var acc=r[0],ov=(r[1].racks||[]).filter(function(x){return x.file===i.file})[0]||{},lc=acc&&acc.last_check,s2,s3;
+    if(!lc){s2='<li class="todo"><span class="n">2</span><div class="body"><b>Make sure this machine can reach the rack</b>Every check logs in to the switch and compute trays.<div class="row"><button class="go" id="home-acc">Check access now</button><span class="mut" id="home-acc-msg"></span></div></div></li>'}
+    else{var bad=lc.results.filter(function(x){return !(x.login==="local"||(x.login==="ok"&&x.sudo))});
+      s2=bad.length?'<li class="todo"><span class="n">2</span><div class="body"><b>'+bad.length+" of "+lc.results.length+" trays cannot be reached</b>"+bad.map(function(x){return esc(x.name)+": "+friendly(x.detail)}).join("<br>")+'<div class="row"><button class="go" data-goto="access">Fix access</button><button class="sec" id="home-acc">Check again</button></div></div></li>'
+        :'<li class="done"><span class="n">&#10003;</span><div class="body"><b>All '+lc.results.length+" trays reachable</b>checked "+esc(new Date(lc.time*1000).toLocaleTimeString())+' · <a href="#" id="home-acc">check again</a></div></li>'}
+    if(!ov.latest){s3='<li class="todo"><span class="n">3</span><div class="body"><b>Check all links</b>Reads every link of the rack and explains each problem (1-3 minutes on a mini rack).<div class="row"><button class="go" id="home-scan">Check all links now</button></div></div></li>'}
+    else{s3='<li class="done"><span class="n">&#10003;</span><div class="body"><b>Last check: '+esc(stampLocal(ov.time_utc))+(ov.only?" (only "+esc(ov.only)+")":"")+"</b>"+ov.links+" links: "+ov.ok+" working, "+(ov.degraded||0)+" degraded, "+(ov.down||0)+' down<div class="row"><button class="go" id="home-scan">Check again</button><button class="sec" data-goto="map">Open the rack map</button></div></div></li>'}
+    st.innerHTML=s1+s2+s3;wireGoto(st);
+    var ha=$("home-acc");if(ha)ha.addEventListener("click",function(e){e.preventDefault();$("home-acc").textContent="checking ...";api("/api/access/check",{inventory:i.file}).then(renderHome).catch(function(x){var m=$("home-acc-msg");if(m)m.innerHTML=friendly(x.message)})});
+    var hs=$("home-scan");if(hs)hs.addEventListener("click",function(){run("scan")});
+    if(ov.latest)api("/api/scan?path="+encodeURIComponent(ov.latest)).then(function(d){sum.innerHTML="<h2>What the last check found</h2>"+findingsHtml(d);wireFindingButtons(sum)});
+  });
+}
+function wireGoto(root){root.querySelectorAll("[data-goto]").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();tab(b.dataset.goto)})})}
+// ---------------------------------------------------------------- mode
+var expert=false;try{expert=localStorage.getItem("hdbg-mode")==="expert"}catch(e){}
+function setMode(x){expert=x;try{localStorage.setItem("hdbg-mode",x?"expert":"simple")}catch(e){}
+  $("m-simple").setAttribute("aria-pressed",!x);$("m-expert").setAttribute("aria-pressed",x);
+  document.querySelectorAll("nav button[data-x]").forEach(function(b){b.classList.toggle("hide",!x)});
+  var cur=document.querySelector("nav button[aria-selected=true]");if(cur&&cur.hasAttribute("data-x")&&!x)tab("home");}
+$("m-simple").addEventListener("click",function(){setMode(false)});
+$("m-expert").addEventListener("click",function(){setMode(true)});
+$("glossary-open").addEventListener("click",function(){$("glossary").showModal()});
+$("glossary-close").addEventListener("click",function(){$("glossary").close()});
+// ---------------------------------------------------------------- link pickers
+var pickScan=null;
+function loadPickers(){
+  var i=inv();if(!i)return;
+  api("/api/overview").then(function(r){var ov=(r.racks||[]).filter(function(x){return x.file===i.file})[0];if(!ov||!ov.latest){pickScan=null;fillPick();return}
+    return api("/api/scan?path="+encodeURIComponent(ov.latest)).then(function(d){pickScan=d;fillPick()})}).catch(function(){});
+}
+function opt(v,t){return '<option value="'+esc(v)+'">'+esc(t)+"</option>"}
+function fillPick(){
+  var d=pickScan,ls=d?d.links:[];
+  var sws=[...new Set(ls.map(function(l){return l.switch}))].sort(),cts=[...new Set(ls.map(function(l){return l.tray}).filter(Boolean))].sort();
+  $("pk-sw").innerHTML=opt("","-")+sws.map(function(x){return opt(x,x)}).join("");
+  $("pk-ct").innerHTML=opt("","-")+cts.map(function(x){return opt(x,trayName(x,d&&d.slots))}).join("");
+  $("pk-port").innerHTML=opt("",d?"pick a switch tray":"no check of this rack yet");$("pk-gpu").innerHTML=opt("","-");$("pk-gp").innerHTML=opt("","-");
+}
+function portLabel(l){return (l.state==="ok"?"":"["+l.state+"] ")}
+$("pk-sw").addEventListener("change",function(){var sw=this.value,ls=(pickScan?pickScan.links:[]).filter(function(l){return l.switch===sw})
+  .sort(function(a,b){return (+a.sw_port.replace(/\D/g,""))-(+b.sw_port.replace(/\D/g,""))});
+  $("pk-port").innerHTML=opt("","pick a port")+ls.map(function(l){return opt(l.sw_port,portLabel(l)+l.sw_port+" - "+trayName(l.tray,pickScan.slots)+" GPU "+(l.bdf||"?")+" port "+l.gpu_port)}).join("")});
+$("pk-port").addEventListener("change",function(){if(this.value)$("link-target").value=$("pk-sw").value+" "+this.value});
+$("pk-ct").addEventListener("change",function(){var ct=this.value,g=[...new Set((pickScan?pickScan.links:[]).filter(function(l){return l.tray===ct}).map(function(l){return l.bdf}).filter(Boolean))].sort();
+  $("pk-gpu").innerHTML=opt("","pick a GPU")+g.map(function(x,n){return opt(x,"GPU "+x)}).join("");$("pk-gp").innerHTML=opt("","-")});
+$("pk-gpu").addEventListener("change",function(){var ct=$("pk-ct").value,b=this.value,ls=(pickScan?pickScan.links:[]).filter(function(l){return l.tray===ct&&l.bdf===b}).sort(function(x,y){return x.gpu_port-y.gpu_port});
+  $("pk-gp").innerHTML=opt("","pick a port")+ls.map(function(l){return opt(l.gpu_port,portLabel(l)+"port "+l.gpu_port+" - "+l.switch+" "+l.sw_port)}).join("")});
+$("pk-gp").addEventListener("change",function(){if(this.value!=="")$("link-target").value=$("pk-ct").value+" "+$("pk-gpu").value+" "+this.value});
+// ---------------------------------------------------------------- results in plain words
+function renderResult(j){
+  var box=$("result");box.innerHTML="";if(!j||j.status==="running")return;
+  if(j.status==="stopped"){box.innerHTML='<div class="verdict"><h3>Stopped</h3>The run was stopped before it finished.</div>';return}
+  var base="/results/"+j.out+"/";
+  if(j.tool==="link"){fetch(base+"link.json").then(function(r){return r.ok?r.json():null}).then(function(d){if(!d){box.innerHTML='<div class="verdict down"><h3>The link could not be found</h3>'+esc(($("log").textContent.match(/no link matches[^\n]*/)||[""])[0])+"</div>";return}
+    var l=d.link,around=(d.around||[]).filter(function(c){return c.ok===false});
+    box.innerHTML='<p><b>'+esc(l.switch+" "+l.sw_port)+"</b> &harr; <b>"+esc(l.tray||"?")+" GPU "+esc(l.bdf||"?")+" port "+esc(l.gpu_port)+"</b></p>"+
+      verdictHtml(l.state,l.kind,l.cause,l.owner)+(around.length?'<div class="verdict degraded"><h3>Also around this link</h3><ul>'+around.map(function(c){return "<li>"+esc(c.check+": "+c.detail)+"</li>"}).join("")+"</ul></div>":"")+
+      '<p><a href="'+esc(base+"report.html")+'" target="_blank" rel="noopener">Open the full report</a> (both ends, switch signal, 24-hour timeline)</p>'})}
+  else if(j.tool==="scan"){api("/api/scan?path="+encodeURIComponent(j.out)).then(function(d){box.innerHTML=findingsHtml(d);wireFindingButtons(box)}).catch(function(){})}
+  else if(j.tool==="watch"){fetch(base+"watch.json").then(function(r){return r.ok?r.json():null}).then(function(w){if(!w)return;
+    box.innerHTML=Object.keys(w.per_link).map(function(k){var p=w.per_link[k],bad=p.link_changes||p.down||Object.keys(p.errors_grew).length;
+      return '<div class="verdict '+(bad?"down":"ok")+'"><h3>'+esc(k)+"</h3>Up in "+p.up+" of "+p.rounds+" reads, "+p.link_changes+" changes"+(Object.keys(p.errors_grew).length?", errors grew: "+esc(JSON.stringify(p.errors_grew)):"")+"</div>"}).join("")})}
+}
 var accState={};
 function accStatus(r){
   if(!r)return '<span class="mut">not checked</span>';
   if(r.login==="local")return '<span class="badge b-ok">this machine</span>';
   var c=r.login==="ok"&&r.sudo?"b-ok":r.login==="ok"?"b-run":"b-bad";
-  return '<span class="badge '+c+'">'+esc(r.login==="ok"?(r.sudo?"ok":"no sudo"):"no key login")+'</span> <span class="mut">'+esc(r.detail)+'</span>';
+  return '<span class="badge '+c+'">'+esc(r.login==="ok"?(r.sudo?"ok":"no sudo"):"no key login")+'</span> <span class="mut">'+(r.login==="ok"&&r.sudo?esc(r.detail):friendly(r.detail))+'</span>';
 }
 function drawAccess(d){
   $("acc-keygen").classList.toggle("hide",!d.can_create);
@@ -454,7 +684,7 @@ function drawMap(){
   if(view==="tray"){
     var by={};d.links.forEach(function(l){var t=l.tray||"(no tray)";(by[t]=by[t]||{});var g=l.bdf||"?";(by[t][g]=by[t][g]||[]).push(l)});
     Object.keys(by).sort().forEach(function(t){
-      html+='<div class="mblk"><h3>'+esc(t)+"</h3>";
+      html+='<div class="mblk"><h3>'+esc(trayName(t==="(no tray)"?"":t,d.slots)||t)+"</h3>";
       Object.keys(by[t]).sort().forEach(function(g){
         var ls=by[t][g].sort(function(a,b){return (a.gpu_port||0)-(b.gpu_port||0)});
         html+='<div class="mrow"><span class="lab">'+esc(g)+'</span><div class="cells">'+ls.map(cell).join("")+"</div></div>";
@@ -472,7 +702,7 @@ function drawMap(){
     var nw=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p==="ok"&&l.state!=="ok"}),
         rc=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p!=="ok"&&l.state==="ok"});
     $("map-banner").classList.toggle("hide",!(nw.length||rc.length));
-    $("map-banner").innerHTML="Since the scan of "+esc(mapPrev.time_utc||"")+" UTC: <b>"+nw.length+" new problem(s)</b>"+
+    $("map-banner").innerHTML="Since the check of "+esc(stampLocal(mapPrev.time_utc))+": <b>"+nw.length+" new problem(s)</b>"+
       (nw.length?" ("+nw.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(nw.length>6?", ...":"")+")":"")+", <b>"+rc.length+" recovered</b>"+
       (rc.length?" ("+rc.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(rc.length>6?", ...":"")+")":"")+".";
   }else{$("map-banner").classList.add("hide")}
@@ -489,7 +719,7 @@ function mapDetail(k){
   $("map-detail").classList.remove("hide");
   $("map-detail").innerHTML="<h2>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" \u2194 "+(l.tray||"?")+" "+(l.bdf||"")+" port "+l.gpu_port)+" "+badge(l.state)+"</h2>"+
     '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
-    (l.cause?"<p><b>Cause:</b> "+esc(l.cause)+"</p><p><b>Owner:</b> "+esc(l.owner||"")+"</p><p><b>Next step:</b> "+esc(l.action||"")+"</p>":"<p>OK on every layer the scan checked.</p>")+
+    verdictHtml(l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+
     (l.evidence&&l.evidence.length?"<details><summary>Evidence</summary>"+l.evidence.map(function(e){return "<div><code>"+esc(e)+"</code></div>"}).join("")+"</details>":"")+
     '<div class="row"><button class="go" id="map-diag">Diagnose now</button><button class="sec" id="map-watch">Watch it</button><button class="sec" id="map-copy">Copy link id</button><span class="mut">reads only '+esc(l.switch)+" and "+esc(l.tray||"its tray")+"</span></div>";
   $("map-diag").addEventListener("click",function(){$("link-target").value=tgt;tab("link");run("link")});
@@ -519,7 +749,7 @@ api("/api/state").then(function(s){
   if(keep&&invs.some(function(i){return i.file===keep}))$("inv").value=keep;
   fillInv();
   if(s.current){show(s.current,true);poll()}
-  var t=(location.hash.match(/tab=(\w+)/)||[])[1]||"";if(!t){try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}}tab(t||"overview");
+  var t=(location.hash.match(/tab=(\w+)/)||[])[1]||"";if(!t){try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}}setMode(expert);tab(t||"home");
 }).catch(function(e){$("inverr").classList.remove("hide");$("inverr").textContent="UI server not answering: "+e.message});
 })();
 </script>
