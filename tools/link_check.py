@@ -825,7 +825,12 @@ def link_cmd(a) -> int:
             hits = [ln for ln in res["links"] if t.matches(ln)]
             if hits and not a.no_bcm:
                 linkdiag.add_bcm(rack, hits[:1], res["switches"], limit=1, force={(hits[0].switch, hits[0].sw_port)})
-            tl = None
+            tl, ctx = None, []
+            if hits:
+                from heliosdbg import linkctx
+                cab = parse_port_description(hits[0].desc or "")
+                ctx = linkctx.collect(rack.switches[hits[0].switch], rack.computes.get(hits[0].tray or ""),
+                                      cab[0] if cab else None, hits[0])
             if hits and not a.no_timeline:
                 from heliosdbg import timeline
                 h0 = hits[0]
@@ -867,6 +872,7 @@ def link_cmd(a) -> int:
         "afm_view": res["learned"].get("afm_view"), "interval_s": res["interval_s"],
         "hand_commands": _hand_commands(ln),
         "timeline": tl,
+        "around": ctx,
     }
     (out / "link.json").write_text(json.dumps(detail, indent=1, default=str))
     lines = [f"{ln.state.upper()}  {ln.switch} {ln.asic} {ln.sw_port}  <->  {ln.tray} {ln.bdf} port {ln.gpu_port}",
@@ -874,6 +880,9 @@ def link_cmd(a) -> int:
     if ln.state != "ok":
         lines += [f"owner: {ln.owner}", f"next:  {ln.action}"]
     lines += ["", "evidence:"] + [f"  {e}" for e in ln.evidence]
+    if ctx:
+        lines += ["", "around the link:"] + [f"  {'ok ' if c['ok'] else '?? ' if c['ok'] is None else 'NO '} {c['check']}: {c['detail']}"
+                                              for c in ctx]
     if tl:
         from heliosdbg import timeline
         lines += ["", "timeline:"] + [f"  {x}" for x in timeline.summary(tl)] + \
@@ -913,6 +922,14 @@ def _lanes_table(v: dict | None, ref: dict | None) -> str:
             f"<div class='wrap'><table>{head}{rows}</table></div>" + ref_line)
 
 
+def _around_html(ctx: list | None) -> str:
+    if not ctx:
+        return ""
+    rows = "".join(f"<tr><td class='{'ok' if c['ok'] else 'unk' if c['ok'] is None else 'bad'}'>{'ok' if c['ok'] else '?' if c['ok'] is None else 'no'}</td>"
+                   f"<td>{esc(c['check'])}</td><td>{esc(c['detail'])}</td></tr>" for c in ctx)
+    return f"<h2>Around the link</h2><div class='card wrap'><table><tr><th></th><th>Check</th><th>Detail</th></tr>{rows}</table></div>"
+
+
 def _timeline_html(tl: dict | None) -> str:
     if not tl:
         return ""
@@ -947,7 +964,7 @@ h1{{font-size:1.35rem;margin:0}}h2{{font-size:1.05rem;margin:22px 0 8px}}.mut{{c
 .card{{background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:12px 16px}}
 .wrap{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--rule);vertical-align:top}}
 th{{color:var(--mut);font-weight:600}}table.kv th{{width:42%}}code{{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:1px 4px;border-radius:4px}}
-li.down b{{color:var(--down)}}tr.k-oper td,tr.k-admin td,tr.k-command td{{font-weight:600}}tr.k-error td{{color:var(--down)}}li.degraded b{{color:var(--deg)}}.err{{color:var(--down);font-weight:600}}
+li.down b{{color:var(--down)}}tr.k-oper td,tr.k-admin td,tr.k-command td{{font-weight:600}}td.ok{{color:var(--ok);font-weight:600}}td.bad{{color:var(--down);font-weight:600}}td.unk{{color:var(--deg);font-weight:600}}tr.k-error td{{color:var(--down)}}li.degraded b{{color:var(--deg)}}.err{{color:var(--down);font-weight:600}}
 details{{margin:4px 0}}pre{{background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:8px;overflow-x:auto;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace}}
 </style></head><body>
 <h1>{esc(ln.switch)} {esc(ln.asic)} {esc(ln.sw_port)} &harr; {esc(ln.tray)} {esc(ln.bdf)} port {esc(ln.gpu_port)}</h1>
@@ -971,6 +988,7 @@ details{{margin:4px 0}}pre{{background:var(--card);border:1px solid var(--rule);
 </div>
 <h2>Switch ASIC (Broadcom shell)</h2><div class='card'>{_lanes_table(ln.bcm, ln.bcm_ref)}</div>
 <h2>Evidence</h2><div class='card'><ul>{''.join(f'<li>{esc(e)}</li>' for e in ln.evidence) or '<li>none</li>'}</ul></div>
+{_around_html(d.get('around'))}
 {_timeline_html(d.get('timeline'))}
 <h2>Check it by hand</h2><div class='card wrap'><table><tr><th>On</th><th>Command</th></tr>{hand}</table></div>
 {("<h2>Command logs</h2>" + cmdlog.html(nodes, log_keep)) if cmdlog and cmdlog.entries else ''}
