@@ -39,6 +39,8 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 .map{display:flex;flex-direction:column;gap:12px;margin-top:8px}.mblk h3{font-size:.9rem;margin:0 0 4px}
 .mrow{display:flex;align-items:center;gap:6px;margin:2px 0}.mrow .lab{width:120px;flex:none;font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cells{display:flex;flex-wrap:wrap;gap:2px}
+svg.topo{width:100%;height:auto;display:block;font-family:inherit}svg.topo .clk{cursor:pointer}svg.topo .clk:hover{opacity:.8}
+svg.topo text{fill:var(--fg)}svg.topo text.m{fill:var(--mut)}svg.topo .box{fill:var(--card);stroke:var(--rule)}
 .cnts{display:inline-flex;flex-wrap:wrap;gap:4px;font-size:12px;font-weight:400;margin-left:8px;vertical-align:middle}
 .cnts span{padding:0 6px;border-radius:8px;background:var(--code);white-space:nowrap}.cnts .ok{color:var(--ok);background:var(--okbg)}
 .cnts .degraded{color:var(--deg);background:var(--degbg)}.cnts .down{color:var(--down);background:var(--downbg)}.cnts .unknown{color:var(--mut)}
@@ -156,7 +158,7 @@ nav button.exp{border-style:dashed}
     <div class="grid">
       <div><label for="map-scan">Scan</label><select id="map-scan"></select></div>
       <div><label for="map-prev">Mark what changed since</label><select id="map-prev"><option value="">-</option></select></div>
-      <div><label for="map-view">View</label><select id="map-view"><option value="tray">by compute tray</option><option value="switch">by switch ASIC</option></select></div>
+      <div><label for="map-view">View</label><select id="map-view"><option value="tray">by compute tray</option><option value="switch">by switch ASIC</option><option value="topo">topology (cabling picture)</option></select></div>
       <div><label for="map-q">Find (port, tray, BDF, cause)</label><input id="map-q" type="search" placeholder="Ethernet257, ct13, 0002:01:00.1, IFCP ..."></div>
     </div>
     <div id="live-bar" class="live-bar"></div>
@@ -908,7 +910,8 @@ function drawMap(){
       (c.down?'<span class="down">'+c.down+" down</span>":"")+(c.unknown?'<span class="unknown">'+c.unknown+" not known</span>":"")+"</span>"}
   function gpuLab(l){if(l.bdf)return l.bdf;var x=dsc(l);return x?"GPU"+x.gpu+" (described)":"?"}
   function gpuPort(l){if(l.bdf)return l.gpu_port||0;var x=dsc(l);return x?x.port:0}
-  if(view==="tray"){
+  if(view==="topo"){html=topoSvg(d);}
+  else if(view==="tray"){
     var by={};d.links.forEach(function(l){var t=l.tray||"(no tray)";(by[t]=by[t]||{});var g=gpuLab(l);(by[t][g]=by[t][g]||[]).push(l)});
     Object.keys(by).sort().forEach(function(t){
       var all=[];Object.keys(by[t]).forEach(function(g){all=all.concat(by[t][g])});
@@ -929,6 +932,7 @@ function drawMap(){
     if(lastSw!==null)html+="</div>";
   }
   $("map").innerHTML=html||'<p class="mut">No links in this scan.</p>';
+  if(view==="topo")wireTopoSvg();
   if(mapPrev){
     var nw=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p==="ok"&&l.state!=="ok"}),
         rc=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p!=="ok"&&l.state==="ok"});
@@ -1134,6 +1138,75 @@ $("topo-frame").addEventListener("load",function(){
       m=/^CT(\d+)$/.exec(t.textContent.trim());if(m){topoDrill({slot:+m[1]-1});return}}
     var tr=t.closest("#rows tr");if(tr&&tr.children.length>=5){topoDrill({port:tr.children[2].textContent.trim()+" "+tr.children[4].textContent.trim()})}});
 });
+
+// ---------------------------------------------------------------- topology picture drawn from the check (any rack)
+var topoSel=null;      /* selected GPU: "tray|gpu" */
+function worst(ls){var o={down:4,degraded:3,unknown:2,ok:1},w="ok";ls.forEach(function(l){var x=mEff(l);if((o[x]||0)>(o[w]||0))w=x});return w}
+function stColor(st){return st==="down"?"var(--down)":st==="degraded"?"var(--deg)":st==="unknown"?"var(--mut)":"var(--ok)"}
+function topoSvg(d){
+  var ls=d.links,sws={},trays={},pairs={};
+  ls.forEach(function(l){var a=l.switch+"|"+(l.asic||"");(sws[l.switch]=sws[l.switch]||{})[l.asic||""]=1;
+    var t=l.tray||"(no tray)";(trays[t]=trays[t]||{})[mGpu(l)]=1;var k=t+"#"+a;(pairs[k]=pairs[k]||[]).push(l)});
+  var swN=Object.keys(sws).sort(),trN=Object.keys(trays).sort(function(a,b){var sa=(d.slots||{})[a],sb=(d.slots||{})[b];return (sa==null?999:sa)-(sb==null?999:sb)||(a<b?-1:1)});
+  var SWW=Math.max(160,Object.keys(sws[swN[0]]||{}).length*82+12),SWG=14,TW=118,TG=10,perRow=Math.min(9,Math.max(1,trN.length)),rows=Math.ceil(trN.length/perRow);
+  var W=Math.max(swN.length*(SWW+SWG)+20,perRow*(TW+TG)+20),SY=20,ASY=126,TY0=230,TH=96,H=TY0+rows*(TH+28)+10;
+  var asicPos={},trayPos={},gpuPos={},o=[];
+  o.push('<svg class="topo" viewBox="0 0 '+W+" "+H+'" role="img" aria-label="Cabling picture of '+esc(d.rack)+'">');
+  o.push('<g id="tp-lines"></g>');
+  // switch trays + ASICs
+  swN.forEach(function(sw,i){var x=10+i*(SWW+SWG)+(W-20-swN.length*(SWW+SWG)+SWG)/2,asics=Object.keys(sws[sw]).sort(),all=ls.filter(function(l){return l.switch===sw}),c=mCount(all);
+    o.push('<rect class="box" x="'+x+'" y="'+SY+'" width="'+SWW+'" height="118" rx="8"/>');
+    o.push('<text class="clk" data-tsw="'+esc(sw)+'" x="'+(x+10)+'" y="'+(SY+18)+'" font-size="14" font-weight="600">'+esc(sw)+"</text>");
+    o.push('<text class="m" x="'+(x+SWW-10)+'" y="'+(SY+18)+'" font-size="11" text-anchor="end">'+all.length+" links"+(c.down?" · "+c.down+" down":"")+"</text>");
+    var aw=(SWW-12-(asics.length-1)*6)/Math.max(1,asics.length);
+    asics.forEach(function(a,j){var ax=x+6+j*(aw+6),al=all.filter(function(l){return (l.asic||"")===a}),ca=mCount(al),wst=worst(al);
+      asicPos[sw+"|"+a]={x:ax+aw/2,y:ASY};
+      o.push('<g class="clk" data-tas="'+esc(sw+"|"+a)+'"><rect x="'+ax+'" y="'+(SY+28)+'" width="'+aw+'" height="76" rx="6" fill="var(--code)" stroke="'+stColor(wst)+'" stroke-width="'+(wst==="ok"?1:2)+'"/>'+
+        '<text x="'+(ax+aw/2)+'" y="'+(SY+46)+'" font-size="12" text-anchor="middle">'+esc(a||"asic")+"</text>"+
+        '<text class="m" x="'+(ax+aw/2)+'" y="'+(SY+62)+'" font-size="10.5" text-anchor="middle">'+al.length+" links</text>"+
+        '<text x="'+(ax+aw/2)+'" y="'+(SY+78)+'" font-size="10.5" text-anchor="middle" fill="var(--ok)">'+ca.ok+" ok</text>"+
+        ((ca.down||ca.degraded||ca.unknown)?'<text x="'+(ax+aw/2)+'" y="'+(SY+94)+'" font-size="10.5" text-anchor="middle" fill="'+stColor(ca.down?"down":ca.degraded?"degraded":"unknown")+'">'+
+          (ca.down?ca.down+" down ":"")+(ca.degraded?ca.degraded+" deg ":"")+(ca.unknown?ca.unknown+" ?":"")+"</text>":"")+"</g>");
+    });
+  });
+  // compute trays + GPUs
+  trN.forEach(function(t,i){var r=Math.floor(i/perRow),cI=i%perRow,rowN=Math.min(perRow,trN.length-r*perRow),x=10+cI*(TW+TG)+(W-20-rowN*(TW+TG)+TG)/2,y=TY0+r*(TH+28),
+      gp=Object.keys(trays[t]).sort(),tl=ls.filter(function(l){return (l.tray||"(no tray)")===t}),c=mCount(tl),w=worst(tl);
+    trayPos[t]={x:x+TW/2,y:y};
+    o.push('<rect class="box" x="'+x+'" y="'+y+'" width="'+TW+'" height="'+TH+'" rx="8" stroke="'+(w==="ok"?"var(--rule)":stColor(w))+'"/>');
+    o.push('<text class="clk" data-ttr="'+esc(t)+'" x="'+(x+8)+'" y="'+(y+17)+'" font-size="13" font-weight="600">'+esc(t)+"</text>");
+    o.push('<text class="m" x="'+(x+TW-8)+'" y="'+(y+17)+'" font-size="10" text-anchor="end">'+((d.slots||{})[t]!=null?"slot "+d.slots[t]:"")+"</text>");
+    var gw=Math.min(22,(TW-16)/Math.max(1,gp.length)-4);
+    gp.forEach(function(g,j){var gx=x+8+j*((TW-16)/gp.length)+((TW-16)/gp.length-gw)/2,gy=y+28,gl=tl.filter(function(l){return mGpu(l)===g}),gs=worst(gl),sel=topoSel===t+"|"+g;
+      gpuPos[t+"|"+g]={x:gx+gw/2,y:gy};
+      o.push('<g class="clk" data-tgp="'+esc(t+"|"+g)+'"><title>'+esc(t+" GPU "+g+": "+gl.length+" links, "+worst(gl))+'</title><rect x="'+gx+'" y="'+gy+'" width="'+gw+'" height="'+gw+'" rx="3" fill="'+stColor(gs)+'" fill-opacity="'+(gs==="ok"?.35:.9)+'" stroke="'+(sel?"var(--acc)":"none")+'" stroke-width="2.5"/>'+
+        '<text class="m" x="'+(gx+gw/2)+'" y="'+(gy+gw+12)+'" font-size="9.5" text-anchor="middle">'+esc(g.indexOf(":")>0?"G"+g.slice(3,4):g.replace(" (described)","*").replace("GPU","G"))+"</text></g>");
+    });
+    o.push('<text class="m" x="'+(x+8)+'" y="'+(y+TH-10)+'" font-size="10">'+tl.length+" links"+(c.down?" · "+c.down+" down":"")+(c.degraded?" · "+c.degraded+" deg":"")+(c.unknown?" · "+c.unknown+" ?":"")+"</text>");
+  });
+  o.push("</svg>");
+  topoSvg._geo={asicPos:asicPos,trayPos:trayPos,gpuPos:gpuPos,pairs:pairs,ls:ls};
+  return '<p class="mut" style="margin:0 0 4px">Lines: compute tray to switch chip, coloured by the worst link they carry (red: a link is down). Click a GPU to see its own lines; click a tray, GPU, chip or switch name for its drill down.'+
+    (Object.keys(trays).some(function(t){return Object.keys(trays[t]).some(function(g){return g.indexOf("described")>0})})?" G1* = GPU numbered as the switch port descriptions (GPU end not matched).":"")+"</p>"+o.join("");
+}
+function drawTopoLines(){
+  var geo=topoSvg._geo,g=document.getElementById("tp-lines");if(!geo||!g)return;var out=[];
+  if(topoSel&&!geo.gpuPos[topoSel])topoSel=null;      /* a GPU of another rack / check: show all lines again */
+  if(topoSel){var x=topoSel.split("|"),ls=geo.ls.filter(function(l){return (l.tray||"(no tray)")===x[0]&&mGpu(l)===x[1]}),by={};
+    ls.forEach(function(l){var k=l.switch+"|"+(l.asic||"");(by[k]=by[k]||[]).push(l)});var gp=geo.gpuPos[topoSel];
+    Object.keys(by).forEach(function(k){var a=geo.asicPos[k];if(!a||!gp)return;var st=worst(by[k]),my=(gp.y+a.y)/2;
+      out.push('<path d="M'+gp.x+" "+gp.y+"C"+gp.x+" "+my+" "+a.x+" "+my+" "+a.x+" "+a.y+'" fill="none" stroke="'+stColor(st)+'" stroke-width="2.5" stroke-opacity=".95"><title>'+esc(by[k].length+" links to "+k.replace("|"," ")+": "+st)+"</title></path>")});
+  }else Object.keys(geo.pairs).forEach(function(k){var x=k.split("#"),tp=geo.trayPos[x[0]],a=geo.asicPos[x[1]];if(!tp||!a)return;var ls=geo.pairs[k],st=worst(ls),my=(tp.y+a.y)/2;
+      out.push('<path d="M'+tp.x+" "+tp.y+"C"+tp.x+" "+my+" "+a.x+" "+my+" "+a.x+" "+a.y+'" fill="none" stroke="'+stColor(st)+'" stroke-width="'+(st==="ok"?1:2.2)+'" stroke-opacity="'+(st==="ok"?.35:.9)+'"><title>'+esc(x[0]+" to "+x[1].replace("|"," ")+": "+ls.length+" links, "+st)+"</title></path>")});
+  g.innerHTML=out.join("");
+}
+function wireTopoSvg(){
+  drawTopoLines();
+  document.querySelectorAll("#map [data-tsw]").forEach(function(e){e.addEventListener("click",function(){drillSwitch(e.dataset.tsw)})});
+  document.querySelectorAll("#map [data-tas]").forEach(function(e){e.addEventListener("click",function(){var x=e.dataset.tas.split("|");drillAsic(x[0],x[1])})});
+  document.querySelectorAll("#map [data-ttr]").forEach(function(e){e.addEventListener("click",function(){topoSel=null;drawTopoLines();drillTray(e.dataset.ttr)})});
+  document.querySelectorAll("#map [data-tgp]").forEach(function(e){e.addEventListener("click",function(){topoSel=e.dataset.tgp;drawMap();var x=topoSel.split("|");drillGpu(x[0],x[1])})});
+}
 function mapDetail(k){
   var l=mapData.links.filter(function(x){return lkey(x)===k})[0];if(!l)return;
   var p=mapPrev&&mapPrev.links.filter(function(x){return lkey(x)===k})[0];
