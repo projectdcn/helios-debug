@@ -1152,7 +1152,8 @@ def write_link_html(path: Path, rack_name: str, when: str, ln, d: dict, cmdlog, 
     gs = "".join(f"<li class='{esc(x['state'])}'><b>{esc(x['state'])}</b>: {esc(x['cause'])}<br><span class='mut'>next: {esc(x['action'])}</span></li>"
                  for x in d.get("gpu_state") or [])
     av = d.get("afm_view") or {}
-    hand = "".join(f"<tr><td>{esc(n)}</td><td><code>{esc(c)}</code></td></tr>" for n, c in d["hand_commands"])
+    hand = "".join(f"<tr><td>{esc(n)}</td><td><code>{esc(c)}</code> <button class='cp' data-c='{esc(c)}'>copy</button></td></tr>"
+                   for n, c in d["hand_commands"])
     path.write_text(f"""<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Link {esc(ln.switch)} {esc(ln.sw_port)} - {esc(rack_name)}</title><style>
 :root{{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--card:#fff;--down:#b42318;--deg:#b54708;--ok:#067647;--code:#eef1f5}}
@@ -1165,7 +1166,7 @@ h1{{font-size:1.35rem;margin:0}}h2{{font-size:1.05rem;margin:22px 0 8px}}.mut{{c
 .card{{background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:12px 16px}}
 .wrap{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--rule);vertical-align:top}}
 th{{color:var(--mut);font-weight:600}}table.kv th{{width:42%}}code{{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:1px 4px;border-radius:4px}}
-li.down b{{color:var(--down)}}tr.k-oper td,tr.k-admin td,tr.k-command td{{font-weight:600}}td.ok{{color:var(--ok);font-weight:600}}td.bad{{color:var(--down);font-weight:600}}td.unk{{color:var(--deg);font-weight:600}}tr.k-error td{{color:var(--down)}}li.degraded b{{color:var(--deg)}}.err{{color:var(--down);font-weight:600}}
+li.down b{{color:var(--down)}}button.cp{{font:11px inherit;padding:1px 6px;border:1px solid var(--rule);border-radius:4px;background:none;color:var(--mut);cursor:pointer}}tr.k-oper td,tr.k-admin td,tr.k-command td{{font-weight:600}}td.ok{{color:var(--ok);font-weight:600}}td.bad{{color:var(--down);font-weight:600}}td.unk{{color:var(--deg);font-weight:600}}tr.k-error td{{color:var(--down)}}li.degraded b{{color:var(--deg)}}.err{{color:var(--down);font-weight:600}}
 details{{margin:4px 0}}pre{{background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:8px;overflow-x:auto;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace}}
 </style></head><body>
 <h1>{esc(ln.switch)} {esc(ln.asic)} {esc(ln.sw_port)} &harr; {esc(ln.tray)} {esc(ln.bdf)} port {esc(ln.gpu_port)}</h1>
@@ -1193,6 +1194,8 @@ details{{margin:4px 0}}pre{{background:var(--card);border:1px solid var(--rule);
 {_timeline_html(d.get('timeline'))}
 <h2>Check it by hand</h2><div class='card wrap'><table><tr><th>On</th><th>Command</th></tr>{hand}</table></div>
 {("<h2>Command logs</h2>" + cmdlog.html(nodes, log_keep)) if cmdlog and cmdlog.entries else ''}
+<script>document.querySelectorAll('button.cp').forEach(function(b){{b.addEventListener('click',function(){{
+try{{navigator.clipboard.writeText(b.dataset.c);b.textContent='copied'}}catch(e){{}}}})}})</script>
 </body></html>
 """)
 

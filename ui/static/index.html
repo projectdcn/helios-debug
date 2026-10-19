@@ -52,6 +52,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 <main>
   <div id="inverr" class="card err hide"></div>
   <nav role="tablist">
+    <button role="tab" data-t="overview">Overview</button>
     <button role="tab" data-t="map">Rack map</button>
     <button role="tab" data-t="link">Diagnose a link</button>
     <button role="tab" data-t="watch">Watch links</button>
@@ -66,6 +67,12 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
     <button role="tab" data-t="newrack">Add a rack</button>
   </nav>
 
+  <section class="card hide" data-p="overview">
+    <h2>All racks</h2>
+    <p class="mut">Every inventory on this machine with its latest scan. Click a rack to open its map.</p>
+    <div class="wrap"><table><thead><tr><th>Rack</th><th>Trays</th><th>Latest scan (UTC)</th><th>Links</th><th>ok</th><th>degraded</th><th>down</th><th>GPU state</th></tr></thead><tbody id="ov"></tbody></table></div>
+  </section>
+
   <section class="card hide" data-p="map">
     <h2>Rack map</h2>
     <p class="mut">Every GPU link of a scan, by compute tray (GPU x port) or by switch ASIC. Click a link for its cause and to diagnose it now.</p>
@@ -75,6 +82,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
       <div><label for="map-view">View</label><select id="map-view"><option value="tray">by compute tray</option><option value="switch">by switch ASIC</option></select></div>
       <div><label for="map-q">Find (port, tray, BDF, cause)</label><input id="map-q" type="search" placeholder="Ethernet257, ct13, 0002:01:00.1, IFCP ..."></div>
     </div>
+    <div id="map-banner" class="hide" style="margin-top:10px;padding:8px 12px;border-radius:6px;background:var(--degbg)"></div>
     <div id="map-sum" class="row mut"></div>
     <div id="map" class="map"></div>
     <div id="map-detail" class="card hide" style="margin-top:12px"></div>
@@ -269,6 +277,8 @@ function tab(t){
   document.querySelectorAll("section[data-p]").forEach(function(s){s.classList.toggle("hide",s.dataset.p!==t)});
   if(t==="history")loadHistory();
   if(t==="map")loadMap();
+  if(t==="overview")loadOverview();
+  try{history.replaceState(null,"","#tab="+t+"&inv="+encodeURIComponent($("inv").value||""))}catch(e){}
   if(t==="access")loadAccess();
   try{localStorage.setItem("hdbg-tab",t)}catch(e){}
 }
@@ -324,7 +334,7 @@ function loadHistory(){
     $("hist").innerHTML=rows.map(function(x){
       return "<tr><td>"+esc(new Date(x.mtime*1000).toLocaleString())+"</td><td>"+esc(x.rack)+"</td><td>"+esc(x.tool)+"</td><td>"+esc(x.summary)+
         "</td><td>"+x.files.map(function(f){return '<a href="/results/'+esc(x.path+"/"+f)+'" target="_blank" rel="noopener">'+esc(f)+'</a>'}).join("<br>")+
-        '<br><a href="/api/bundle?path='+encodeURIComponent(x.path)+'">bundle.zip</a></td></tr>"
+        '<br><a href="/api/bundle?path='+encodeURIComponent(x.path)+'">bundle.zip</a></td></tr>'
     }).join("")||'<tr><td colspan="5" class="mut">No runs yet for this rack.</td></tr>';
     var scans=rows.filter(function(x){return x.tool==="scan"&&x.files.indexOf("link_check.json")>=0});
     $("scan-cmp").innerHTML='<option value="">no</option>'+scans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+"</option>"}).join("");
@@ -390,6 +400,18 @@ $("nr-save").addEventListener("click",function(){
 });
 $("cab-export").addEventListener("click",function(e){e.preventDefault();location.href="/api/cabling.csv?inventory="+encodeURIComponent($("inv").value)});
 $("cab-file").addEventListener("change",function(){var f=this.files[0];if(!f)return;var rd=new FileReader();rd.onload=function(){$("cab-plan").value=rd.result};rd.readAsText(f)});
+// ---------------------------------------------------------------- overview
+function loadOverview(){
+  api("/api/overview").then(function(d){
+    $("ov").innerHTML=d.racks.map(function(r){
+      if(r.error&&!r.rack)return '<tr><td>'+esc(r.file)+'</td><td colspan="7" class="err">'+esc(r.error)+"</td></tr>";
+      return '<tr><td><a href="#" data-ovinv="'+esc(r.file)+'"><b>'+esc(r.rack)+"</b></a><div class=\"mut\">"+esc(r.file)+"</div></td><td>"+r.switches+" sw / "+r.computes+" ct</td><td>"+
+        (r.latest?esc(r.time_utc||""):'<span class="mut">no scan yet</span>')+"</td><td>"+(r.links!=null?r.links:"")+'</td><td style="color:var(--ok)">'+(r.ok!=null?r.ok:"")+
+        '</td><td style="color:var(--deg)">'+(r.degraded||"")+'</td><td style="color:var(--down)">'+(r.down||"")+"</td><td>"+(r.gpus_not_right?'<span class="err">'+r.gpus_not_right+" GPU(s) not right</span>":"")+"</td></tr>";
+    }).join("");
+    document.querySelectorAll("a[data-ovinv]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();$("inv").value=a.dataset.ovinv;fillInv();tab("map")})});
+  }).catch(function(e){$("ov").innerHTML='<tr><td colspan="8" class="err">'+esc(e.message)+"</td></tr>"});
+}
 // ---------------------------------------------------------------- rack map
 var mapData=null,mapPrev=null,mapScans=[];
 function mapLoadScans(){
@@ -399,6 +421,7 @@ function mapLoadScans(){
     var o=mapScans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+"</option>"}).join("");
     $("map-scan").innerHTML=o||"<option value=''>no scan yet - run one on the Scan tab</option>";
     $("map-prev").innerHTML='<option value="">-</option>'+o;
+    if(mapScans.length>1)$("map-prev").value=mapScans[1].path;   /* what changed since the scan before, by default */
   });
 }
 function loadMap(){
@@ -445,6 +468,14 @@ function drawMap(){
     });
   }
   $("map").innerHTML=html||'<p class="mut">No links in this scan.</p>';
+  if(mapPrev){
+    var nw=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p==="ok"&&l.state!=="ok"}),
+        rc=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p!=="ok"&&l.state==="ok"});
+    $("map-banner").classList.toggle("hide",!(nw.length||rc.length));
+    $("map-banner").innerHTML="Since the scan of "+esc(mapPrev.time_utc||"")+" UTC: <b>"+nw.length+" new problem(s)</b>"+
+      (nw.length?" ("+nw.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(nw.length>6?", ...":"")+")":"")+", <b>"+rc.length+" recovered</b>"+
+      (rc.length?" ("+rc.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(rc.length>6?", ...":"")+")":"")+".";
+  }else{$("map-banner").classList.add("hide")}
   var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+cnt.ok+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span></span>"+
     (q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
@@ -484,10 +515,11 @@ api("/api/state").then(function(s){
   invs=s.inventories;$("where").textContent="on "+s.host+" · read-only link checks of the scale-up fabric";
   var keep="";try{keep=localStorage.getItem("hdbg-inv")||""}catch(e){}
   $("inv").innerHTML=invs.map(function(i){return '<option value="'+esc(i.file)+'">'+esc((i.rack||i.file)+" ("+i.file+")")+"</option>"}).join("")||"<option>no inventory</option>";
+  var hinv=decodeURIComponent((location.hash.match(/inv=([^&]+)/)||[])[1]||"");if(hinv)keep=hinv;
   if(keep&&invs.some(function(i){return i.file===keep}))$("inv").value=keep;
   fillInv();
   if(s.current){show(s.current,true);poll()}
-  var t=(location.hash.match(/tab=(\w+)/)||[])[1]||"";if(!t){try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}}tab(t||"map");
+  var t=(location.hash.match(/tab=(\w+)/)||[])[1]||"";if(!t){try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}}tab(t||"overview");
 }).catch(function(e){$("inverr").classList.remove("hide");$("inverr").textContent="UI server not answering: "+e.message});
 })();
 </script>

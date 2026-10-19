@@ -180,3 +180,30 @@ def test_scan_view_for_the_rack_map(ui):
     assert code == 200 and v["links"][0]["state"] == "down" and len(v["links"][0]["evidence"]) == 8 and "gpu" not in v["links"][0]
     assert v["gpus"][0]["phase"] == "PROVIDER" and v["slots"] == {"c1": 0}
     assert call(base, "/api/scan?path=../../etc")[0] == 400
+
+
+def test_overview_counts_the_latest_scan(ui):
+    base, tmp = ui
+    for stamp, states in (("20261018-000000", ["ok", "ok"]), ("20261019-000000", ["ok", "down"])):
+        d = tmp / "results" / "link-check" / "lab" / f"scan-{stamp}"
+        d.mkdir(parents=True)
+        (d / "link_check.json").write_text(json.dumps({"time_utc": stamp, "links": [{"state": x} for x in states],
+                                                       "gpus": [{"tray": "c1"}]}))
+    r = json.loads(call(base, "/api/overview")[1])["racks"][0]
+    assert (r["rack"], r["scans"], r["ok"], r["down"], r["gpus_not_right"]) == ("lab", 2, 1, 1, 1)
+    assert r["latest"].endswith("scan-20261019-000000")
+
+
+def test_page_script_parses(tmp_path):
+    """The page's script must parse (19 Oct: one broken quote stopped the whole UI; caught only in a browser)."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    html = (server.STATIC / "index.html").read_text()
+    js = html[html.index("<script>") + 8:html.rindex("</script>")]
+    f = tmp_path / "ui.js"
+    f.write_text(js)
+    r = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

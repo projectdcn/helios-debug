@@ -261,6 +261,27 @@ LINK_KEYS = ("switch", "asic", "sw_port", "desc", "sw_oper", "sw_admin", "tray",
              "cause", "owner", "action", "afm_port", "matched_by")
 
 
+def overview(state: State) -> list[dict]:
+    """Every inventory's rack with its latest scan's counts (and the one before, for what changed)."""
+    out = []
+    for i in state.inventories():
+        if i.get("error"):
+            out.append({"file": i["file"], "error": i["error"]})
+            continue
+        runs = sorted((state.results_dir / "link-check" / i["rack"]).glob("scan-*/link_check.json"), reverse=True)
+        row = {"file": i["file"], "rack": i["rack"], "switches": len(i["switches"]), "computes": len(i["computes"]), "scans": len(runs)}
+        if runs:
+            try:
+                d = json.loads(runs[0].read_text())
+                c = {k: sum(1 for x in d.get("links") or [] if x.get("state") == k) for k in ("ok", "degraded", "down")}
+                row |= {"latest": f"link-check/{i['rack']}/{runs[0].parent.name}", "time_utc": d.get("time_utc"), **c,
+                        "links": len(d.get("links") or []), "gpus_not_right": len(d.get("gpus") or [])}
+            except (OSError, ValueError) as e:
+                row["error"] = f"latest scan unreadable: {e}"
+        out.append(row)
+    return out
+
+
 def scan_view(state: State, rel: str) -> dict:
     """A scan's links, compact, for the rack map (rel: link-check/<rack>/scan-...)."""
     f = _result_file(state, f"{rel}/link_check.json")
@@ -476,6 +497,8 @@ class Handler(BaseHTTPRequestHandler):
                 text = cabling.export(json.loads(runs[0].read_text()).get("links") or [])
                 return self._send(200, text.encode(), "text/csv; charset=utf-8",
                                   {"Content-Disposition": f'attachment; filename="{inv.rack}-cabling.csv"'})
+            if u.path == "/api/overview":
+                return self._json(200, {"racks": overview(st)})
             if u.path == "/api/scan":
                 return self._json(200, scan_view(st, (q.get("path") or [""])[0]))
             if u.path == "/api/results":
