@@ -42,7 +42,11 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 .cnts{display:inline-flex;flex-wrap:wrap;gap:4px;font-size:12px;font-weight:400;margin-left:8px;vertical-align:middle}
 .cnts span{padding:0 6px;border-radius:8px;background:var(--code);white-space:nowrap}.cnts .ok{color:var(--ok);background:var(--okbg)}
 .cnts .degraded{color:var(--deg);background:var(--degbg)}.cnts .down{color:var(--down);background:var(--downbg)}.cnts .unknown{color:var(--mut)}
-.mrow .cnts{margin-left:6px;flex:none;min-width:250px}.cell{width:14px;height:14px;border-radius:3px;border:0;padding:0;cursor:pointer;background:var(--rule)}
+.mrow .cnts{margin-left:6px;flex:none;min-width:250px}
+a.dd{color:inherit;text-decoration:none;border-bottom:1px dashed var(--mut);cursor:pointer}a.dd:hover{color:var(--acc);border-color:var(--acc)}
+.crumbs{font-size:13px;margin-bottom:6px}.crumbs a{color:var(--acc);cursor:pointer}.crumbs span.sep{color:var(--mut);margin:0 6px}
+table.dl td,table.dl th{padding:4px 8px}table.dl tr.clk{cursor:pointer}table.dl tr.clk:hover td{background:var(--code)}
+.st-ok{color:var(--ok)}.st-degraded{color:var(--deg);font-weight:600}.st-down{color:var(--down);font-weight:600}.st-unknown{color:var(--mut)}.cell{width:14px;height:14px;border-radius:3px;border:0;padding:0;cursor:pointer;background:var(--rule)}
 .cell.ok{background:var(--ok);opacity:.55}.cell.unknown{background:var(--mut);opacity:.45}.cell.degraded{background:var(--deg)}.cell.down{background:var(--down)}
 .cell.hit{outline:2px solid var(--acc);outline-offset:1px;opacity:1}.cell.chg{box-shadow:0 0 0 2px var(--fg)}.cell.dim{opacity:.15}
 .legend span{display:inline-flex;align-items:center;gap:4px;margin-right:12px}.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
@@ -894,10 +898,10 @@ function drawMap(){
     var by={};d.links.forEach(function(l){var t=l.tray||"(no tray)";(by[t]=by[t]||{});var g=gpuLab(l);(by[t][g]=by[t][g]||[]).push(l)});
     Object.keys(by).sort().forEach(function(t){
       var all=[];Object.keys(by[t]).forEach(function(g){all=all.concat(by[t][g])});
-      html+='<div class="mblk"><h3>'+esc(trayName(t==="(no tray)"?"":t,d.slots)||t)+counts(all)+"</h3>";
+      html+='<div class="mblk"><h3><a href="#" class="dd" data-dt="'+esc(t)+'" title="drill down into this tray">'+esc(trayName(t==="(no tray)"?"":t,d.slots)||t)+"</a>"+counts(all)+"</h3>";
       Object.keys(by[t]).sort().forEach(function(g){
         var ls=by[t][g].sort(function(a,b){return gpuPort(a)-gpuPort(b)});
-        html+='<div class="mrow"><span class="lab" title="'+esc(g)+'">'+esc(g)+'</span><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
+        html+='<div class="mrow"><a href="#" class="lab dd" data-dg="'+esc(t+"|"+g)+'" title="drill down into this GPU">'+esc(g)+'</a><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
       });html+="</div>";
     });
   }else{
@@ -905,8 +909,8 @@ function drawMap(){
     var lastSw=null;
     Object.keys(bs).sort().forEach(function(k){
       var ls=bs[k].sort(function(a,b){return (+a.sw_port.replace(/\D/g,""))-(+b.sw_port.replace(/\D/g,""))}),sw=ls[0].switch;
-      if(sw!==lastSw){if(lastSw!==null)html+="</div>";html+='<div class="mblk"><h3>'+esc(sw)+counts(bsw[sw])+"</h3>";lastSw=sw}
-      html+='<div class="mrow"><span class="lab"><b>'+esc(k)+'</b></span><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
+      if(sw!==lastSw){if(lastSw!==null)html+="</div>";html+='<div class="mblk"><h3><a href="#" class="dd" data-ds="'+esc(sw)+'" title="drill down into this switch tray">'+esc(sw)+"</a>"+counts(bsw[sw])+"</h3>";lastSw=sw}
+      html+='<div class="mrow"><a href="#" class="lab dd" data-da="'+esc(sw+"|"+(ls[0].asic||""))+'" title="drill down into this switch chip"><b>'+esc(k)+'</b></a><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
     });
     if(lastSw!==null)html+="</div>";
   }
@@ -924,22 +928,131 @@ function drawMap(){
     (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+" not known (GPU end not readable - see Access to the rack)</span>":"")+"</span>"+
     (q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
+  document.querySelectorAll("#map a.dd").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();
+    if(a.dataset.dt)drillTray(a.dataset.dt);else if(a.dataset.dg){var x=a.dataset.dg.split("|");drillGpu(x[0],x[1])}
+    else if(a.dataset.ds)drillSwitch(a.dataset.ds);else if(a.dataset.da){var y=a.dataset.da.split("|");drillAsic(y[0],y[1])}})});
   try{history.replaceState(null,"","#tab=map&scan="+encodeURIComponent($("map-scan").value))}catch(e){}
+}
+
+// ---------------------------------------------------------------- drill down
+function mEff(l){var lv=liveMine()&&mapData&&live.rack===mapData.rack?live.links:null;return (lv&&lv[lkey(l)]&&lv[lkey(l)].state)||l.state}
+function mGpu(l){if(l.bdf)return l.bdf;var x=dsc(l);return x?"GPU"+x.gpu+" (described)":"?"}
+function mGpuPort(l){if(l.bdf)return l.gpu_port;var x=dsc(l);return x?x.port:"?"}
+function mCount(ls){var c={ok:0,degraded:0,down:0,unknown:0};ls.forEach(function(l){var x=mEff(l);c[x]=(c[x]||0)+1});return c}
+function cntCells(c,n){return "<td>"+n+'</td><td class="st-ok">'+(c.ok||"")+'</td><td class="st-degraded">'+(c.degraded||"")+'</td><td class="st-down">'+(c.down||"")+'</td><td class="st-unknown">'+(c.unknown||"")+"</td>"}
+function crumbs(a,b){
+  function render(list){return list.map(function(x,i){return i<list.length-1&&x[1]?'<a data-cr="'+i+'">'+esc(x[0])+"</a>":"<b>"+esc(x[0])+"</b>"}).join('<span class="sep">&rsaquo;</span>')}
+  crumbs._fns=[a,b||null];
+  return '<div class="crumbs">'+render(a)+(b?'<span class="sep">&middot;</span>switch side: '+render(b).replace(/data-cr=/g,"data-crb="):"")+"</div>";
+}
+function wireCrumbs(){var f=crumbs._fns||[];
+  $("map-detail").querySelectorAll("a[data-cr]").forEach(function(x){x.addEventListener("click",function(){f[0][+x.dataset.cr][1]()})});
+  $("map-detail").querySelectorAll("a[data-crb]").forEach(function(x){x.addEventListener("click",function(){f[1][+x.dataset.crb][1]()})});}
+function causesHtml(ls){
+  var g={};ls.filter(function(l){return mEff(l)!=="ok"}).forEach(function(l){var k=(mEff(l)==="down"&&l.state!=="down")?"live_down":(l.kind||mEff(l));(g[k]=g[k]||[]).push(l)});
+  var ks=Object.keys(g).sort(function(a,b){return g[b].length-g[a].length});
+  if(!ks.length)return '<div class="verdict ok"><h3>All '+ls.length+" links are working</h3></div>";
+  return "<h3 style=\"font-size:.95rem\">What is wrong</h3>"+ks.map(function(k){var h=k==="live_down"?{t:"Went down since the check (live)",m:"",s:["Diagnose one of them to see why."]}:kindHelp(k),x=g[k],st=mEff(x[0]);
+    return '<div class="finding '+esc(st)+'"><span class="cnt">'+x.length+'</span><div class="body"><b>'+esc(h.t)+"</b>"+(h.m?'<div class="mut">'+esc(h.m)+"</div>":"")+
+      (h.s&&h.s.length?"<div>Next: "+esc(h.s[0])+"</div>":"")+(x[0].owner?'<div class="who">Who: '+esc(who(x[0].owner))+"</div>":"")+"</div></div>"}).join("");
+}
+function problemTable(ls,first){
+  var bad=ls.filter(function(l){return mEff(l)!=="ok"}).sort(function(a,b){return ({down:0,degraded:1,unknown:2}[mEff(a)]||3)-({down:0,degraded:1,unknown:2}[mEff(b)]||3)});
+  if(!bad.length)return "";
+  return '<h3 style="font-size:.95rem">Problem links ('+bad.length+')</h3><div class="wrap"><table class="dl"><tr><th>State</th><th>Switch port</th><th>GPU end</th><th>What</th></tr>'+
+    bad.slice(0,first||60).map(function(l){return '<tr class="clk" data-lk="'+esc(lkey(l))+'"><td class="st-'+esc(mEff(l))+'">'+esc(mEff(l))+"</td><td>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port)+"</td><td>"+
+      esc(trayName(l.tray,mapData.slots)+" "+mGpu(l)+" port "+mGpuPort(l))+"</td><td>"+esc(kindHelp(l.kind).t)+"</td></tr>"}).join("")+"</table></div>"+(bad.length>(first||60)?'<p class="mut">... '+(bad.length-(first||60))+" more</p>":"");
+}
+function detailActions(ls,label){
+  var bad=ls.filter(function(l){return mEff(l)!=="ok"});
+  return '<div class="row">'+(bad.length?'<button class="go" id="dd-diag">Diagnose '+esc(lkey(bad[0]))+'</button><button class="sec" id="dd-watch">Watch its '+Math.min(bad.length,64)+" problem link(s)</button>":"")+
+    '<button class="sec" id="dd-find">Highlight '+esc(label)+" on the map</button></div>";
+}
+function wireDetail(ls,q){
+  var bad=ls.filter(function(l){return mEff(l)!=="ok"});
+  if($("dd-diag"))$("dd-diag").addEventListener("click",function(){$("link-target").value=lkey(bad[0]);tab("link");run("link")});
+  if($("dd-watch"))$("dd-watch").addEventListener("click",function(){$("watch-targets").value=bad.slice(0,64).map(lkey).join("\n");tab("watch")});
+  if($("dd-find"))$("dd-find").addEventListener("click",function(){$("map-q").value=q;drawMap();$("map").scrollIntoView({block:"nearest"})});
+  $("map-detail").querySelectorAll("tr[data-lk]").forEach(function(r){r.addEventListener("click",function(){mapDetail(r.dataset.lk)})});
+  $("map-detail").querySelectorAll("tr[data-gpu]").forEach(function(r){r.addEventListener("click",function(){var x=r.dataset.gpu.split("|");drillGpu(x[0],x[1])})});
+  $("map-detail").querySelectorAll("tr[data-tray]").forEach(function(r){r.addEventListener("click",function(){drillTray(r.dataset.tray)})});
+  $("map-detail").querySelectorAll("tr[data-asic]").forEach(function(r){r.addEventListener("click",function(){var x=r.dataset.asic.split("|");drillAsic(x[0],x[1])})});
+  wireCrumbs();$("map-detail").classList.remove("hide");$("map-detail").scrollIntoView({block:"nearest"});
+}
+function trayLinks(t){return mapData.links.filter(function(l){return (l.tray||"(no tray)")===t})}
+function drillRack(){
+  var ls=mapData.links,trays={},asics={};ls.forEach(function(l){(trays[l.tray||"(no tray)"]=trays[l.tray||"(no tray)"]||[]).push(l);var k=l.switch+"|"+(l.asic||"");(asics[k]=asics[k]||[]).push(l)});
+  $("map-detail").innerHTML=crumbs([["Rack "+mapData.rack]])+"<h2>Rack "+esc(mapData.rack)+"</h2>"+
+    '<div class="wrap"><table class="dl"><tr><th>Compute tray</th><th>Links</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
+    Object.keys(trays).sort().map(function(t){return '<tr class="clk" data-tray="'+esc(t)+'"><td>'+esc(trayName(t==="(no tray)"?"":t,mapData.slots)||t)+"</td>"+cntCells(mCount(trays[t]),trays[t].length)+"</tr>"}).join("")+"</table></div>"+
+    '<div class="wrap" style="margin-top:8px"><table class="dl"><tr><th>Switch chip</th><th>Links</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
+    Object.keys(asics).sort().map(function(k){return '<tr class="clk" data-asic="'+esc(k)+'"><td>'+esc(k.replace("|"," "))+"</td>"+cntCells(mCount(asics[k]),asics[k].length)+"</tr>"}).join("")+"</table></div>"+causesHtml(ls);
+  wireDetail(ls,"");
+}
+function drillTray(t){
+  var ls=trayLinks(t),gp={},as={};ls.forEach(function(l){(gp[mGpu(l)]=gp[mGpu(l)]||[]).push(l);var k=l.switch+"|"+(l.asic||"");(as[k]=as[k]||[]).push(l)});
+  var nm=trayName(t==="(no tray)"?"":t,mapData.slots)||t;
+  $("map-detail").innerHTML=crumbs([["Rack",drillRack],[nm]])+"<h2>Compute tray "+esc(nm)+"</h2>"+
+    '<div class="wrap"><table class="dl"><tr><th>GPU</th><th>Links</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
+    Object.keys(gp).sort().map(function(g){return '<tr class="clk" data-gpu="'+esc(t+"|"+g)+'"><td>'+esc(g)+"</td>"+cntCells(mCount(gp[g]),gp[g].length)+"</tr>"}).join("")+"</table></div>"+
+    '<p class="mut" style="margin-top:8px">Its links go to: '+Object.keys(as).sort().map(function(k){var c=mCount(as[k]);return esc(k.replace("|"," "))+" ("+as[k].length+(c.down?", "+c.down+" down":"")+")"}).join(", ")+"</p>"+
+    causesHtml(ls)+problemTable(ls)+detailActions(ls,t);
+  wireDetail(ls,t==="(no tray)"?"":t);
+}
+function drillGpu(t,g){
+  var ls=trayLinks(t).filter(function(l){return mGpu(l)===g}).sort(function(a,b){return (+mGpuPort(a))-(+mGpuPort(b))});
+  var nm=trayName(t==="(no tray)"?"":t,mapData.slots)||t;
+  $("map-detail").innerHTML=crumbs([["Rack",drillRack],[nm,function(){drillTray(t)}],[g]])+"<h2>"+esc(nm+" "+(g.indexOf("GPU")===0?g:"GPU "+g))+"</h2>"+
+    '<div class="wrap"><table class="dl"><tr><th>GPU port</th><th>State</th><th>Switch port</th><th>Switch chip</th><th>What</th></tr>'+
+    ls.map(function(l){return '<tr class="clk" data-lk="'+esc(lkey(l))+'"><td>'+esc(mGpuPort(l))+'</td><td class="st-'+esc(mEff(l))+'">'+esc(mEff(l))+"</td><td>"+esc(l.switch+" "+l.sw_port)+"</td><td>"+esc(l.asic||"")+"</td><td>"+(mEff(l)==="ok"?"":esc(kindHelp(l.kind).t))+"</td></tr>"}).join("")+"</table></div>"+
+    causesHtml(ls)+detailActions(ls,g.indexOf(":")>0?g:t)+
+    (g.indexOf(":")>0?'<div class="row"><button class="sec" id="dd-path">Test a GPU-to-GPU path from this GPU</button></div>':"");
+  wireDetail(ls,g.indexOf(":")>0?g:t);
+  if($("dd-path"))$("dd-path").addEventListener("click",function(){setMode(true);tab("path");setTimeout(function(){if(!ppData)return;$("pp-st").value=t;ppGpuOpts("pp-st","pp-sg");$("pp-sg").value=g;ppRefreshDst()},800)});
+}
+function drillSwitch(sw){
+  var ls=mapData.links.filter(function(l){return l.switch===sw}),as={},tr={};ls.forEach(function(l){(as[l.asic||""]=as[l.asic||""]||[]).push(l);(tr[l.tray||"(no tray)"]=tr[l.tray||"(no tray)"]||[]).push(l)});
+  $("map-detail").innerHTML=crumbs([["Rack",drillRack],[sw]])+"<h2>Switch tray "+esc(sw)+"</h2>"+
+    '<div class="wrap"><table class="dl"><tr><th>Switch chip</th><th>Links</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
+    Object.keys(as).sort().map(function(a){return '<tr class="clk" data-asic="'+esc(sw+"|"+a)+'"><td>'+esc(sw+" "+a)+"</td>"+cntCells(mCount(as[a]),as[a].length)+"</tr>"}).join("")+"</table></div>"+
+    '<div class="wrap" style="margin-top:8px"><table class="dl"><tr><th>Compute tray</th><th>Links</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
+    Object.keys(tr).sort().map(function(t){return '<tr class="clk" data-tray="'+esc(t)+'"><td>'+esc(trayName(t==="(no tray)"?"":t,mapData.slots)||t)+"</td>"+cntCells(mCount(tr[t]),tr[t].length)+"</tr>"}).join("")+"</table></div>"+
+    causesHtml(ls)+problemTable(ls)+detailActions(ls,sw);
+  wireDetail(ls,sw);
+}
+function drillAsic(sw,a){
+  var ls=mapData.links.filter(function(l){return l.switch===sw&&(l.asic||"")===a}).sort(function(x,y){return pkNum(x.sw_port)-pkNum(y.sw_port)}),gp={};
+  ls.forEach(function(l){var k=(l.tray||"(no tray)")+"|"+mGpu(l);(gp[k]=gp[k]||[]).push(l)});
+  /* neighbouring-port hint: physical-layer problems only (not a whole tray / GPU not set up), and only when they are
+     a minority of the chip's ports - otherwise 'neighbours' just means 'many' */
+  var PHYS=["phys_never_up","phys_went_down","phys_no_optic","one_sided","bit_errors","miscabled"];
+  var bad=ls.filter(function(l){return mEff(l)!=="ok"&&PHYS.indexOf(l.kind)>=0}).map(function(l){return pkNum(l.sw_port)}).sort(function(x,y){return x-y}),near=0;
+  for(var i=1;i<bad.length;i++)if(bad[i]-bad[i-1]<=8)near++;
+  if(bad.length>ls.length/2)near=0;
+  $("map-detail").innerHTML=crumbs([["Rack",drillRack],[sw,function(){drillSwitch(sw)}],[a||"?"]])+"<h2>Switch chip "+esc(sw+" "+a)+"</h2>"+
+    (near>=3?'<div class="verdict degraded"><h3>Problems sit on neighbouring ports</h3>'+near+" pairs of problem ports are within 8 port numbers of each other - something shared by them (one connector / cage / cable bundle) is more likely than separate faults.</div>":"")+
+    '<div class="wrap"><table class="dl"><tr><th>GPU (tray)</th><th>Links on this chip</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
+    Object.keys(gp).sort().map(function(k){var x=k.split("|");return '<tr class="clk" data-gpu="'+esc(k)+'"><td>'+esc(trayName(x[0]==="(no tray)"?"":x[0],mapData.slots)+" "+x[1])+"</td>"+cntCells(mCount(gp[k]),gp[k].length)+"</tr>"}).join("")+"</table></div>"+
+    causesHtml(ls)+problemTable(ls)+detailActions(ls,sw+" "+a);
+  wireDetail(ls,"");
 }
 function mapDetail(k){
   var l=mapData.links.filter(function(x){return lkey(x)===k})[0];if(!l)return;
   var p=mapPrev&&mapPrev.links.filter(function(x){return lkey(x)===k})[0];
   var tgt=l.switch+" "+l.sw_port;
   $("map-detail").classList.remove("hide");
-  $("map-detail").innerHTML="<h2>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" \u2194 "+(l.tray||"?")+" "+(l.bdf||"")+" port "+l.gpu_port)+" "+badge(l.state)+"</h2>"+
+  $("map-detail").innerHTML=crumbs([["Rack",function(){drillRack()}],[trayName(l.tray,mapData.slots),function(){drillTray(l.tray||"(no tray)")}],
+      [mGpu(l),function(){drillGpu(l.tray||"(no tray)",mGpu(l))}],["port "+mGpuPort(l)]],[[l.switch,function(){drillSwitch(l.switch)}],[(l.asic||""),function(){drillAsic(l.switch,l.asic||"")}],[l.sw_port]])+
+    "<h2>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" \u2194 "+trayName(l.tray,mapData.slots)+" "+mGpu(l)+" port "+mGpuPort(l))+" "+badge(mEff(l))+"</h2>"+
     '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
-    verdictHtml(l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+
+    verdictHtml(mEff(l)==="ok"?"ok":l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+
+    (live&&liveMine()&&live.links[k]&&mEff(l)!==l.state?'<p class="mut">Live: now <b>'+esc(mEff(l))+"</b> (was "+esc(l.state)+" at the check).</p>":"")+
     (l.evidence&&l.evidence.length?"<details><summary>Evidence</summary>"+l.evidence.map(function(e){return "<div><code>"+esc(e)+"</code></div>"}).join("")+"</details>":"")+
     '<div class="row"><button class="go" id="map-diag">Diagnose now</button><button class="sec" id="map-watch">Watch it</button><button class="sec" id="map-copy">Copy link id</button><span class="mut">reads only '+esc(l.switch)+" and "+esc(l.tray||"its tray")+"</span></div>";
   $("map-diag").addEventListener("click",function(){$("link-target").value=tgt;tab("link");run("link")});
   $("map-copy").addEventListener("click",function(){try{navigator.clipboard.writeText(tgt)}catch(e){}});
   $("map-watch").addEventListener("click",function(){var ta=$("watch-targets");if(ta.value.indexOf(tgt)<0)ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+tgt;tab("watch")});
-  $("map-detail").scrollIntoView({block:"nearest"});
+  wireCrumbs();$("map-detail").scrollIntoView({block:"nearest"});
 }
 ["map-scan","map-prev"].forEach(function(id){$(id).addEventListener("change",mapFetch)});
 $("map-view").addEventListener("change",drawMap);$("map-q").addEventListener("input",drawMap);
