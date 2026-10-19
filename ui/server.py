@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from heliosdbg.inventory import load_inventory  # noqa: E402
+from heliosdbg.transport import is_local  # noqa: E402
 from ui import access  # noqa: E402
 
 TOOL = ROOT / "tools" / "link_check.py"
@@ -70,7 +71,7 @@ class State:
                 continue
             out.append({"file": f.name, "rack": inv.rack, "switches": [h.name for h in inv.switches],
                         "computes": [h.name for h in inv.computes],
-                        "local": [h.name for h in inv.switches + inv.computes if (h.extra or {}).get("local") is True],
+                        "local": [h.name for h in inv.switches + inv.computes if is_local(h)],
                         "afm": bool((inv.afm or {}).get("url")),
                         "afm_password_env": ((inv.afm or {}).get("auth") or {}).get("password_env") or "HELIOS_AFM_PASSWORD"})
         return out

@@ -301,6 +301,13 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
         return set_("down" if not up(ln.sw_oper) else "degraded", "tray_quarantined",
                     f"compute tray {name} is quarantined in the inventory ({reason})", OPERATOR,
                     f"Expected while {name} is out of service; lift the quarantine when it is back and scan again.")
+    unread = sorted(n for n, x in (trays or {}).items() if x.get("error"))
+    if not ln.tray and unread:          # MR3 19 Oct from the switch: trays in the inventory, but not reachable from there
+        cab = parse_port_description(ln.desc or "")
+        return set_("down", "tray_unreachable",
+                    f"slot {cab[0] if cab else '?'}: its tray did not answer - not reachable: {', '.join(unread)}", SITE,
+                    "Make the tray reachable from where this runs (network / SSH key; from a switch tray: its route to the "
+                    "trays), or set slot: on the inventory entries so an unreachable tray is named per slot.")
     if not ln.tray:
         return set_("down" if not up(ln.sw_oper) else "degraded", "tray_missing",
                     "no compute tray in the inventory answers for this switch port's slot", OPERATOR,

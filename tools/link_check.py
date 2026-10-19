@@ -327,7 +327,8 @@ def _not_checked(res) -> list[tuple[str, str, str, str]]:
         if "authentication" in e or "permission denied" in e:
             return ("login refused: install your SSH key on it (ssh-copy-id) and set key_file, or export the "
                     "password_env variable the inventory names in this shell")
-        if "timed out" in e or "timeout" in e or "no route" in e or "unreachable" in e or "refused" in e:
+        if any(w in e for w in ("timed out", "timeout", "no route", "unreachable", "refused", "unable to connect",
+                                "novalidconnections")):
             return "not reachable: check the address in the inventory, the network / VPN, or transport.jump"
         if "sudo" in e:
             return "needs sudo without a password prompt for the inventory user"
