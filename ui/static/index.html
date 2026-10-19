@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Helios link debug</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--card:#fff;--acc:#2f5bd3;--ok:#067647;--deg:#b54708;--down:#b42318;
+--okbg:#e7f6ec;--degbg:#fef3e2;--downbg:#fdecea;--code:#eef1f5}
+@media (prefers-color-scheme:dark){:root{--bg:#12161b;--fg:#e6eaef;--mut:#96a2b0;--rule:#2b3540;--card:#1a2027;--acc:#7da2ff;
+--ok:#47cd89;--deg:#fdb022;--down:#f97066;--okbg:#10291b;--degbg:#33250c;--downbg:#3a1512;--code:#0f1318}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Arial,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px max(16px,3vw);
+border-bottom:1px solid var(--rule);background:var(--card)}
+h1{font-size:1.15rem;margin:0}.mut{color:var(--mut)}
+main{padding:16px max(16px,3vw);max-width:1200px;margin:0 auto}
+nav{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px}
+nav button{border:1px solid var(--rule);background:var(--card);color:var(--fg);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+nav button[aria-selected=true]{border-color:var(--acc);color:var(--acc);font-weight:600}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+.card h2{font-size:1rem;margin:0 0 6px}.card p{margin:4px 0 10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px 16px}
+label{display:block;font-size:12px;color:var(--mut);margin-bottom:3px}
+input,select{width:100%;font:inherit;padding:5px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--bg);color:var(--fg)}
+input[type=checkbox]{width:auto;margin-right:6px}
+.checks{display:flex;flex-wrap:wrap;gap:4px 12px}.checks label{display:flex;align-items:center;color:var(--fg);font-size:13px;margin:0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px}
+button.go{background:var(--acc);color:#fff;border:0;padding:7px 16px;border-radius:6px;font:inherit;font-weight:600;cursor:pointer}
+button.go:disabled{opacity:.5;cursor:default}button.sec{background:none;border:1px solid var(--rule);color:var(--fg);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+pre{background:var(--code);border:1px solid var(--rule);border-radius:6px;padding:10px;max-height:52vh;overflow:auto;margin:8px 0 0;
+font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600}
+.b-run{background:var(--degbg);color:var(--deg)}.b-ok{background:var(--okbg);color:var(--ok)}.b-bad{background:var(--downbg);color:var(--down)}
+.wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:640px;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--rule);vertical-align:top}th{color:var(--mut);font-weight:600}
+a{color:var(--acc)}.err{color:var(--down);font-weight:600}.hide{display:none}
+code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:1px 4px;border-radius:4px}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Helios link debug</h1><div class="mut" id="where">read-only link checks of the scale-up fabric</div></div>
+  <div style="min-width:240px"><label for="inv">Rack inventory</label><select id="inv"></select></div>
+</header>
+<main>
+  <div id="inverr" class="card err hide"></div>
+  <nav role="tablist">
+    <button role="tab" data-t="scan" aria-selected="true">Scan</button>
+    <button role="tab" data-t="bcm">Broadcom shell</button>
+    <button role="tab" data-t="path">GPU path</button>
+    <button role="tab" data-t="pingmap">Ping map</button>
+    <button role="tab" data-t="history">History</button>
+  </nav>
+
+  <section class="card" data-p="scan">
+    <h2>Link scan</h2>
+    <p class="mut">Every GPU link (switch port to GPU port), one root cause per problem link, GPU state. Read-only.</p>
+    <div class="grid">
+      <div><label>Switch trays (none = all)</label><div class="checks" id="scan-sw"></div></div>
+      <div><label>Compute trays (none = all)</label><div class="checks" id="scan-ct"></div></div>
+      <div><label for="scan-interval">Counter sample interval (s)</label><input id="scan-interval" type="number" min="0" max="600" value="30"></div>
+      <div><label for="scan-cmp">Compare with an earlier scan</label><select id="scan-cmp"><option value="">no</option></select></div>
+    </div>
+    <div class="grid" style="margin-top:10px">
+      <div class="checks"><label><input type="checkbox" id="scan-bcm" checked>Broadcom view of physical-layer problems</label></div>
+      <div class="checks"><label><input type="checkbox" id="scan-afm">AFM view (GPU vPOD membership, accelerator ids, AFM port state)</label></div>
+      <div id="afm-pw-box" class="hide"><label for="scan-afmpw">AFM password (used for this run only, not stored)</label><input id="scan-afmpw" type="password" autocomplete="off"></div>
+    </div>
+    <div class="row"><button class="go" data-run="scan">Run scan</button><span class="mut" id="afm-note"></span></div>
+  </section>
+
+  <section class="card hide" data-p="bcm">
+    <h2>Broadcom shell view</h2>
+    <p class="mut">Lane-by-lane signal, receiver lock, link training and signal quality from the switch ASIC (bcmcmd lookups, read-only).</p>
+    <div class="grid">
+      <div><label>Switch trays (none = all)</label><div class="checks" id="bcm-sw"></div></div>
+      <div><label for="bcm-ports">SONiC ports (empty = every oper-down trunk port)</label><input id="bcm-ports" placeholder="Ethernet257,Ethernet261"></div>
+      <div class="checks" style="align-items:end"><label><input type="checkbox" id="bcm-all">every trunk port cabled to a GPU (one line each)</label></div>
+    </div>
+    <div class="row"><button class="go" data-run="bcm">Run Broadcom view</button></div>
+  </section>
+
+  <section class="card hide" data-p="path">
+    <h2>One GPU-to-GPU path</h2>
+    <p class="mut">Checks a path port by port: both forwarding entries, an L2 ping (afmctl ping) and the counters around it. The ping sends a few packets on the scale-up fabric.</p>
+    <div class="grid">
+      <div><label for="path-src">Source tray</label><select id="path-src"></select></div>
+      <div><label for="path-srcbdf">Source GPU BDF</label><input id="path-srcbdf" placeholder="0004:01:00.1"></div>
+      <div><label for="path-dst">Destination tray (empty = source)</label><select id="path-dst"><option value="">same as source</option></select></div>
+      <div><label for="path-dstbdf">Destination GPU BDF</label><input id="path-dstbdf" placeholder="0001:01:00.1"></div>
+      <div><label for="path-dstacc">or destination accelerator id</label><input id="path-dstacc" type="number" min="0" placeholder="8"></div>
+      <div><label for="path-ports">GPU ports (empty = every port up on both)</label><input id="path-ports" placeholder="25,26"></div>
+      <div><label for="path-count">Pings per port set</label><input id="path-count" type="number" min="1" max="100" value="1"></div>
+      <div class="checks" style="align-items:end"><label><input type="checkbox" id="path-noping">no ping (checks only)</label></div>
+    </div>
+    <div class="row"><button class="go" data-run="path">Check path</button></div>
+  </section>
+
+  <section class="card hide" data-p="pingmap">
+    <h2>Repeated ping map</h2>
+    <p class="mut">A ring of L2 pings, repeated; failures mapped to GPU port numbers and switch ASICs, sticky (every round) or moving.</p>
+    <div class="grid">
+      <div><label>Switch trays (none = all)</label><div class="checks" id="pm-sw"></div></div>
+      <div><label>Compute trays (none = all)</label><div class="checks" id="pm-ct"></div></div>
+      <div><label for="pm-rounds">Rounds</label><input id="pm-rounds" type="number" min="1" max="100" value="3"></div>
+      <div><label for="pm-wait">Seconds between rounds</label><input id="pm-wait" type="number" min="0" max="3600" value="60"></div>
+    </div>
+    <div class="row"><button class="go" data-run="pingmap">Run ping map</button></div>
+  </section>
+
+  <section class="card hide" data-p="history">
+    <h2>Earlier runs</h2>
+    <div class="wrap"><table><thead><tr><th>When (local)</th><th>Rack</th><th>Tool</th><th>Summary</th><th>Files</th></tr></thead><tbody id="hist"></tbody></table></div>
+  </section>
+
+  <section class="card" id="jobcard">
+    <h2>Run <span id="jobbadge"></span></h2>
+    <div id="jobinfo" class="mut">Nothing running.</div>
+    <div class="row"><button class="sec hide" id="stop">Stop</button><span id="joblinks"></span></div>
+    <pre id="log" class="hide" aria-live="polite"></pre>
+  </section>
+</main>
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id)};
+var invs=[],job=null,since=0,timer=null;
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]})}
+function api(path,body){
+  var o=body?{method:"POST",headers:{"Content-Type":"application/json","X-Helios-Debug":"1"},body:JSON.stringify(body)}:{};
+  return fetch(path,o).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||("HTTP "+r.status));return j})});
+}
+function inv(){return invs.filter(function(i){return i.file===$("inv").value})[0]}
+function checks(id,names){$(id).innerHTML=names.map(function(n){return '<label><input type="checkbox" value="'+esc(n)+'">'+esc(n)+'</label>'}).join("")||'<span class="mut">none</span>'}
+function picked(id){return Array.prototype.map.call($(id).querySelectorAll("input:checked"),function(x){return x.value})}
+function fillInv(){
+  var i=inv();if(!i)return;
+  $("inverr").classList.toggle("hide",!i.error);$("inverr").textContent=i.error?("Inventory "+i.file+": "+i.error):"";
+  if(i.error)return;
+  ["scan-sw","bcm-sw","pm-sw"].forEach(function(id){checks(id,i.switches)});
+  ["scan-ct","pm-ct"].forEach(function(id){checks(id,i.computes)});
+  $("path-src").innerHTML=i.computes.map(function(n){return "<option>"+esc(n)+"</option>"}).join("");
+  $("path-dst").innerHTML='<option value="">same as source</option>'+i.computes.map(function(n){return "<option>"+esc(n)+"</option>"}).join("");
+  $("scan-afm").disabled=!i.afm;
+  $("afm-note").textContent=i.afm?"":"AFM view: this inventory has no afm: block.";
+  if(!i.afm){$("scan-afm").checked=false;$("afm-pw-box").classList.add("hide")}
+  try{localStorage.setItem("hdbg-inv",i.file)}catch(e){}
+  loadHistory();
+}
+function tab(t){
+  document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===t)});
+  document.querySelectorAll("section[data-p]").forEach(function(s){s.classList.toggle("hide",s.dataset.p!==t)});
+  if(t==="history")loadHistory();
+  try{localStorage.setItem("hdbg-tab",t)}catch(e){}
+}
+function req(tool){
+  var r={tool:tool,inventory:$("inv").value};
+  if(tool==="scan"){r.switches=picked("scan-sw");r.trays=picked("scan-ct");r.interval=+$("scan-interval").value;
+    r.no_bcm=!$("scan-bcm").checked;r.afm=$("scan-afm").checked;if(r.afm&&$("scan-afmpw").value)r.afm_password=$("scan-afmpw").value;
+    if($("scan-cmp").value)r.compare=$("scan-cmp").value}
+  if(tool==="bcm"){r.switches=picked("bcm-sw");r.ports=$("bcm-ports").value.trim();r.all=$("bcm-all").checked}
+  if(tool==="path"){r.src=$("path-src").value;r.src_bdf=$("path-srcbdf").value.trim();r.dst=$("path-dst").value;
+    r.dst_bdf=$("path-dstbdf").value.trim();r.dst_acc=$("path-dstacc").value;r.ports=$("path-ports").value.trim();
+    r.count=+$("path-count").value;r.no_ping=$("path-noping").checked}
+  if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
+  return r;
+}
+function run(tool){
+  api("/api/run",req(tool)).then(function(j){$("scan-afmpw").value="";show(j,true)}).catch(function(e){
+    $("jobinfo").innerHTML='<span class="err">'+esc(e.message)+'</span>'})
+}
+function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<span class="badge '+c+'">'+esc(s)+'</span>'}
+function links(j){
+  if(!j||j.status==="running")return "";
+  var b="/results/"+j.out+"/";
+  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:["report.html","report.txt"];
+  return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ");
+}
+function show(j,fresh){
+  if(fresh){job=j;since=0;$("log").textContent=""}
+  job=j;
+  $("jobbadge").innerHTML=badge(j.status);
+  $("jobinfo").textContent=j.tool+" on "+j.rack+" ("+j.inventory+"), started "+new Date(j.started*1000).toLocaleTimeString()+
+    (j.ended?", ended "+new Date(j.ended*1000).toLocaleTimeString():"")+(j.rc!=null?", exit "+j.rc:"");
+  $("stop").classList.toggle("hide",j.status!=="running");
+  $("log").classList.remove("hide");
+  $("joblinks").innerHTML=links(j);
+  if(j.status==="running"){clearTimeout(timer);timer=setTimeout(poll,1000)}else{loadHistory()}
+}
+function poll(){
+  if(!job)return;
+  api("/api/job/"+job.id+"?since="+since).then(function(j){
+    if(j.log){var pre=$("log"),end=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-20;pre.textContent+=j.log;if(end)pre.scrollTop=pre.scrollHeight}
+    since=j.log_len;show(j,false)}).catch(function(){clearTimeout(timer);timer=setTimeout(poll,3000)})
+}
+function loadHistory(){
+  api("/api/results").then(function(r){
+    var i=inv(),rack=i&&i.rack,rows=r.results.filter(function(x){return !rack||x.rack===rack});
+    $("hist").innerHTML=rows.map(function(x){
+      return "<tr><td>"+esc(new Date(x.mtime*1000).toLocaleString())+"</td><td>"+esc(x.rack)+"</td><td>"+esc(x.tool)+"</td><td>"+esc(x.summary)+
+        "</td><td>"+x.files.map(function(f){return '<a href="/results/'+esc(x.path+"/"+f)+'" target="_blank" rel="noopener">'+esc(f)+'</a>'}).join("<br>")+"</td></tr>"
+    }).join("")||'<tr><td colspan="5" class="mut">No runs yet for this rack.</td></tr>';
+    var scans=rows.filter(function(x){return x.tool==="scan"&&x.files.indexOf("link_check.json")>=0});
+    $("scan-cmp").innerHTML='<option value="">no</option>'+scans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+"</option>"}).join("");
+  }).catch(function(){})
+}
+document.querySelectorAll("nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.t)})});
+document.querySelectorAll("button[data-run]").forEach(function(b){b.addEventListener("click",function(){run(b.dataset.run)})});
+$("inv").addEventListener("change",fillInv);
+$("scan-afm").addEventListener("change",function(){$("afm-pw-box").classList.toggle("hide",!$("scan-afm").checked)});
+$("stop").addEventListener("click",function(){if(job)api("/api/job/"+job.id+"/stop",{}).then(function(j){show(j,false)})});
+api("/api/state").then(function(s){
+  invs=s.inventories;$("where").textContent="on "+s.host+" · read-only link checks of the scale-up fabric";
+  var keep="";try{keep=localStorage.getItem("hdbg-inv")||""}catch(e){}
+  $("inv").innerHTML=invs.map(function(i){return '<option value="'+esc(i.file)+'">'+esc((i.rack||i.file)+" ("+i.file+")")+"</option>"}).join("")||"<option>no inventory</option>";
+  if(keep&&invs.some(function(i){return i.file===keep}))$("inv").value=keep;
+  fillInv();
+  if(s.current){show(s.current,true);poll()}
+  var t="";try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}if(t)tab(t);
+}).catch(function(e){$("inverr").classList.remove("hide");$("inverr").textContent="UI server not answering: "+e.message});
+})();
+</script>
+</body>
+</html>

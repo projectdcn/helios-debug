@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shlex
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -306,7 +307,7 @@ class SshTransport:
 
 
 class LocalTransport:
-    """Runs commands on the test runner itself (BMC/PDU power control, ipmitool)."""
+    """Runs commands on this machine: the switch tray the debug UI is installed on (inventory ``local: true``)."""
 
     def __init__(self, host: Host):
         self.host = host
@@ -316,13 +317,16 @@ class LocalTransport:
         import subprocess
 
         full = build_command(cmd, sudo, env)
-        start = time.monotonic()
+        start, t0 = time.monotonic(), time.time()
         log.debug("[local] $ %s", full)
         try:
             p = subprocess.run(["bash", "-c", full], capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired as e:
+            _record(self.host.name, full, None, f"CommandTimeout: timed out after {timeout}s", t0)
             raise CommandTimeout(f"[local] timed out after {timeout}s: {cmd}") from e
-        return CmdResult(self.host.name, cmd, p.returncode, p.stdout, p.stderr, time.monotonic() - start)
+        res = CmdResult(self.host.name, cmd, p.returncode, p.stdout, p.stderr, time.monotonic() - start)
+        _record(self.host.name, full, res, None, t0)
+        return res
 
     def close(self) -> None:
         pass
@@ -428,7 +432,35 @@ def _jump_client(jump: dict, timeout: float, tag: str = ""):
         return c
 
 
+_LOCAL_ADDRS: set[str] | None = None
+
+
+def local_addresses() -> set[str]:
+    """This machine's own addresses and host names (Linux ``ip -o addr``; empty elsewhere)."""
+    global _LOCAL_ADDRS
+    if _LOCAL_ADDRS is None:
+        import subprocess
+        addrs = {socket.gethostname(), socket.gethostname().split(".")[0], "localhost", "127.0.0.1"}
+        try:
+            out = subprocess.run(["ip", "-o", "addr"], capture_output=True, text=True, timeout=10).stdout
+            addrs |= {m.split("/")[0] for m in re.findall(r"\binet6? (\S+)", out)}
+        except Exception:  # noqa: BLE001 - not Linux / no ip: only the names above
+            pass
+        _LOCAL_ADDRS = addrs
+    return _LOCAL_ADDRS
+
+
+def is_local(host: Host) -> bool:
+    """Inventory ``local: true``, or - when $HELIOS_DEBUG_AUTO_LOCAL=1 (the debug UI on a switch tray sets it) - the
+    host's address is one of this machine's own, so the switch the UI runs on is read directly, not over SSH."""
+    if (host.extra or {}).get("local") is True:
+        return True
+    return os.environ.get("HELIOS_DEBUG_AUTO_LOCAL") == "1" and str(host.host) in local_addresses()
+
+
 def make_transport(host: Host, cfg: dict[str, Any]) -> Transport:
+    if is_local(host):
+        return LocalTransport(host)
     kind = cfg.get("kind", "ssh")
     if kind == "ssh":
         return SshTransport(host, connect_timeout=float(cfg.get("connect_timeout", 15)), jump=cfg.get("jump"))

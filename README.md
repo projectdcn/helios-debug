@@ -68,6 +68,31 @@ log per switch / tray - each command, its exit code and output, trimmed to `--lo
 `link_check.json`, raw outputs (`raw/*.json.gz`) and the full command log (`raw/commands.log.gz`; `commands.log.gz` for
 `path`, `pingmap` and `bcm`). A scan needs ~50 MB free.
 
+## Web UI on a switch tray
+
+`ui/` is a small web UI for the same tools (scan, Broadcom shell view, GPU path, ping map, and a history of earlier
+runs with their reports). Standard library only: it installs on a SONiC switch tray and runs on the switch's own
+python3, PyYAML and paramiko - no sudo, nothing outside the user's home.
+
+```
+python3 tools/build_switch_bundle.py [--inventory inventory/mr3.local.yaml]     # on your machine
+scp dist/helios-debug-ui-<v>.tar.gz admin@<switch>:
+ssh admin@<switch> 'tar -xzf helios-debug-ui-<v>.tar.gz && helios-debug-ui-<v>/install.sh'
+```
+
+- Installs to `~/helios-debug-ui` (`app/`, `inventory/`, `results/`, `start.sh` / `stop.sh` / `status.sh` /
+  `rollback.sh`); the previous version is kept as `app.prev`; inventories and results survive upgrades.
+- Creates `~/.ssh/id_ed25519_heliosdbg` if missing: copy it once to each compute tray (and the other switches of a
+  full rack) with `ssh-copy-id -i ~/.ssh/id_ed25519_heliosdbg.pub <user>@<tray>`. The switch the UI runs on is
+  read directly, not over SSH (its address is one of the machine's own).
+- Listens on 127.0.0.1:8780 only. From your machine: `ssh -L 8780:localhost:8780 admin@<switch>`, then
+  http://localhost:8780. Requests with another Host header, or a POST without the UI's own header, are refused.
+- The AFM password for a scan's AFM view is typed in the page, handed to that one run in its environment and kept
+  nowhere else.
+- Not started at boot: run `~/helios-debug-ui/start.sh`. A SONiC image upgrade may not keep the home directory.
+
+On your own machine: `python3 -m ui` in this repo (inventories from `inventory/`, results in `results/`).
+
 ## Tests
 
 ```bash
@@ -79,6 +104,7 @@ log per switch / tray - each command, its exit code and output, trimmed to `--lo
 ```
 heliosdbg/   linkdiag.py (join + root cause), bcm.py (Broadcom shell view), sonic.py / afmctl.py / parsers.py (read and parse), inventory.py,
              transport.py (SSH, jump host), rack.py, compute.py, afm.py (read-only AFM client, standard library)
+ui/          server.py (web UI, standard library), static/index.html
 tools/       link_check.py
 docs/        link-debug-guide.md, scaleup-topology.html
 inventory/   templates (+ your git-ignored *.local.yaml)

@@ -5,3 +5,4 @@ __pycache__/
 inventory/*.local.yaml
 results/
 .DS_Store
+dist/

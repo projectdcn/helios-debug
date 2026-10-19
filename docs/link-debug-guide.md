@@ -81,6 +81,8 @@ python tools/link_check.py scan --inventory <inventory> --switches st6 --trays c
 
 A partial scan is quicker and lighter on the jump host; links of trays left out are not reported. The patterns across trays (the same GPU position failing on several trays) need the full scan. `pingmap` takes the same two options.
 
+**From a browser, on the switch tray.** The same tools have a web UI that installs on a switch tray (README: Web UI on a switch tray): pick the rack, run a scan, a Broadcom view, a GPU path check or a ping map, watch the output live, and open any earlier run's report. It listens on the switch's localhost only; open it with `ssh -L 8780:localhost:8780 admin@<switch>` and http://localhost:8780.
+
 **As part of the rack health check.** The health check of the test automation (`tools/rack_health.py` in helios-tests) runs this scan as case HC-012, a warning next to HC-001 to HC-011: it calls `tools/link_check.py scan` from this repo as a separate program (found next to the test repo, in `~/helios-debug`, or where `thresholds.health.link_check.dir` points) and turns each root cause into a failure line. g02-g17 19 Oct 01:22 UTC: 2,592 links, 2,443 ok, 144 CT05 (quarantined), 5 real down links on GPU position `0002:01:00.1` - FAIL as expected; MR2: PASS, 288 / 288.
 
 **What the switch ASIC sees.** For a down or degraded switch port, `bcm` reads the Broadcom shell lane by lane: whether any signal arrives, receiver lock, link training and signal quality (see Layer 1 from the Broadcom shell). `scan` already adds it to every physical-layer problem link, and reads one working port on the same ASIC as the reference for what a clean lane looks like on that rack.
