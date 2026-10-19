@@ -91,6 +91,8 @@ ssh admin@<switch> 'tar -xzf helios-debug-ui-<v>.tar.gz && helios-debug-ui-<v>/i
 - SSH access tab: checks a key login + sudo on every node of the inventory; where it fails, type that node's
   password once and the UI installs the key the tools use there (like ssh-copy-id, through the jump host if
   the inventory has one). The password is used for that one login and kept nowhere.
+- Live mode (Rack map): off by default; follows the switch / tray logs and re-reads periodically so the map
+  changes as links change; one rack at a time, stops by itself after 8 h or 30 min unwatched.
 - The AFM password for a scan's AFM view is typed in the page, handed to that one run in its environment and kept
   nowhere else.
 - Not started at boot: run `~/helios-debug-ui/start.sh`. A SONiC image upgrade may not keep the home directory.
