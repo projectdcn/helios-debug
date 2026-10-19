@@ -71,7 +71,7 @@ nav button.exp{border-style:dashed}
   <div class="hdr-right">
     <div style="min-width:240px"><label for="inv">Rack</label><select id="inv"></select></div>
     <div><label>Mode</label><div class="mode" role="group" aria-label="Mode"><button id="m-simple" aria-pressed="true" title="The main tasks only">Simple</button><button id="m-expert" aria-pressed="false" title="Every tool, including the disruptive one">Expert</button></div></div>
-    <div class="row" style="margin:0"><button class="sec" id="glossary-open">Glossary</button><a class="sec" style="text-decoration:none;padding:6px 12px;border:1px solid var(--rule);border-radius:6px" href="/guide" target="_blank" rel="noopener">Debug guide</a><a class="sec" style="text-decoration:none;padding:6px 12px;border:1px solid var(--rule);border-radius:6px" href="/topology" target="_blank" rel="noopener" title="How the GPUs of the g02-g17 full rack are cabled to its switch trays">Topology (g02-g17)</a></div>
+    <div class="row" style="margin:0"><button class="sec" id="glossary-open">Glossary</button><button class="sec" id="guide-open">Debug guide</button></div>
   </div>
 </header>
 <main>
@@ -84,6 +84,8 @@ nav button.exp{border-style:dashed}
     <button role="tab" data-t="history">Earlier results</button>
     <button role="tab" data-t="access">Access to the rack</button>
     <button role="tab" data-t="newrack">Add a rack</button>
+    <button role="tab" data-t="topology">Topology</button>
+    <button role="tab" data-t="guide">Debug guide</button>
     <button role="tab" data-t="overview" class="exp" data-x>All racks</button>
     <button role="tab" data-t="watch" class="exp" data-x>Watch links</button>
     <button role="tab" data-t="cabling" class="exp" data-x>Cabling plan</button>
@@ -100,6 +102,18 @@ nav button.exp{border-style:dashed}
       one tool marked "disruptive" (Expert mode).</p>
     <ol class="steps" id="home-steps"></ol>
     <div id="home-sum"></div>
+  </section>
+
+  <section class="card hide" data-p="topology">
+    <h2>Scale-up topology (g02-g17 full rack)</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>How every GPU port of the g02-g17 full rack is cabled to a switch port: 18 compute trays x 4 GPUs x 36 ports over 6 switch trays, and which switch chip serves which plane.</dd><dt>When</dt><dd>To understand why a problem on one switch chip or one GPU port number affects many GPUs, or to find where a port is cabled.</dd><dt>How long</dt><dd>Instant.</dd><dt>Safe?</dt><dd>Yes - a reference page; nothing is read from the rack. For a mini rack (MR2, MR3) use the Rack map after a check.</dd></dl></details>
+    <iframe id="topo-frame" title="g02-g17 scale-up topology" style="width:100%;height:calc(100vh - 230px);min-height:520px;border:1px solid var(--rule);border-radius:8px;background:#fff" loading="lazy"></iframe>
+  </section>
+
+  <section class="card hide" data-p="guide">
+    <h2>Debug guide</h2>
+    <p class="mut">How to find the cause of a link problem by hand, layer by layer, with every command - and what each tool here does.</p>
+    <iframe id="guide-frame" title="Debug guide" style="width:100%;height:calc(100vh - 200px);min-height:520px;border:1px solid var(--rule);border-radius:8px;background:#fff" loading="lazy"></iframe>
   </section>
 
   <section class="card hide" data-p="overview">
@@ -325,7 +339,7 @@ nav button.exp{border-style:dashed}
     <dt>Compute tray (c1, ct13)</dt><dd>A server with 4 GPUs. Its position in the rack is its slot number.</dd>
     <dt>GPU port</dt><dd>Each GPU has 36 network ports (0-35); each is cabled to one switch port. That pair is a link.</dd>
     <dt>BDF (0002:01:00.1)</dt><dd>The address of a GPU inside its tray. A tray's 4 GPUs are 0001, 0002, 0003, 0004.</dd>
-    <dt>Topology</dt><dd>How every GPU port is cabled to a switch port - see the <a href="/topology" target="_blank" rel="noopener">g02-g17 topology page</a> (full rack: 18 trays x 4 GPUs x 36 ports, 6 switch trays).</dd>
+    <dt>Topology</dt><dd>How every GPU port is cabled to a switch port - see the <a href="#" data-goto="topology" id="gl-topo">Topology tab</a> (full rack: 18 trays x 4 GPUs x 36 ports, 6 switch trays).</dd>
     <dt>Plane</dt><dd>All links that use the same GPU port number form one plane. Losing a link reduces the planes a group of GPUs can use.</dd>
     <dt>AFM</dt><dd>The fabric manager software: it programs the switches and GPUs. Its view (optional) needs its admin password.</dd>
     <dt>vPOD</dt><dd>A group of GPUs that work together; AFM programs the links of the GPUs in it.</dd>
@@ -380,6 +394,8 @@ function tab(t){
   if(t==="home")renderHome();
   if(t==="link")loadPickers();
   if(t==="path")loadPath();
+  if(t==="topology"&&!$("topo-frame").getAttribute("src"))$("topo-frame").setAttribute("src","/topology");
+  if(t==="guide"&&!$("guide-frame").getAttribute("src"))$("guide-frame").setAttribute("src","/guide");
   if(document.querySelector("section[data-p=\""+t+"\"]"))moveJobcard();
   try{history.replaceState(null,"","#tab="+t+"&inv="+encodeURIComponent($("inv").value||""))}catch(e){}
   if(t==="access")loadAccess();
@@ -556,6 +572,8 @@ $("m-simple").addEventListener("click",function(){setMode(false)});
 $("m-expert").addEventListener("click",function(){setMode(true)});
 $("glossary-open").addEventListener("click",function(){$("glossary").showModal()});
 $("glossary-close").addEventListener("click",function(){$("glossary").close()});
+$("guide-open").addEventListener("click",function(){tab("guide")});
+$("gl-topo").addEventListener("click",function(e){e.preventDefault();$("glossary").close();tab("topology")});
 // ---------------------------------------------------------------- link pickers
 var pickScan=null;
 function loadPickers(){

@@ -522,13 +522,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, g.read_bytes(), "text/html; charset=utf-8",   # self-contained: data + drawing, no fetches
                                   {"Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' "
                                                               "https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
-                                                              "img-src data:; frame-ancestors 'none'"})
+                                                              "img-src data:; frame-ancestors 'self'"})   # shown in the UI's Topology tab
             if u.path == "/guide":
                 g = ROOT / "docs" / "link-debug-guide.html"
                 if not g.is_file():
                     return self._json(404, {"error": "the debug guide is not installed"})
                 return self._send(200, g.read_bytes(), "text/html; charset=utf-8",
-                                  {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'"})
+                                  {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'"})
             if u.path == "/api/bundle":
                 from heliosdbg import bundle
                 rel = (q.get("path") or [""])[0]

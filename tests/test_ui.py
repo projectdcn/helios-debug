@@ -235,5 +235,7 @@ def test_guide_and_topology_pages_served(ui):
     for path, words in (("/guide", b"Debug Guide"), ("/topology", b"Scale-up")):
         r = urllib.request.urlopen(base + path, timeout=10)
         body = r.read()
-        assert r.status == 200 and words in body and "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
-    assert b'href="/topology"' in call(base, "/")[1]
+        assert r.status == 200 and words in body and "frame-ancestors" in r.headers["Content-Security-Policy"]
+        assert "frame-ancestors 'self'" in r.headers["Content-Security-Policy"]     # shown inside the UI's tabs only
+    page = call(base, "/")[1]
+    assert b'data-t="topology"' in page and b'data-t="guide"' in page and b'target="_blank" rel="noopener">Debug guide' not in page and b'target="_blank" rel="noopener" title="How the GPUs' not in page
