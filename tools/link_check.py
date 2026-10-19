@@ -994,6 +994,60 @@ code{{font:12px ui-monospace,Menlo,Consolas,monospace}}</style></head><body>
 """)
 
 
+def cabling_cmd(a) -> int:
+    from heliosdbg import cabling
+    inv = load_inventory(a.inventory)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    rack_dir = (a.out.parent if a.out else ROOT / "results" / "link-check" / (inv.rack or "rack"))
+    scan = json.loads(Path(a.scan).read_text()) if a.scan else _latest_scan(rack_dir)
+    if not scan:
+        print(f"no scan of {inv.rack} to compare with - run a scan first (or --scan <link_check.json>)", file=sys.stderr)
+        return 2
+    slots = (scan.get("learned") or {}).get("slots") or {}
+    if a.export:
+        text = cabling.export(scan.get("links") or [])
+        if a.export == "-":
+            print(text, end="")
+        else:
+            Path(a.export).write_text(text)
+            print(f"{len(text.splitlines()) - 1} rows -> {a.export}")
+        return 0
+    if not a.plan:
+        print("give --plan <csv> (or --export <file> to start one from the scan)", file=sys.stderr)
+        return 2
+    try:
+        plan = cabling.read_plan(Path(a.plan).read_text(), slots)
+    except (OSError, ValueError) as e:
+        print(f"plan: {e}", file=sys.stderr)
+        return 2
+    res = cabling.check(plan, scan.get("links") or [], slots, (scan.get("learned") or {}).get("gpu_map") or {})
+    out = a.out or rack_dir / f"cabling-{stamp}"
+    out.mkdir(parents=True, exist_ok=True)
+    by = {}
+    for x in res["problems"]:
+        by[x["kind"]] = by.get(x["kind"], 0) + 1
+    lines = [f"Cabling check {stamp} UTC rack {inv.rack}: plan {res['plan_rows']} rows, {res['ok']} as planned, "
+             f"{len(res['problems'])} problem(s) " + (str(by) if by else ""),
+             f"against the scan {scan.get('time_utc')} UTC ({scan.get('_file', a.scan)})", ""]
+    lines += [f"  {x['kind']:<17} {x['switch']} {x['port']}: {x['detail']}" for x in res["problems"][:200]]
+    if len(res["problems"]) > 200:
+        lines.append(f"  ... {len(res['problems']) - 200} more in cabling.json")
+    print("\n".join(lines))
+    (out / "report.txt").write_text("\n".join(lines) + "\n")
+    (out / "cabling.json").write_text(json.dumps(res | {"scan": scan.get("time_utc"), "time_utc": stamp}, indent=1))
+    rows = "".join(f"<tr><td>{esc(x['kind'])}</td><td>{esc(x['switch'])} {esc(x['port'])}</td><td>{esc(x.get('plan', ''))}</td>"
+                   f"<td>{esc(x.get('seen', ''))}</td><td>{esc(x['detail'])}</td></tr>" for x in res["problems"])
+    (out / "report.html").write_text(
+        f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>Cabling check - {esc(inv.rack)}</title><style>body{{font:14px/1.5 -apple-system,Arial,sans-serif;margin:0;padding:24px max(16px,4vw);"
+        f"background:#f6f7f9;color:#1b2129}}@media (prefers-color-scheme:dark){{body{{background:#12161b;color:#e6eaef}}}}"
+        f"table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{text-align:left;padding:5px 8px;border-bottom:1px solid #8884}}"
+        f".wrap{{overflow-x:auto}}</style></head><body><h1>Cabling check: {esc(inv.rack)}</h1><p>{esc(lines[0])}<br>{esc(lines[1])}</p>"
+        f"<div class='wrap'><table><tr><th>Problem</th><th>Switch port</th><th>Plan</th><th>Seen</th><th>Detail</th></tr>"
+        f"{rows or '<tr><td colspan=5>Everything as planned.</td></tr>'}</table></div></body></html>")
+    return 1 if res["problems"] else 0
+
+
 def _kv(d: dict | None, keys=None) -> str:
     if not d:
         return "<p class='mut'>not read</p>"
@@ -1261,10 +1315,18 @@ def main(argv=None) -> int:
     w.add_argument("--every", type=float, default=10.0, help="seconds between reads (default 10, at least 2)")
     w.add_argument("--duration", type=float, default=600.0, help="how long to watch, seconds (default 600, at most 86400)")
     w.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/watch-<UTC time>)")
+    c = sub.add_parser("cabling", help="the expected cabling (CSV) against the latest scan, or export the scan's cabling")
+    c.add_argument("--inventory", **inv_kw)
+    c.add_argument("--plan", help="plan CSV: switch,port,slot,gpu,gpu_port (tray may replace slot)")
+    c.add_argument("--export", help="write the scan's cabling as a plan CSV to this file ('-' = stdout)")
+    c.add_argument("--scan", help="a scan's link_check.json (default: the rack's latest)")
+    c.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/cabling-<UTC time>)")
     a = ap.parse_args(argv)
     if a.cmd == "watch":
         a.every, a.duration = max(2.0, a.every), min(86400.0, max(a.every, a.duration))
-    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd, "watch": watch_cmd}[a.cmd]
+    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd, "watch": watch_cmd, "cabling": cabling_cmd}[a.cmd]
+    if a.cmd == "cabling":                               # no node is logged into
+        return fn(a)
     if a.cmd in ("scan", "link", "watch"):                        # these keep their log in raw/ and in report.html
         return fn(a)
     log = CommandLog()

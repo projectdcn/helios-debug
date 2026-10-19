@@ -35,7 +35,7 @@ from ui import access  # noqa: E402
 
 TOOL = ROOT / "tools" / "link_check.py"
 STATIC = Path(__file__).resolve().parent / "static"
-TOOLS = ("scan", "link", "watch", "bcm", "path", "pingmap")
+TOOLS = ("scan", "link", "watch", "cabling", "bcm", "path", "pingmap")
 TARGET_RX = re.compile(r"^[A-Za-z0-9 _./:\[\],()-]{1,200}$")
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PORTS_RX = re.compile(r"^Ethernet\d{1,4}(,Ethernet\d{1,4}){0,63}$")
@@ -177,6 +177,15 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
             raise BadRequest("watch: 1 to 64 links, one per line (st6 Ethernet257, ct13 0002:01:00.1 33, ...)")
         a[1:1] = targets
         a += ["--every", str(_int(req, "every", 2, 3600, 10)), "--duration", str(_int(req, "duration", 10, 86400, 600))]
+    elif tool == "cabling":
+        plan = str(req.get("plan") or "")
+        if not plan.strip() or len(plan) > 2_000_000:
+            raise BadRequest("cabling: paste the plan CSV (switch,port,slot,gpu,gpu_port)")
+        d = state.results_dir / "ui-jobs"
+        d.mkdir(parents=True, exist_ok=True)
+        pf = d / f"plan-{stamp}-{uuid.uuid4().hex[:6]}.csv"
+        pf.write_text(plan)
+        a += ["--plan", str(pf)]
     elif tool == "pingmap":
         a += ["--rounds", str(_int(req, "rounds", 1, 100, 3)), "--wait", str(_int(req, "wait", 0, 3600, 60))]
     elif tool == "bcm":
@@ -379,6 +388,15 @@ class Handler(BaseHTTPRequestHandler):
                 data, _stats = bundle.build(run)
                 return self._send(200, data, "application/zip",
                                   {"Content-Disposition": f'attachment; filename="{run.parent.name}-{run.name}.zip"'})
+            if u.path == "/api/cabling.csv":
+                from heliosdbg import cabling
+                f, inv = st.inventory((q.get("inventory") or [""])[0])
+                runs = sorted((st.results_dir / "link-check" / (inv.rack or f.stem)).glob("scan-*/link_check.json"), reverse=True)
+                if not runs:
+                    raise BadRequest("no scan of this rack yet - run one first")
+                text = cabling.export(json.loads(runs[0].read_text()).get("links") or [])
+                return self._send(200, text.encode(), "text/csv; charset=utf-8",
+                                  {"Content-Disposition": f'attachment; filename="{inv.rack}-cabling.csv"'})
             if u.path == "/api/scan":
                 return self._json(200, scan_view(st, (q.get("path") or [""])[0]))
             if u.path == "/api/results":

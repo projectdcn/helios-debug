@@ -55,6 +55,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
     <button role="tab" data-t="map">Rack map</button>
     <button role="tab" data-t="link">Diagnose a link</button>
     <button role="tab" data-t="watch">Watch links</button>
+    <button role="tab" data-t="cabling">Cabling plan</button>
     <button role="tab" data-t="scan" aria-selected="true">Scan</button>
     <button role="tab" data-t="bcm">Broadcom shell</button>
     <button role="tab" data-t="path">GPU path</button>
@@ -102,6 +103,16 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
       <div><label for="watch-dur">For (minutes)</label><input id="watch-dur" type="number" min="1" max="1440" value="10"></div>
     </div>
     <div class="row"><button class="go" data-run="watch">Start watching</button><span class="mut">Stop ends it early; the report covers the rounds read.</span></div>
+  </section>
+
+  <section class="card hide" data-p="cabling">
+    <h2>Cabling plan check</h2>
+    <p class="mut">The expected cabling against what the latest scan of this rack found (no login): ports missing, wrong
+      descriptions, links that reach a different GPU port than planned (with the move to make), links not in the plan.</p>
+    <p><a id="cab-export" href="#">Download the current cabling as a plan CSV</a> <span class="mut">(a starting point to correct against the site's records)</span></p>
+    <label for="cab-plan">Plan CSV: switch,port,slot,gpu,gpu_port (tray may replace slot)</label>
+    <textarea id="cab-plan" rows="8" style="width:100%;font:12px ui-monospace,Menlo,Consolas,monospace;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--bg);color:var(--fg)" placeholder="switch,port,slot,gpu,gpu_port&#10;st6,Ethernet257,17,2,13"></textarea>
+    <div class="row"><button class="go" data-run="cabling">Check the plan</button><label class="sec" style="cursor:pointer">Load a file<input type="file" id="cab-file" accept=".csv,text/csv" class="hide"></label></div>
   </section>
 
   <section class="card hide" data-p="scan">
@@ -232,6 +243,7 @@ function req(tool){
   if(tool==="link"){r.target=$("link-target").value.trim();r.interval=+$("link-interval").value;r.no_bcm=!$("link-bcm").checked;r.no_timeline=!$("link-tl").checked;r.hours=+$("link-hours").value;
     r.afm=$("link-afm").checked;if(r.afm&&$("link-afmpw").value)r.afm_password=$("link-afmpw").value}
   if(tool==="watch"){r.targets=$("watch-targets").value;r.every=+$("watch-every").value;r.duration=Math.round(+$("watch-dur").value*60)}
+  if(tool==="cabling"){r.plan=$("cab-plan").value}
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;
 }
@@ -243,7 +255,7 @@ function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<s
 function links(j){
   if(!j||j.status==="running")return "";
   var b="/results/"+j.out+"/";
-  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:["report.html","report.txt"];
+  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:j.tool==="cabling"?["report.html","report.txt","cabling.json"]:["report.html","report.txt"];
   return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ")+
     ' · <a href="/api/bundle?path='+encodeURIComponent(j.out)+'">bundle.zip</a>';
 }
@@ -317,6 +329,8 @@ function install(name){
   }).catch(function(e){if(f)f.value="";$("acc-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
 $("acc-check").addEventListener("click",checkAccess);
+$("cab-export").addEventListener("click",function(e){e.preventDefault();location.href="/api/cabling.csv?inventory="+encodeURIComponent($("inv").value)});
+$("cab-file").addEventListener("change",function(){var f=this.files[0];if(!f)return;var rd=new FileReader();rd.onload=function(){$("cab-plan").value=rd.result};rd.readAsText(f)});
 // ---------------------------------------------------------------- rack map
 var mapData=null,mapPrev=null,mapScans=[];
 function mapLoadScans(){
