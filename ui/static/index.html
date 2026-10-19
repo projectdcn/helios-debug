@@ -83,6 +83,8 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
       <div style="grid-column:1/-1"><label for="link-target">Link</label><input id="link-target" placeholder="st6 Ethernet257 | ct13 0002:01:00.1 33 | ct13 gpu1 port33 | slot17/gpu3/port33 | acc-id: 5, port-id: 32"></div>
       <div><label for="link-interval">Counter sample (s)</label><input id="link-interval" type="number" min="0" max="120" value="10"></div>
       <div class="checks" style="align-items:end"><label><input type="checkbox" id="link-bcm" checked>Broadcom lanes</label></div>
+      <div class="checks" style="align-items:end"><label><input type="checkbox" id="link-tl" checked>Timeline</label></div>
+      <div><label for="link-hours">Timeline window (hours)</label><input id="link-hours" type="number" min="1" max="720" value="24"></div>
       <div class="checks" style="align-items:end"><label><input type="checkbox" id="link-afm">AFM view</label></div>
       <div id="link-pw-box" class="hide"><label for="link-afmpw">AFM password (this run only)</label><input id="link-afmpw" type="password" autocomplete="off"></div>
     </div>
@@ -214,7 +216,7 @@ function req(tool){
   if(tool==="path"){r.src=$("path-src").value;r.src_bdf=$("path-srcbdf").value.trim();r.dst=$("path-dst").value;
     r.dst_bdf=$("path-dstbdf").value.trim();r.dst_acc=$("path-dstacc").value;r.ports=$("path-ports").value.trim();
     r.count=+$("path-count").value;r.no_ping=$("path-noping").checked}
-  if(tool==="link"){r.target=$("link-target").value.trim();r.interval=+$("link-interval").value;r.no_bcm=!$("link-bcm").checked;
+  if(tool==="link"){r.target=$("link-target").value.trim();r.interval=+$("link-interval").value;r.no_bcm=!$("link-bcm").checked;r.no_timeline=!$("link-tl").checked;r.hours=+$("link-hours").value;
     r.afm=$("link-afm").checked;if(r.afm&&$("link-afmpw").value)r.afm_password=$("link-afmpw").value}
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;

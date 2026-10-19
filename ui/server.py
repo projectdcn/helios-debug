@@ -163,9 +163,11 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
             raise BadRequest("link: give a switch port (st6 Ethernet257), a GPU port (ct13 0002:01:00.1 33), "
                              "slot17/gpu3/port33 or an AFM event (acc-id: 5, port-id: 32)")
         a.insert(1, target)
-        a += ["--interval", str(_int(req, "interval", 0, 120, 10))]
+        a += ["--interval", str(_int(req, "interval", 0, 120, 10)), "--hours", str(_int(req, "hours", 1, 720, 24))]
         if req.get("no_bcm"):
             a.append("--no-bcm")
+        if req.get("no_timeline"):
+            a.append("--no-timeline")
         if not req.get("afm"):
             a.append("--no-afm")
     elif tool == "pingmap":

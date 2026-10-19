@@ -825,6 +825,21 @@ def link_cmd(a) -> int:
             hits = [ln for ln in res["links"] if t.matches(ln)]
             if hits and not a.no_bcm:
                 linkdiag.add_bcm(rack, hits[:1], res["switches"], limit=1, force={(hits[0].switch, hits[0].sw_port)})
+            tl = None
+            if hits and not a.no_timeline:
+                from heliosdbg import timeline
+                h0 = hits[0]
+                dev0 = next((g for g in (res["trays"].get(h0.tray or "") or {}).get("gpus", []) if g["bdf"] == h0.bdf), {})
+                afm = None
+                if not a.no_afm and (inv.afm or {}).get("url"):
+                    from heliosdbg.afm import Afm, AfmUnavailable
+                    try:
+                        afm = Afm(inv.afm)
+                    except AfmUnavailable:
+                        afm = None
+                print(f"reading the last {a.hours} h of logs on {h0.switch} and {h0.tray} ...")
+                tl = timeline.collect(rack.switches[h0.switch], h0.sw_port, rack.computes.get(h0.tray or ""), h0.bdf,
+                                      dev0.get("accelerator"), h0.gpu_port, a.hours, afm)
     finally:
         rack.close()
     cmdlog.save(out / "raw")
@@ -851,13 +866,20 @@ def link_cmd(a) -> int:
         "gpu_state": [g for g in res.get("gpus") or [] if g["tray"] == ln.tray and g["bdf"] == ln.bdf],
         "afm_view": res["learned"].get("afm_view"), "interval_s": res["interval_s"],
         "hand_commands": _hand_commands(ln),
+        "timeline": tl,
     }
     (out / "link.json").write_text(json.dumps(detail, indent=1, default=str))
     lines = [f"{ln.state.upper()}  {ln.switch} {ln.asic} {ln.sw_port}  <->  {ln.tray} {ln.bdf} port {ln.gpu_port}",
              f"cause: {ln.cause or 'none - the link is ok on every layer checked'}"]
     if ln.state != "ok":
         lines += [f"owner: {ln.owner}", f"next:  {ln.action}"]
-    lines += ["", "evidence:"] + [f"  {e}" for e in ln.evidence] + ["", f"report: {out / 'report.html'}"]
+    lines += ["", "evidence:"] + [f"  {e}" for e in ln.evidence]
+    if tl:
+        from heliosdbg import timeline
+        lines += ["", "timeline:"] + [f"  {x}" for x in timeline.summary(tl)] + \
+                 [f"  {e['t'][:19]}  {e['side']:<6} {e['kind']:<9} {e['text'][:140]}" for e in tl["events"][-15:]] + \
+                 [f"  not read on {k}: {v}" for k, v in tl["errors"].items()]
+    lines += ["", f"report: {out / 'report.html'}"]
     print("\n".join(lines))
     (out / "report.txt").write_text("\n".join(lines) + "\n")
     write_link_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), ln, detail,
@@ -891,6 +913,20 @@ def _lanes_table(v: dict | None, ref: dict | None) -> str:
             f"<div class='wrap'><table>{head}{rows}</table></div>" + ref_line)
 
 
+def _timeline_html(tl: dict | None) -> str:
+    if not tl:
+        return ""
+    from heliosdbg import timeline
+    rows = "".join(f"<tr class='k-{esc(e['kind'])}'><td><code>{esc(e['t'][:23].replace('T', ' '))}</code></td><td>{esc(e['side'])}</td>"
+                   f"<td>{esc(e['source'])}</td><td>{esc(e['kind'])}</td><td>{esc(e['text'])}{(' (x' + str(e['count']) + ')') if e.get('count') else ''}</td></tr>"
+                   for e in tl["events"])
+    errs = "".join(f"<p class='err'>Not read on the {esc(k)}: {esc(v)}</p>" for k, v in tl["errors"].items())
+    return (f"<h2>Timeline (last {tl['hours']} h, UTC)</h2><div class='card'>" +
+            "".join(f"<p>{esc(x)}</p>" for x in timeline.summary(tl)) + errs +
+            (f"<div class='wrap' style='max-height:60vh;overflow:auto'><table><tr><th>Time</th><th>Side</th><th>Source</th><th>What</th><th>Detail</th></tr>{rows}</table></div>"
+             if rows else "<p class='mut'>Nothing logged about this link in that window.</p>") + "</div>")
+
+
 def write_link_html(path: Path, rack_name: str, when: str, ln, d: dict, cmdlog, log_keep: int, nodes: list[str]) -> None:
     g = ln.gpu or {}
     i = g.get("ifcp") or {}
@@ -911,7 +947,7 @@ h1{{font-size:1.35rem;margin:0}}h2{{font-size:1.05rem;margin:22px 0 8px}}.mut{{c
 .card{{background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:12px 16px}}
 .wrap{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--rule);vertical-align:top}}
 th{{color:var(--mut);font-weight:600}}table.kv th{{width:42%}}code{{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:1px 4px;border-radius:4px}}
-li.down b{{color:var(--down)}}li.degraded b{{color:var(--deg)}}.err{{color:var(--down);font-weight:600}}
+li.down b{{color:var(--down)}}tr.k-oper td,tr.k-admin td,tr.k-command td{{font-weight:600}}tr.k-error td{{color:var(--down)}}li.degraded b{{color:var(--deg)}}.err{{color:var(--down);font-weight:600}}
 details{{margin:4px 0}}pre{{background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:8px;overflow-x:auto;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace}}
 </style></head><body>
 <h1>{esc(ln.switch)} {esc(ln.asic)} {esc(ln.sw_port)} &harr; {esc(ln.tray)} {esc(ln.bdf)} port {esc(ln.gpu_port)}</h1>
@@ -935,6 +971,7 @@ details{{margin:4px 0}}pre{{background:var(--card);border:1px solid var(--rule);
 </div>
 <h2>Switch ASIC (Broadcom shell)</h2><div class='card'>{_lanes_table(ln.bcm, ln.bcm_ref)}</div>
 <h2>Evidence</h2><div class='card'><ul>{''.join(f'<li>{esc(e)}</li>' for e in ln.evidence) or '<li>none</li>'}</ul></div>
+{_timeline_html(d.get('timeline'))}
 <h2>Check it by hand</h2><div class='card wrap'><table><tr><th>On</th><th>Command</th></tr>{hand}</table></div>
 {("<h2>Command logs</h2>" + cmdlog.html(nodes, log_keep)) if cmdlog and cmdlog.entries else ''}
 </body></html>
@@ -1098,6 +1135,8 @@ def main(argv=None) -> int:
     k.add_argument("--no-bcm", action="store_true", help="skip the Broadcom shell view of the switch port")
     k.add_argument("--no-afm", action="store_true", help="skip the AFM view")
     k.add_argument("--no-cache", action="store_true", help="do not use the rack's latest scan to find the link")
+    k.add_argument("--hours", type=int, default=24, help="timeline window: logs of the last N hours (default 24)")
+    k.add_argument("--no-timeline", action="store_true", help="skip the timeline (switch syslog / auth.log, tray journal, AFM)")
     k.add_argument("--log-keep", type=int, default=400, help="lines of each command's output shown in report.html")
     k.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/link-<UTC time>)")
     a = ap.parse_args(argv)
