@@ -228,3 +228,12 @@ def test_gpus_view_for_the_path_pickers(ui):
             {"port": 2, "link": "LINK_UP", "admin": "idle"}]}]}, "c2": {"gpus": [], "error": "AuthenticationException"}}, fh)
     v = json.loads(call(base, "/api/gpus?inventory=lab.local.yaml")[1])
     assert v["trays"]["c1"]["slot"] == 0 and v["trays"]["c1"]["gpus"][0]["up"] == [0] and v["trays"]["c2"]["error"]
+
+
+def test_guide_and_topology_pages_served(ui):
+    base, _ = ui
+    for path, words in (("/guide", b"Debug Guide"), ("/topology", b"Scale-up")):
+        r = urllib.request.urlopen(base + path, timeout=10)
+        body = r.read()
+        assert r.status == 200 and words in body and "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+    assert b'href="/topology"' in call(base, "/")[1]
