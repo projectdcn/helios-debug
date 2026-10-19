@@ -765,43 +765,59 @@ def pingmap_cmd(a) -> int:
 def bcm_cmd(a) -> int:
     """Broadcom shell view of switch ports, lane by lane: signal detect, lock, SNR, eye, FEC codeword histogram."""
     from heliosdbg import bcm
+    from heliosdbg.afmctl import parse_port_description
     from heliosdbg.linkdiag import ns_flag
     inv = load_inventory(a.inventory)
     rack = Rack(inv)
-    if a.switch not in rack.switches:
-        raise SystemExit(f"unknown switch {a.switch} (inventory: {sorted(rack.switches)})")
-    sw = rack.switches[a.switch]
+    names = [x.strip() for x in (a.switch or "").split(",") if x.strip()] or sorted(rack.switches)
+    unknown = [n for n in names if n not in rack.switches]
+    if unknown:
+        raise SystemExit(f"unknown switch {unknown} (inventory: {sorted(rack.switches)})")
     want = {x.strip() for x in (a.ports or "").split(",") if x.strip()}
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"bcm-{stamp}"
     _OUTS.append(out)
     _room(out, 5)
-    lines, raw, bad = [f"Broadcom view {a.switch}  {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC", ""], {}, 0
+    what = "chosen ports" if want else "every cabled trunk port" if a.all else "oper-down trunk ports"
+    lines, raw, bad, seen = [f"Broadcom view {', '.join(names)} ({what})  {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC", ""], {}, 0, set()
     try:
-        for ns in sw.namespaces():
-            rows = {r.get("Interface"): r for r in parse_table(sw.sh(f"show interfaces status{ns_flag(ns)} -d all"))}
-            ports = {p: r.get("Lanes", "") for p, r in rows.items()
-                     if (p in want) or (not want and r.get("Vlan") == "trunk" and str(r.get("Oper")).lower() != "up")}
-            if not ports:
-                continue
-            ref = bcm.reference_port(rows, set(ports))
-            res = bcm.read_ports(sw, ns, ports | ({ref[0]: ref[1]} if ref else {}))
-            refv = res.pop(ref[0], None) if ref and ref[0] not in ports else (res.get(ref[0]) if ref else None)
-            for port in sorted(res, key=lambda x: int(re.sub(r"\D", "", x) or 0)):
-                v = res[port]
-                raw[f"{ns or ''}/{port}"] = v
-                oper = (rows.get(port) or {}).get("Oper")
-                finding, ev = bcm.judge(v, refv if ref and port != ref[0] else None, oper_down=str(oper).lower() != "up")
-                lines.append(f"{ns or ''} {port} (oper {oper}): {finding or 'nothing wrong seen by the ASIC'}")
-                lines += [f"    {e}" for e in ev]
-                bad += bool(finding)
+        for swn in names:
+            sw = rack.switches[swn]
+            for ns in sw.namespaces():
+                rows = {r.get("Interface"): r for r in parse_table(sw.sh(f"show interfaces status{ns_flag(ns)} -d all"))}
+                desc = sw.port_descriptions(ns) if a.all and not want else {}
+                ports = {p: r.get("Lanes", "") for p, r in rows.items()
+                         if (p in want) or (not want and r.get("Vlan") == "trunk" and
+                                            (parse_port_description(desc.get(p, "")) if a.all else str(r.get("Oper")).lower() != "up"))}
+                if not ports:
+                    continue
+                seen |= set(ports)
+                ref = bcm.reference_port(rows, set(ports))
+                res = bcm.read_ports(sw, ns, ports | ({ref[0]: ref[1]} if ref else {}))
+                refv = res.pop(ref[0], None) if ref and ref[0] not in ports else None
+                if refv is None:                       # every port read: the first healthy one is the reference
+                    refv = next((v for p, v in res.items() if str((rows.get(p) or {}).get("Oper")).lower() == "up"
+                                 and not v.get("error") and not bcm.judge(v)[0]), None)
+                for port in sorted(res, key=lambda x: int(re.sub(r"\D", "", x) or 0)):
+                    v = res[port]
+                    raw[f"{swn}/{ns or ''}/{port}"] = {k: x for k, x in v.items() if k != "raw"}
+                    oper = (rows.get(port) or {}).get("Oper")
+                    finding, ev = bcm.judge(v, refv, oper_down=str(oper).lower() != "up")
+                    if a.all and not want and not finding:
+                        lines.append(f"{swn} {ns or ''} {port} (oper {oper}) ok - {bcm.brief(v)}")
+                    else:
+                        lines.append(f"{swn} {ns or ''} {port} (oper {oper}): {finding or 'nothing wrong seen by the ASIC'}")
+                        lines += [f"    {e}" for e in ev]
+                    bad += bool(finding)
     finally:
         rack.close()
-    missing = want - {k.split("/", 1)[1] for k in raw}
+    missing = want - seen
     if missing:
-        lines.append(f"not found on {a.switch}: {', '.join(sorted(missing))}")
+        lines.append(f"not found on {', '.join(names)}: {', '.join(sorted(missing))}")
     if not raw:
-        lines.append("no ports to read" + ("" if want else " (no oper-down trunk port)"))
+        lines.append("no ports to read" + ("" if want or a.all else " - no oper-down trunk port (use --all for every cabled port)"))
+    else:
+        lines.append(f"\n{len(raw)} ports read, {bad} with a finding")
     out.mkdir(parents=True, exist_ok=True)
     (out / "bcm.txt").write_text("\n".join(lines) + "\n")
     (out / "bcm.json").write_text(json.dumps(raw, indent=1, default=str))
@@ -848,8 +864,9 @@ def main(argv=None) -> int:
     p.add_argument("--out", type=Path, help="evidence folder (default results/link-check/<rack>/<UTC time>)")
     b = sub.add_parser("bcm", help="what one switch's Broadcom ASIC sees on given ports, lane by lane (read-only)")
     b.add_argument("--inventory", **inv_kw)
-    b.add_argument("--switch", required=True, help="switch tray (inventory name), e.g. st6")
+    b.add_argument("--switch", help="switch tray(s), comma-separated inventory names (default: every switch)")
     b.add_argument("--ports", help="SONiC ports, e.g. Ethernet257,Ethernet261 (default: every oper-down trunk port)")
+    b.add_argument("--all", action="store_true", help="every trunk port cabled to a GPU, healthy ones too (one line each)")
     b.add_argument("--out", type=Path, help="evidence folder (default results/link-check/<rack>/bcm-<UTC time>)")
     a = ap.parse_args(argv)
     fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd}[a.cmd]

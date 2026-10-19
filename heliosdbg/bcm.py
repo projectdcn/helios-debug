@@ -82,12 +82,15 @@ def port_map(sw, ns) -> dict[int, tuple[str, int]]:
     return parse_pmap(sw.run(_script(unit_flag(ns), ["show pmap"]), timeout=120).stdout)
 
 
+PORTS_PER_CALL = 8      # ports read per SSH round trip (each still one bcmcmd call per table lookup)
+
+
 def read_ports(sw, ns, ports: dict[str, str], pmap: dict | None = None) -> dict[str, dict]:
     """{EthernetN: lanes '201,202'} -> {EthernetN: bcm view} for one ASIC; a port that cannot be mapped gets
-    {'error': ...}."""
+    {'error': ...}. Ports are read PORTS_PER_CALL at a time in one SSH round trip."""
     unit = unit_flag(ns)
     pmap = pmap if pmap is not None else port_map(sw, ns)
-    out = {}
+    out, jobs = {}, []
     for port, lanes in ports.items():
         lane_ids = [int(x) for x in re.findall(r"\d+", str(lanes or ""))]
         hit = pmap.get(lane_ids[0]) if lane_ids else None
@@ -95,32 +98,59 @@ def read_ports(sw, ns, ports: dict[str, str], pmap: dict | None = None) -> dict[
             out[port] = {"error": f"no Broadcom port for lanes '{lanes}' in show pmap"}
             continue
         name, lp = hit
-        n = len(lane_ids)
         cmds = [f'bsh -c "lt PC_PORT_STATUS lookup PORT_ID={lp} STATUS=STATUS_ALL"',
                 f'bsh -c "lt PC_PORT_CUMULATIVE_DIAG_STATS lookup PORT_ID={lp}"']
-        for i in range(n):
+        for i in range(len(lane_ids)):
             cmds += [f'bsh -c "lt PC_PHY_STATUS lookup PORT_ID={lp} LANE_INDEX={i}"',
                      f'bsh -c "lt PC_PHY_STATUS_2 lookup PORT_ID={lp} LANE_INDEX={i} STATUS=STATUS_2_ALL"']
-        r = sw.run(_script(unit, cmds), timeout=60 + 30 * len(cmds))
+        jobs.append((port, name, lp, lane_ids, cmds))
+    for k in range(0, len(jobs), PORTS_PER_CALL):
+        chunk = jobs[k:k + PORTS_PER_CALL]
+        allc = [c for j in chunk for c in j[4]]
+        r = sw.run(_script(unit, allc), timeout=60 + 30 * len(allc))
         parts = r.stdout.replace("\r", "").split(SEP)
-        if len(parts) < len(cmds):
-            out[port] = {"error": f"bcmcmd answered {len(parts)} of {len(cmds)} commands (rc {r.rc})", "bcm_port": name}
-            continue
-        st, fec = parse_lt(parts[0]), parse_lt(parts[1])
-        lanes_out = []
-        for i in range(n):
-            a, b = parse_lt(parts[2 + 2 * i]), parse_lt(parts[3 + 2 * i])
-            lanes_out.append({k: a.get(k) for k in LANE_FIELDS} | {k: b.get(k) for k in LANE2_FIELDS})
-        out[port] = {"bcm_port": name, "logical": lp, "lanes_sonic": lane_ids,
-                     "port": {k: st.get(k) for k in ("PMD_RX_LOCK", "PMD_LANE_RX_LOCK", "LINK_TRAINING",
-                                                     "LINK_TRAINING_DONE", "LOCAL_FAULT", "REMOTE_FAULT",
-                                                     "MAC_DISABLED", "PHY_DISABLED", "FEC_MODE")},
-                     "lane": lanes_out,
-                     "fec_bins": fec.get("FEC_CODE_WORD_ERROR_COUNTERS"),
-                     "fec": {k: fec.get(k) for k in ("FEC_CODEWORDS", "FEC_CORRECTED_CODEWORDS",
-                                                     "FEC_UNCORRECTED_CODEWORDS", "FEC_SYMBOL_ERRORS")},
-                     "raw": parts[:len(cmds)]}
+        off = 0
+        for port, name, lp, lane_ids, cmds in chunk:
+            mine = parts[off:off + len(cmds)]
+            off += len(cmds)
+            if len(mine) < len(cmds):
+                out[port] = {"error": f"bcmcmd answered {len(mine)} of {len(cmds)} commands (rc {r.rc})", "bcm_port": name}
+                continue
+            out[port] = _view(name, lp, lane_ids, mine)
     return out
+
+
+def _view(name, lp, lane_ids, parts) -> dict:
+    st, fec = parse_lt(parts[0]), parse_lt(parts[1])
+    lanes_out = []
+    for i in range(len(lane_ids)):
+        a, b = parse_lt(parts[2 + 2 * i]), parse_lt(parts[3 + 2 * i])
+        lanes_out.append({k: a.get(k) for k in LANE_FIELDS} | {k: b.get(k) for k in LANE2_FIELDS})
+    return {"bcm_port": name, "logical": lp, "lanes_sonic": lane_ids,
+            "port": {k: st.get(k) for k in ("PMD_RX_LOCK", "PMD_LANE_RX_LOCK", "LINK_TRAINING",
+                                            "LINK_TRAINING_DONE", "LOCAL_FAULT", "REMOTE_FAULT",
+                                            "MAC_DISABLED", "PHY_DISABLED", "FEC_MODE")},
+            "lane": lanes_out,
+            "fec_bins": fec.get("FEC_CODE_WORD_ERROR_COUNTERS"),
+            "fec": {k: fec.get(k) for k in ("FEC_CODEWORDS", "FEC_CORRECTED_CODEWORDS",
+                                            "FEC_UNCORRECTED_CODEWORDS", "FEC_SYMBOL_ERRORS")},
+            "raw": parts}
+
+
+def brief(v: dict) -> str:
+    """One line per port for a read of many ports: lanes with signal, lock mask, training, SNR / eye range, FEC."""
+    if not v or v.get("error"):
+        return f"not read: {v.get('error') if v else '?'}"
+    p, ln = v["port"], v["lane"]
+    sig = sum(1 for x in ln if x.get("RX_SIGNAL_DETECT") == 1)
+    snrs = [x.get("RX_SNR") for x in ln if isinstance(x.get("RX_SNR"), int) and x.get("RX_SNR") != SNR_INVALID]
+    eyes = [e for x in ln for e in (x.get("EYE_UP") or []) if isinstance(e, int) and e > 0]
+    bins = v.get("fec_bins") or []
+    worst = max([k for k, c in enumerate(bins[1:16], 1) if c] or [0]) if bins else None
+    return (f"{v['bcm_port']}: signal {sig}/{len(ln)} lanes, lock {p.get('PMD_LANE_RX_LOCK')}, training "
+            f"{'done' if p.get('LINK_TRAINING_DONE') else 'not done'}, SNR "
+            f"{(str(min(snrs)) + '-' + str(max(snrs))) if snrs else 'n/a'}, eye up {min(eyes) if eyes else 'n/a'}+"
+            f", FEC worst {worst if worst is not None else 'n/a'}/15 uncorr {(v.get('fec') or {}).get('FEC_UNCORRECTED_CODEWORDS')}")
 
 
 def reference_port(status: dict, exclude: set) -> tuple[str, str] | None:
