@@ -62,6 +62,8 @@ python tools/link_check.py scan --inventory <inventory> --switches st6 --trays c
 
 A partial scan is quicker and lighter on the jump host; links of trays left out are not reported. The patterns across trays (the same GPU position failing on several trays) need the full scan. `pingmap` takes the same two options.
 
+**As part of the rack health check.** The health check of the test automation (`tools/rack_health.py` in helios-tests) runs this scan as case HC-012, a warning next to HC-001 to HC-011: it calls `tools/link_check.py scan` from this repo as a separate program (found next to the test repo, in `~/helios-debug`, or where `thresholds.health.link_check.dir` points) and turns each root cause into a failure line. g02-g17 19 Oct 01:22 UTC: 2,592 links, 2,443 ok, 144 CT05 (quarantined), 5 real down links on GPU position `0002:01:00.1` - FAIL as expected; MR2: PASS, 288 / 288.
+
 **What the switch ASIC sees.** For a down or degraded switch port, `bcm` reads the Broadcom shell lane by lane: whether any signal arrives, receiver lock, link training and signal quality (see Layer 1 from the Broadcom shell). `scan` already adds it to every physical-layer problem link, and reads one working port on the same ASIC as the reference for what a clean lane looks like on that rack.
 
 ```
@@ -325,6 +327,7 @@ Run these first; each names the failing port, so most of the work above is only 
 | TC-SWH-048 | the accelerators in the switch port descriptions match AFM's, one consistent mapping | cabling map |
 | TC-SWH-050 | every static FDB entry is on a port cabled to an admitted compute and in the entry's VLAN | switch programming |
 | TC-AFM-001 | L2 ping within and across every compute tray | data path |
+| HC-012 | the link scan of this guide (`link_check.py scan`) run by the rack health check on the same inventory: one root cause per down / degraded link, trays quarantined in the inventory recorded but not failed; the report (ASIC to GPU map, every link, command logs) is kept with the run under `results/runs/<rack>/link-scans/` | every layer, with the cause |
 
 ## Evidence to collect before raising it
 
