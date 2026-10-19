@@ -896,6 +896,104 @@ def link_cmd(a) -> int:
     return 0 if ln.state == "ok" else 1
 
 
+def watch_cmd(a) -> int:
+    from heliosdbg import linkdiag, linkone, watch
+    inv = load_inventory(a.inventory)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"watch-{stamp}"
+    _OUTS.append(out)
+    _room(out)
+    prev = _latest_scan(out.parent)
+    texts = [x.strip() for t in a.target for x in t.split(";") if x.strip()]
+    if not texts or len(texts) > 64:
+        print("watch: give 1 to 64 links (st6 Ethernet257; ct13 0002:01:00.1 33; ...)", file=sys.stderr)
+        return 2
+    full = Rack(inv)
+    slots = dict((prev or {}).get("learned", {}).get("slots") or {})
+    slots.update({n: s_ for n, s_ in ((n, tray_slot(c)) for n, c in full.computes.items()) if s_ is not None})
+    targets = []
+    try:
+        for x in texts:
+            t = linkone.parse(x, [h.name for h in inv.switches], [h.name for h in inv.computes])
+            targets.append(linkone.resolve(t, (prev or {}).get("links"), slots))
+    except linkone.TargetError as e:
+        print(f"target: {e}", file=sys.stderr)
+        return 2
+    finally:
+        full.close()
+    sws = sorted({t.switch for t in targets if t.switch}) if all(t.switch for t in targets) else None
+    trs = sorted({t.tray for t in targets if t.tray}) if all(t.tray for t in targets) else None
+    a.switches, a.trays = ",".join(sws) if sws else None, ",".join(trs) if trs else None
+    inv, rack = _filtered_rack(a)
+    (out / "raw").mkdir(parents=True, exist_ok=True)
+    cmdlog = CommandLog()
+    try:
+        with cmdlog:
+            print("finding the links ...")
+            res = linkdiag.scan(rack, 0, log=lambda *_: None, bcm_view=False, afm_cfg=None)
+            links, missing = [], []
+            for t in targets:
+                hit = next((ln for ln in res["links"] if t.matches(ln)), None)
+                (links.append(hit) if hit else missing.append(t.text))
+            if missing:
+                print("not found: " + "; ".join(missing))
+            if not links:
+                return 2
+            print(f"watching {len(links)} link(s) every {a.every:.0f} s for {a.duration:.0f} s ...")
+            w = watch.run(rack, links, a.every, a.duration)
+    finally:
+        rack.close()
+    cmdlog.save(out / "raw")
+    w |= {"time_utc": stamp, "rack": inv.rack, "missing": missing,
+          "links": [{k: getattr(ln, k) for k in ("switch", "asic", "sw_port", "tray", "bdf", "gpu_port", "desc")} for ln in links]}
+    (out / "watch.json").write_text(json.dumps(w, indent=1, default=str))
+    lines = [f"Watch {stamp} UTC rack {inv.rack}: {len(links)} link(s), {len(w['rounds'])} rounds every {a.every:.0f} s"]
+    for ln in links:
+        k = watch.key(ln)
+        pl = w["per_link"][k]
+        lines.append(f"  {k} <-> {ln.tray} {ln.bdf} port {ln.gpu_port}: up {pl['up']}/{pl['rounds']}, down {pl['down']}, "
+                     f"no IFCP {pl['no_ifcp']}, {pl['link_changes']} link change(s)"
+                     + (", ERRORS grew " + ", ".join(f"{c} +{d}" for c, d in pl["errors_grew"].items()) if pl["errors_grew"] else "")
+                     + (" (also " + ", ".join(f"{c} +{d}" for c, d in pl["counters_grew"].items()) + ")" if pl["counters_grew"] else ""))
+    if w["changes"]:
+        lines += ["", "changes:"] + [f"  {c['t']}  {c['link']}  {c['what']}: {c['from']} -> {c['to']}" for c in w["changes"][-40:]]
+    lines += ["", f"report: {out / 'report.html'}"]
+    print("\n".join(lines))
+    (out / "report.txt").write_text("\n".join(lines) + "\n")
+    _write_watch_html(out / "report.html", inv.rack or "rack", w, links)
+    bad = any(pl["link_changes"] or pl["errors_grew"] or pl["down"] for pl in w["per_link"].values())
+    return 1 if bad else 0
+
+
+def _write_watch_html(path: Path, rack_name: str, w: dict, links) -> None:
+    from heliosdbg import watch
+    rows = []
+    for ln in links:
+        k = watch.key(ln)
+        pl = w["per_link"][k]
+        strip = "".join(f"<i class='{r['links'][k]['state']}' title='{esc(r['t'])} {esc(r['links'][k]['state'])}'></i>" for r in w["rounds"])
+        rows.append(f"<tr><td><b>{esc(k)}</b><div class='mut'>{esc(ln.tray)} {esc(ln.bdf)} port {esc(ln.gpu_port)}</div></td>"
+                    f"<td><div class='strip'>{strip}</div></td><td>{pl['up']}/{pl['rounds']} up, {pl['link_changes']} changes"
+                    + (", grew " + esc(", ".join(f"{c} +{d}" for c, d in pl["errors_grew"].items())) if pl["errors_grew"] else "") + "</td></tr>")
+    ch = "".join(f"<tr><td><code>{esc(c['t'])}</code></td><td>{esc(c['link'])}</td><td>{esc(c['what'])}</td><td>{esc(c['from'])} &rarr; {esc(c['to'])}</td></tr>"
+                 for c in w["changes"])
+    path.write_text(f"""<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Link watch - {esc(rack_name)}</title><style>
+:root{{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--down:#b42318;--deg:#b54708;--ok:#067647}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#12161b;--fg:#e6eaef;--mut:#96a2b0;--rule:#2b3540;--down:#f97066;--deg:#fdb022;--ok:#47cd89}}}}
+body{{background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,'Segoe UI',Arial,sans-serif;margin:0;padding:24px max(16px,4vw)}}
+h1{{font-size:1.3rem;margin:0}}.mut{{color:var(--mut)}}.wrap{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;font-size:13px}}
+th,td{{text-align:left;padding:5px 8px;border-bottom:1px solid var(--rule);vertical-align:top}}th{{color:var(--mut)}}
+.strip{{display:flex;flex-wrap:wrap;gap:1px;max-width:720px}}.strip i{{width:6px;height:16px;background:var(--rule)}}
+.strip i.up{{background:var(--ok)}}.strip i.down{{background:var(--down)}}.strip i.no-ifcp{{background:var(--deg)}}
+code{{font:12px ui-monospace,Menlo,Consolas,monospace}}</style></head><body>
+<h1>Link watch: {esc(rack_name)}</h1><div class='mut'>{esc(w['time_utc'])} UTC · {len(w['rounds'])} rounds every {w['interval_s']:.0f} s · read-only</div>
+<h2>Links</h2><div class='wrap'><table><tr><th>Link</th><th>Each round (green up, red down, amber no IFCP, grey unread)</th><th>Summary</th></tr>{''.join(rows)}</table></div>
+<h2>Changes ({len(w['changes'])})</h2><div class='wrap'><table><tr><th>Time (UTC)</th><th>Link</th><th>What</th><th>Change</th></tr>{ch or "<tr><td colspan=4>None - the links stayed as they were.</td></tr>"}</table></div>
+</body></html>
+""")
+
+
 def _kv(d: dict | None, keys=None) -> str:
     if not d:
         return "<p class='mut'>not read</p>"
@@ -1157,9 +1255,17 @@ def main(argv=None) -> int:
     k.add_argument("--no-timeline", action="store_true", help="skip the timeline (switch syslog / auth.log, tray journal, AFM)")
     k.add_argument("--log-keep", type=int, default=400, help="lines of each command's output shown in report.html")
     k.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/link-<UTC time>)")
+    w = sub.add_parser("watch", help="read chosen links again and again for a while and record every change")
+    w.add_argument("--inventory", **inv_kw)
+    w.add_argument("target", nargs="+", help="links, as for 'link' (several: separate with ';' or give several)")
+    w.add_argument("--every", type=float, default=10.0, help="seconds between reads (default 10, at least 2)")
+    w.add_argument("--duration", type=float, default=600.0, help="how long to watch, seconds (default 600, at most 86400)")
+    w.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/watch-<UTC time>)")
     a = ap.parse_args(argv)
-    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd}[a.cmd]
-    if a.cmd in ("scan", "link"):                        # these keep their log in raw/ and in report.html
+    if a.cmd == "watch":
+        a.every, a.duration = max(2.0, a.every), min(86400.0, max(a.every, a.duration))
+    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd, "watch": watch_cmd}[a.cmd]
+    if a.cmd in ("scan", "link", "watch"):                        # these keep their log in raw/ and in report.html
         return fn(a)
     log = CommandLog()
     try:

@@ -35,7 +35,7 @@ from ui import access  # noqa: E402
 
 TOOL = ROOT / "tools" / "link_check.py"
 STATIC = Path(__file__).resolve().parent / "static"
-TOOLS = ("scan", "link", "bcm", "path", "pingmap")
+TOOLS = ("scan", "link", "watch", "bcm", "path", "pingmap")
 TARGET_RX = re.compile(r"^[A-Za-z0-9 _./:\[\],()-]{1,200}$")
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PORTS_RX = re.compile(r"^Ethernet\d{1,4}(,Ethernet\d{1,4}){0,63}$")
@@ -170,6 +170,13 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
             a.append("--no-timeline")
         if not req.get("afm"):
             a.append("--no-afm")
+    elif tool == "watch":
+        raw = req.get("targets") or ""
+        targets = [" ".join(x.split()) for x in (raw if isinstance(raw, list) else str(raw).replace("\n", ";").split(";")) if x.strip()]
+        if not targets or len(targets) > 64 or not all(TARGET_RX.match(x) for x in targets):
+            raise BadRequest("watch: 1 to 64 links, one per line (st6 Ethernet257, ct13 0002:01:00.1 33, ...)")
+        a[1:1] = targets
+        a += ["--every", str(_int(req, "every", 2, 3600, 10)), "--duration", str(_int(req, "duration", 10, 86400, 600))]
     elif tool == "pingmap":
         a += ["--rounds", str(_int(req, "rounds", 1, 100, 3)), "--wait", str(_int(req, "wait", 0, 3600, 60))]
     elif tool == "bcm":

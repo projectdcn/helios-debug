@@ -54,6 +54,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
   <nav role="tablist">
     <button role="tab" data-t="map">Rack map</button>
     <button role="tab" data-t="link">Diagnose a link</button>
+    <button role="tab" data-t="watch">Watch links</button>
     <button role="tab" data-t="scan" aria-selected="true">Scan</button>
     <button role="tab" data-t="bcm">Broadcom shell</button>
     <button role="tab" data-t="path">GPU path</button>
@@ -89,6 +90,18 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
       <div id="link-pw-box" class="hide"><label for="link-afmpw">AFM password (this run only)</label><input id="link-afmpw" type="password" autocomplete="off"></div>
     </div>
     <div class="row"><button class="go" data-run="link">Diagnose</button></div>
+  </section>
+
+  <section class="card hide" data-p="watch">
+    <h2>Watch links</h2>
+    <p class="mut">For links that come and go: both ends are read again every few seconds and every change is recorded (link
+      up / down, admin, IFCP, error and FEC counters). Read-only.</p>
+    <div class="grid">
+      <div style="grid-column:1/-1"><label for="watch-targets">Links, one per line</label><textarea id="watch-targets" rows="4" style="width:100%;font:inherit;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--bg);color:var(--fg)" placeholder="st6 Ethernet257&#10;ct13 0002:01:00.1 33"></textarea></div>
+      <div><label for="watch-every">Every (s)</label><input id="watch-every" type="number" min="2" max="3600" value="10"></div>
+      <div><label for="watch-dur">For (minutes)</label><input id="watch-dur" type="number" min="1" max="1440" value="10"></div>
+    </div>
+    <div class="row"><button class="go" data-run="watch">Start watching</button><span class="mut">Stop ends it early; the report covers the rounds read.</span></div>
   </section>
 
   <section class="card hide" data-p="scan">
@@ -218,6 +231,7 @@ function req(tool){
     r.count=+$("path-count").value;r.no_ping=$("path-noping").checked}
   if(tool==="link"){r.target=$("link-target").value.trim();r.interval=+$("link-interval").value;r.no_bcm=!$("link-bcm").checked;r.no_timeline=!$("link-tl").checked;r.hours=+$("link-hours").value;
     r.afm=$("link-afm").checked;if(r.afm&&$("link-afmpw").value)r.afm_password=$("link-afmpw").value}
+  if(tool==="watch"){r.targets=$("watch-targets").value;r.every=+$("watch-every").value;r.duration=Math.round(+$("watch-dur").value*60)}
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;
 }
@@ -229,7 +243,7 @@ function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<s
 function links(j){
   if(!j||j.status==="running")return "";
   var b="/results/"+j.out+"/";
-  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:["report.html","report.txt"];
+  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:["report.html","report.txt"];
   return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ")+
     ' · <a href="/api/bundle?path='+encodeURIComponent(j.out)+'">bundle.zip</a>';
 }
@@ -373,9 +387,10 @@ function mapDetail(k){
     '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
     (l.cause?"<p><b>Cause:</b> "+esc(l.cause)+"</p><p><b>Owner:</b> "+esc(l.owner||"")+"</p><p><b>Next step:</b> "+esc(l.action||"")+"</p>":"<p>OK on every layer the scan checked.</p>")+
     (l.evidence&&l.evidence.length?"<details><summary>Evidence</summary>"+l.evidence.map(function(e){return "<div><code>"+esc(e)+"</code></div>"}).join("")+"</details>":"")+
-    '<div class="row"><button class="go" id="map-diag">Diagnose now</button><button class="sec" id="map-copy">Copy link id</button><span class="mut">reads only '+esc(l.switch)+" and "+esc(l.tray||"its tray")+"</span></div>";
+    '<div class="row"><button class="go" id="map-diag">Diagnose now</button><button class="sec" id="map-watch">Watch it</button><button class="sec" id="map-copy">Copy link id</button><span class="mut">reads only '+esc(l.switch)+" and "+esc(l.tray||"its tray")+"</span></div>";
   $("map-diag").addEventListener("click",function(){$("link-target").value=tgt;tab("link");run("link")});
   $("map-copy").addEventListener("click",function(){try{navigator.clipboard.writeText(tgt)}catch(e){}});
+  $("map-watch").addEventListener("click",function(){var ta=$("watch-targets");if(ta.value.indexOf(tgt)<0)ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+tgt;tab("watch")});
   $("map-detail").scrollIntoView({block:"nearest"});
 }
 ["map-scan","map-prev"].forEach(function(id){$(id).addEventListener("change",mapFetch)});
