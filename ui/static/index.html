@@ -155,12 +155,13 @@ nav button.exp{border-style:dashed}
     <div class="grid">
       <div style="grid-column:1/-1"><label>Pick the link (from the latest check of this rack) - or type it below</label>
         <div class="pick">
-          <div><label for="pk-sw">Switch tray</label><select id="pk-sw"></select></div>
-          <div><label for="pk-port">Switch port</label><select id="pk-port"></select></div>
-          <div><label for="pk-ct">or compute tray</label><select id="pk-ct"></select></div>
+          <div><label for="pk-ct">Compute tray</label><select id="pk-ct"></select></div>
           <div><label for="pk-gpu">GPU</label><select id="pk-gpu"></select></div>
           <div><label for="pk-gp">GPU port</label><select id="pk-gp"></select></div>
-        </div></div>
+          <div><label for="pk-sw">Switch tray</label><select id="pk-sw"></select></div>
+          <div><label for="pk-port">Switch port (ASIC)</label><select id="pk-port"></select></div>
+        </div>
+        <div class="row" style="margin-top:0"><span id="pk-sel" class="mut">Start from either end: a compute tray / GPU, or a switch tray / port - the other end follows.</span><button class="sec" id="pk-clear">Clear</button></div></div>
       <div style="grid-column:1/-1"><label for="link-target">Link</label><input id="link-target" placeholder="st6 Ethernet257 | ct13 0002:01:00.1 33 | ct13 gpu1 port33 | slot17/gpu3/port33 | acc-id: 5, port-id: 32"></div>
       <div><label for="link-interval">Counter sample (s)</label><input id="link-interval" type="number" min="0" max="120" value="10"></div>
       <div class="checks" style="align-items:end"><label><input type="checkbox" id="link-bcm" checked>Broadcom lanes</label></div>
@@ -591,23 +592,58 @@ function loadPickers(){
     return api("/api/scan?path="+encodeURIComponent(ov.latest)).then(function(d){pickScan=d;fillPick()})}).catch(function(){});
 }
 function opt(v,t){return '<option value="'+esc(v)+'">'+esc(t)+"</option>"}
-function fillPick(){
-  var d=pickScan,ls=d?d.links:[];
-  var sws=[...new Set(ls.map(function(l){return l.switch}))].sort(),cts=[...new Set(ls.map(function(l){return l.tray}).filter(Boolean))].sort();
-  $("pk-sw").innerHTML=opt("","-")+sws.map(function(x){return opt(x,x)}).join("");
-  $("pk-ct").innerHTML=opt("","-")+cts.map(function(x){return opt(x,trayName(x,d&&d.slots))}).join("");
-  $("pk-port").innerHTML=opt("",d?"pick a switch tray":"no check of this rack yet");$("pk-gpu").innerHTML=opt("","-");$("pk-gp").innerHTML=opt("","-");
-}
+function pkLinks(){return pickScan?pickScan.links:[]}
+function dsc(l){var m=/Slot(\d+)\/GPU(\d+)(?:\[\d+\])?\/Port(\d+)/i.exec(l.desc||"");return m?{gpu:+m[2],port:+m[3]}:null}
+function gKey(l){return l.bdf?l.bdf:(dsc(l)?"d:"+dsc(l).gpu:"")}           /* GPU id: BDF, else the described GPU number */
+function pKey(l){return l.bdf?String(l.gpu_port):(dsc(l)?String(dsc(l).port):"")}
+function gpuEnd(l){if(l.bdf)return "GPU "+l.bdf+" port "+l.gpu_port;
+  var m=/Slot(\d+)\/GPU(\d+)(?:\[\d+\])?\/Port(\d+)/i.exec(l.desc||"");
+  return m?"GPU"+m[2]+" port "+m[3]+" as described (GPU end not matched)":"GPU end not matched"}
 function portLabel(l){return (l.state==="ok"?"":"["+l.state+"] ")}
-$("pk-sw").addEventListener("change",function(){var sw=this.value,ls=(pickScan?pickScan.links:[]).filter(function(l){return l.switch===sw})
-  .sort(function(a,b){return (+a.sw_port.replace(/\D/g,""))-(+b.sw_port.replace(/\D/g,""))});
-  $("pk-port").innerHTML=opt("","pick a port")+ls.map(function(l){return opt(l.sw_port,portLabel(l)+l.sw_port+" - "+trayName(l.tray,pickScan.slots)+" GPU "+(l.bdf||"?")+" port "+l.gpu_port)}).join("")});
-$("pk-port").addEventListener("change",function(){if(this.value)$("link-target").value=$("pk-sw").value+" "+this.value});
-$("pk-ct").addEventListener("change",function(){var ct=this.value,g=[...new Set((pickScan?pickScan.links:[]).filter(function(l){return l.tray===ct}).map(function(l){return l.bdf}).filter(Boolean))].sort();
-  $("pk-gpu").innerHTML=opt("","pick a GPU")+g.map(function(x,n){return opt(x,"GPU "+x)}).join("");$("pk-gp").innerHTML=opt("","-")});
-$("pk-gpu").addEventListener("change",function(){var ct=$("pk-ct").value,b=this.value,ls=(pickScan?pickScan.links:[]).filter(function(l){return l.tray===ct&&l.bdf===b}).sort(function(x,y){return x.gpu_port-y.gpu_port});
-  $("pk-gp").innerHTML=opt("","pick a port")+ls.map(function(l){return opt(l.gpu_port,portLabel(l)+"port "+l.gpu_port+" - "+l.switch+" "+l.sw_port)}).join("")});
-$("pk-gp").addEventListener("change",function(){if(this.value!=="")$("link-target").value=$("pk-ct").value+" "+$("pk-gpu").value+" "+this.value});
+function pkUniq(a){return a.filter(function(x,i){return x!=null&&x!==""&&a.indexOf(x)===i}).sort()}
+function pkNum(p){return +String(p).replace(/\D/g,"")}
+function pkFill(id,first,items){$(id).innerHTML=opt("",first)+items.join("")}
+function fillPick(){
+  var d=pickScan,ls=pkLinks();
+  pkFill("pk-ct",d?"any":"no check of this rack yet",pkUniq(ls.map(function(l){return l.tray})).map(function(x){return opt(x,trayName(x,d.slots))}));
+  pkFill("pk-sw",d?"any":"-",pkUniq(ls.map(function(l){return l.switch})).map(function(x){return opt(x,x)}));
+  pkGpus();pkGps();pkPorts();pkShow(null);
+}
+/* the GPU list follows the tray; the GPU-port list follows tray + GPU; the switch-port list follows the switch AND,
+   when a tray / GPU is chosen, only that tray's / GPU's links - so both ends stay one link */
+function pkGpus(){var ct=$("pk-ct").value,ls=pkLinks().filter(function(l){return !ct||l.tray===ct});
+  pkFill("pk-gpu",ct?"pick a GPU":"pick a compute tray first",ct?pkUniq(ls.map(gKey)).map(function(x){return opt(x,x.indexOf("d:")===0?"GPU"+x.slice(2)+" (as described - GPU end not matched)":"GPU "+x)}):[])}
+function pkGps(){var ct=$("pk-ct").value,b=$("pk-gpu").value,ls=pkLinks().filter(function(l){return l.tray===ct&&gKey(l)===b}).sort(function(x,y){return (+pKey(x))-(+pKey(y))});
+  pkFill("pk-gp",b?"pick a port":"-",ls.map(function(l){return opt(pKey(l),portLabel(l)+"port "+pKey(l)+" - "+l.switch+" "+(l.asic||"")+" "+l.sw_port)}))}
+function pkPorts(){var sw=$("pk-sw").value,ct=$("pk-ct").value,b=$("pk-gpu").value;
+  var ls=pkLinks().filter(function(l){return (!sw||l.switch===sw)&&(!ct||l.tray===ct)&&(!b||gKey(l)===b)}).sort(function(x,y){return x.switch<y.switch?-1:x.switch>y.switch?1:pkNum(x.sw_port)-pkNum(y.sw_port)});
+  var note=ct?(b?" (ports of "+ct+" GPU "+b+")":" (ports of "+ct+")"):"";
+  pkFill("pk-port",(sw||ct)?"pick a port"+note:"pick a switch tray or a compute tray",(sw||ct)?ls.map(function(l){return opt(l.switch+"|"+l.sw_port,portLabel(l)+(sw?"":l.switch+" ")+l.sw_port+" ("+(l.asic||"?")+") - "+trayName(l.tray,pickScan.slots)+" "+gpuEnd(l))}):[])}
+function pkShow(l){
+  if(!l){$("pk-sel").className="mut";$("pk-sel").textContent="Start from either end: a compute tray / GPU, or a switch tray / port - the other end follows.";return}
+  $("pk-sel").className="";
+  $("pk-sel").innerHTML="Selected link: <b>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port)+"</b> &harr; <b>"+esc(trayName(l.tray,pickScan.slots)+" "+gpuEnd(l))+"</b> "+badge(l.state)+
+    (l.state!=="ok"&&l.kind?' <span class="mut">'+esc(kindHelp(l.kind).t)+"</span>":"")+' <span class="mut">(at the check of '+esc(stampLocal(pickScan.time_utc))+")</span>";
+  $("link-target").value=l.switch+" "+l.sw_port;
+}
+function pkSelect(l){
+  $("pk-ct").value=l.tray||"";pkGpus();$("pk-gpu").value=gKey(l);pkGps();$("pk-gp").value=pKey(l);
+  $("pk-sw").value=l.switch;pkPorts();$("pk-port").value=l.switch+"|"+l.sw_port;pkShow(l);
+}
+$("pk-ct").addEventListener("change",function(){pkGpus();pkGps();
+  var sws=pkUniq(pkLinks().filter(function(l){return l.tray===$("pk-ct").value}).map(function(l){return l.switch}));
+  if(sws.length===1)$("pk-sw").value=sws[0];else if($("pk-sw").value&&sws.indexOf($("pk-sw").value)<0)$("pk-sw").value="";
+  pkPorts();pkShow(null)});
+$("pk-gpu").addEventListener("change",function(){pkGps();
+  var sws=pkUniq(pkLinks().filter(function(l){return l.tray===$("pk-ct").value&&gKey(l)===$("pk-gpu").value}).map(function(l){return l.switch}));
+  if(sws.length===1)$("pk-sw").value=sws[0];else if($("pk-sw").value&&sws.indexOf($("pk-sw").value)<0)$("pk-sw").value="";
+  pkPorts();pkShow(null)});
+$("pk-gp").addEventListener("change",function(){var ct=$("pk-ct").value,b=$("pk-gpu").value,gp=this.value;if(gp==="")return;
+  var l=pkLinks().filter(function(x){return x.tray===ct&&gKey(x)===b&&pKey(x)===gp})[0];if(l)pkSelect(l)});
+$("pk-sw").addEventListener("change",function(){pkPorts();pkShow(null)});
+$("pk-port").addEventListener("change",function(){var v=this.value.split("|");if(!v[1])return;
+  var l=pkLinks().filter(function(x){return x.switch===v[0]&&x.sw_port===v[1]})[0];if(l)pkSelect(l)});
+$("pk-clear").addEventListener("click",function(){fillPick();$("link-target").value=""});
 // ---------------------------------------------------------------- results in plain words
 function renderResult(j){
   var box=$("result");box.innerHTML="";if(!j||j.status==="running")return;
