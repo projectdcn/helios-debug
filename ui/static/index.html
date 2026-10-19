@@ -39,7 +39,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 .map{display:flex;flex-direction:column;gap:12px;margin-top:8px}.mblk h3{font-size:.9rem;margin:0 0 4px}
 .mrow{display:flex;align-items:center;gap:6px;margin:2px 0}.mrow .lab{width:120px;flex:none;font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cells{display:flex;flex-wrap:wrap;gap:2px}.cell{width:14px;height:14px;border-radius:3px;border:0;padding:0;cursor:pointer;background:var(--rule)}
-.cell.ok{background:var(--ok);opacity:.55}.cell.degraded{background:var(--deg)}.cell.down{background:var(--down)}
+.cell.ok{background:var(--ok);opacity:.55}.cell.unknown{background:var(--mut);opacity:.45}.cell.degraded{background:var(--deg)}.cell.down{background:var(--down)}
 .cell.hit{outline:2px solid var(--acc);outline-offset:1px;opacity:1}.cell.chg{box-shadow:0 0 0 2px var(--fg)}.cell.dim{opacity:.15}
 .legend span{display:inline-flex;align-items:center;gap:4px;margin-right:12px}.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
 details.help{background:var(--code);border-radius:6px;padding:6px 10px;margin:0 0 10px;font-size:13px}details.help summary{cursor:pointer;color:var(--acc);font-weight:600}
@@ -869,7 +869,8 @@ function drawMap(){
       (rc.length?" ("+rc.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(rc.length>6?", ...":"")+")":"")+".";
   }else{$("map-banner").classList.add("hide")}
   var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
-  $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+cnt.ok+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span></span>"+
+  $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
+    (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+" not known (GPU end not readable - see Access to the rack)</span>":"")+"</span>"+
     (q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
   try{history.replaceState(null,"","#tab=map&scan="+encodeURIComponent($("map-scan").value))}catch(e){}

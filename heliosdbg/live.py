@@ -96,6 +96,10 @@ def link_state(lk: dict, ifcp_in_use: bool) -> str:
     gpu_down = lk.get("gpu_link") not in (None, "LINK_UP")
     if sw_down or gpu_down:
         return "down"
+    if lk.get("gpu_link") is None and not lk.get("bdf"):
+        # the GPU end was never read (tray unreachable / not matched at the check): a switch port that is up says
+        # nothing about the link - MR2 19 Oct from the switch, trays refusing the login, showed '288 ok'
+        return "degraded" if lk.get("scan_kind") == "tray_not_programmed" else "unknown"
     if ifcp_in_use and lk.get("ll_up") not in (None, "yes"):
         return "degraded"
     if lk.get("scan_state") == "degraded" and lk.get("scan_kind") not in PHYSICAL:

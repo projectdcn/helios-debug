@@ -137,3 +137,9 @@ def test_local_stream_ends_its_whole_pipeline(tmp_path):
     n = marker.read_text().count("\n")
     time.sleep(1)
     assert marker.read_text().count("\n") <= n + 1          # nothing writes any more
+
+
+def test_gpu_end_never_read_is_unknown_not_ok():
+    assert live.link_state({"sw_oper": "up", "scan_state": "down", "scan_kind": "tray_unreachable"}, False) == "unknown"
+    assert live.link_state({"sw_oper": "down", "scan_kind": "tray_unreachable"}, False) == "down"
+    assert live.link_state({"sw_oper": "up", "scan_kind": "tray_not_programmed"}, False) == "degraded"
