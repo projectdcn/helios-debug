@@ -300,7 +300,7 @@ Check this list first: these are already known, so a new symptom on one of them 
 | Where | Symptom | Status |
 | --- | --- | --- |
 | st4 asic0 Ethernet70 = CT17 0002:01:00.1 port 24 | no physical link on either end, down since about 17:50 UTC 17 Oct | new, found by the link check 18 Oct; the time matches the batch 2 link tests, which shut and restored ports around 17:50 UTC: the link likely did not train again |
-| st6 asic1 Ethernet261 = CT13 0002:01:00.1 port 0 | no physical link on either end, down since about 21:20 UTC 17 Oct | coupled to Ethernet257: did not come back after the TC-AFM-013 rerun flapped 257 (product issue 6: coupled switch ports) |
+| st6 asic1 Ethernet261 = CT13 0002:01:00.1 port 0 | no physical link on either end, down since about 21:20 UTC 17 Oct | coupled to Ethernet257: did not come back after the TC-AFM-013 ([Link] Link flap (switch, both ASICs)) rerun flapped 257 (product issue 6: coupled switch ports) |
 | st6 asic1 Ethernet257 = CT14 0002:01:00.1 port 2 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped its coupled neighbour Ethernet261 to recover it (product issue 12: down links do not recover remotely); not touched since. Broadcom view 18 Oct 13:45 UTC: no signal on lane 0 only, lane 1 has signal: one lane of the cable path |
 | st4 asic0 Ethernet66 = CT18 0002:01:00.1 port 28 | no physical link on either end, down since about 08:57 UTC 18 Oct | went down when we flapped st4 Ethernet70 to recover it: 66 and 70 look coupled (product issue 12: down links do not recover remotely); not touched since |
 | CT16 GPU port 5 = st5 asic1 Ethernet494 | NO\_PHY\_LINK, never up since the tray booted | AMD 16 Oct: mechanical inspection needed |
@@ -317,6 +317,8 @@ Check this list first: these are already known, so a new symptom on one of them 
 ## Automated checks that already cover links
 
 Run these first; each names the failing port, so most of the work above is only needed to explain a failure. They are read-only; all but TC-SWH-048 and TC-SWH-050 are part of the rack health check (`tools/rack_health.py`) or by ID with `pytest tests --tc <ID>`.
+
+The disruptive link flap / link down cases (34 of them, from a single port flap to all stations of one GPU and the link-fail threshold) are tagged **[Link]** in the title column of `full_rack_testplan.xlsx`: filter on `[Link]` to list them, e.g. TC-AFM-011 *[Link] Link flap (switch, one ASIC)* or TC-AFM-040 *[Link] Link-fail threshold, custom failover policy*. They shut and restore ports, so they are not part of the health check.
 
 | Case | Checks | Layer |
 | --- | --- | --- |
