@@ -317,6 +317,45 @@ def gpus_view(state: State, inventory: str) -> dict:
     return {"time_utc": d.get("time_utc") or runs[0].parent.parent.name.split("-", 1)[-1], "trays": out}
 
 
+def port_view(state: State, rel: str, key: str) -> dict:
+    """Everything a check saved about ONE link (no login): the link, both ends' raw records, and its state in the
+    rack's earlier checks."""
+    import gzip
+    run = _result_dir(state, rel)
+    d = json.loads((run / "link_check.json").read_text())
+    ln = next((x for x in d.get("links") or [] if f"{x.get('switch')} {x.get('sw_port')}" == key), None)
+    if ln is None:
+        raise BadRequest(f"no link {key} in that check")
+    out = {"link": ln, "time_utc": d.get("time_utc"), "switch": None, "gpu": None, "gpu_device": None, "history": []}
+    try:
+        sw = json.load(gzip.open(run / "raw" / "switches.json.gz", "rt")).get(ln["switch"]) or {}
+        a = (sw.get("asics") or {}).get(ln.get("asic") or "") or {}
+        port = ln["sw_port"]
+        out["switch"] = {"status": (a.get("status") or {}).get(port), "counters": (a.get("counters") or {}).get(port),
+                         "fec": (a.get("fec") or {}).get(port), "presence": (a.get("presence") or {}).get(port),
+                         "fdb": [r for r in a.get("fdb") or [] if r.get("Port") == port]}
+    except (OSError, ValueError):
+        pass
+    try:
+        if ln.get("tray") and ln.get("bdf"):
+            tr = json.load(gzip.open(run / "raw" / "trays.json.gz", "rt")).get(ln["tray"]) or {}
+            g = next((x for x in tr.get("gpus") or [] if x.get("bdf") == ln["bdf"]), None)
+            if g:
+                out["gpu_device"] = {k: g.get(k) for k in ("bdf", "accelerator", "config_phase", "vpod_accelerators")}
+                out["gpu"] = next((p_ for p_ in g.get("ports") or [] if p_.get("port") == ln.get("gpu_port")), None)
+    except (OSError, ValueError):
+        pass
+    for f in sorted(run.parent.glob("scan-*/link_check.json"), reverse=True)[:12]:
+        try:
+            e = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        x = next((y for y in e.get("links") or [] if f"{y.get('switch')} {y.get('sw_port')}" == key), None)
+        out["history"].append({"time_utc": e.get("time_utc"), "path": f"link-check/{run.parent.name}/{f.parent.name}",
+                               "state": x.get("state") if x else None, "kind": x.get("kind") if x else None})
+    return out
+
+
 def scan_view(state: State, rel: str) -> dict:
     """A scan's links, compact, for the rack map (rel: link-check/<rack>/scan-...)."""
     f = _result_file(state, f"{rel}/link_check.json")
@@ -601,6 +640,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, live_status(st, int((q.get("since") or ["0"])[0] or 0)))
             if u.path == "/api/gpus":
                 return self._json(200, gpus_view(st, (q.get("inventory") or [""])[0]))
+            if u.path == "/api/port":
+                return self._json(200, port_view(st, (q.get("path") or [""])[0], (q.get("key") or [""])[0]))
             if u.path == "/api/scan":
                 return self._json(200, scan_view(st, (q.get("path") or [""])[0]))
             if u.path == "/api/results":

@@ -239,3 +239,26 @@ def test_guide_and_topology_pages_served(ui):
         assert "frame-ancestors 'self'" in r.headers["Content-Security-Policy"]     # shown inside the UI's tabs only
     page = call(base, "/")[1]
     assert b'data-t="topology"' in page and b'data-t="guide"' in page and b'target="_blank" rel="noopener">Debug guide' not in page and b'target="_blank" rel="noopener" title="How the GPUs' not in page
+
+
+def test_port_view_both_ends_and_history(ui):
+    import gzip
+    base, tmp = ui
+    rack = tmp / "results" / "link-check" / "lab"
+    for stamp, state in (("20261018-000000", "ok"), ("20261019-000000", "down")):
+        d = rack / f"scan-{stamp}"
+        (d / "raw").mkdir(parents=True)
+        (d / "link_check.json").write_text(json.dumps({"time_utc": stamp, "links": [
+            {"switch": "st1", "asic": "asic1", "sw_port": "Ethernet292", "tray": "c2", "bdf": "0003:01:00.1", "gpu_port": 12,
+             "state": state, "kind": "" if state == "ok" else "phys_went_down"}]}))
+        with gzip.open(d / "raw" / "switches.json.gz", "wt") as fh:
+            json.dump({"st1": {"asics": {"asic1": {"status": {"Ethernet292": {"Oper": state if state != "ok" else "up"}},
+                                                  "counters": {}, "fec": {}, "presence": {"Ethernet292": "Not present"},
+                                                  "fdb": [{"Port": "Ethernet292", "MacAddress": "02:00"}]}}}}, fh)
+        with gzip.open(d / "raw" / "trays.json.gz", "wt") as fh:
+            json.dump({"c2": {"gpus": [{"bdf": "0003:01:00.1", "accelerator": "5", "config_phase": "ACTIVE",
+                                        "ports": [{"port": 12, "link": "LINK_DOWN", "ifcp": {"ll_up": "no"}}]}]}}, fh)
+    v = json.loads(call(base, "/api/port?path=link-check/lab/scan-20261019-000000&key=st1%20Ethernet292")[1])
+    assert v["switch"]["status"]["Oper"] == "down" and v["switch"]["fdb"] and v["gpu"]["link"] == "LINK_DOWN"
+    assert v["gpu_device"]["accelerator"] == "5" and [h["state"] for h in v["history"]] == ["down", "ok"]
+    assert call(base, "/api/port?path=link-check/lab/scan-20261019-000000&key=st1%20Ethernet9")[0] == 400
