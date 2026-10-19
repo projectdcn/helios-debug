@@ -35,7 +35,8 @@ from ui import access  # noqa: E402
 
 TOOL = ROOT / "tools" / "link_check.py"
 STATIC = Path(__file__).resolve().parent / "static"
-TOOLS = ("scan", "bcm", "path", "pingmap")
+TOOLS = ("scan", "link", "bcm", "path", "pingmap")
+TARGET_RX = re.compile(r"^[A-Za-z0-9 _./:\[\],()-]{1,200}$")
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PORTS_RX = re.compile(r"^Ethernet\d{1,4}(,Ethernet\d{1,4}){0,63}$")
 GPU_PORTS_RX = re.compile(r"^\d{1,2}(,\d{1,2}){0,35}$")
@@ -95,7 +96,7 @@ class State:
                 if name in files:
                     try:
                         lines = (d / name).read_text(errors="replace").splitlines()
-                        summary = next((ln for ln in lines if re.search(r"GPU links:|links? (checked|ok)|fail|ok\b", ln)),
+                        summary = next((ln for ln in lines if re.search(r"GPU links:|<->|links? (checked|ok)|fail|ok\b", ln)),
                                        lines[0] if lines else "")[:200]
                     except OSError:
                         pass
@@ -156,6 +157,17 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
         if cmp_:
             p = _result_file(state, f"{cmp_}/link_check.json")
             a += ["--compare", str(p)]
+    elif tool == "link":
+        target = " ".join(str(req.get("target") or "").split())
+        if not TARGET_RX.match(target):
+            raise BadRequest("link: give a switch port (st6 Ethernet257), a GPU port (ct13 0002:01:00.1 33), "
+                             "slot17/gpu3/port33 or an AFM event (acc-id: 5, port-id: 32)")
+        a.insert(1, target)
+        a += ["--interval", str(_int(req, "interval", 0, 120, 10))]
+        if req.get("no_bcm"):
+            a.append("--no-bcm")
+        if not req.get("afm"):
+            a.append("--no-afm")
     elif tool == "pingmap":
         a += ["--rounds", str(_int(req, "rounds", 1, 100, 3)), "--wait", str(_int(req, "wait", 0, 3600, 60))]
     elif tool == "bcm":
@@ -209,6 +221,20 @@ def _result_file(state: State, rel: str) -> Path:
     return p
 
 
+LINK_KEYS = ("switch", "asic", "sw_port", "desc", "sw_oper", "sw_admin", "tray", "bdf", "gpu_port", "state", "kind",
+             "cause", "owner", "action", "afm_port", "matched_by")
+
+
+def scan_view(state: State, rel: str) -> dict:
+    """A scan's links, compact, for the rack map (rel: link-check/<rack>/scan-...)."""
+    f = _result_file(state, f"{rel}/link_check.json")
+    d = json.loads(f.read_text())
+    links = [{k: ln.get(k) for k in LINK_KEYS} | {"evidence": (ln.get("evidence") or [])[:8]} for ln in d.get("links") or []]
+    return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
+            "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
+            "slots": (d.get("learned") or {}).get("slots") or {}}
+
+
 # ------------------------------------------------------------------ jobs
 
 def start_job(state: State, req: dict) -> dict:
@@ -218,7 +244,7 @@ def start_job(state: State, req: dict) -> dict:
             raise BadRequest(f"a {state.jobs[state.current]['tool']} run is already running - wait for it or stop it")
         jid = uuid.uuid4().hex[:12]
         env = dict(os.environ)
-        if req.get("tool") == "scan" and req.get("afm") and req.get("afm_password"):
+        if req.get("tool") in ("scan", "link") and req.get("afm") and req.get("afm_password"):
             _f, inv = state.inventory(req["inventory"])
             env[((inv.afm or {}).get("auth") or {}).get("password_env") or "HELIOS_AFM_PASSWORD"] = str(req["afm_password"])
         job = {"id": jid, "tool": req["tool"], "rack": rack, "inventory": req["inventory"], "argv": args,
@@ -329,6 +355,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/access":
                 _f, inv = st.inventory((q.get("inventory") or [""])[0])
                 return self._json(200, access.describe(inv))
+            if u.path == "/api/scan":
+                return self._json(200, scan_view(st, (q.get("path") or [""])[0]))
             if u.path == "/api/results":
                 return self._json(200, {"results": st.results()})
             if u.path.startswith("/results/"):

@@ -36,6 +36,12 @@ font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-b
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--rule);vertical-align:top}th{color:var(--mut);font-weight:600}
 a{color:var(--acc)}.err{color:var(--down);font-weight:600}.hide{display:none}
 code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:1px 4px;border-radius:4px}
+.map{display:flex;flex-direction:column;gap:12px;margin-top:8px}.mblk h3{font-size:.9rem;margin:0 0 4px}
+.mrow{display:flex;align-items:center;gap:6px;margin:2px 0}.mrow .lab{width:120px;flex:none;font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cells{display:flex;flex-wrap:wrap;gap:2px}.cell{width:14px;height:14px;border-radius:3px;border:0;padding:0;cursor:pointer;background:var(--rule)}
+.cell.ok{background:var(--ok);opacity:.55}.cell.degraded{background:var(--deg)}.cell.down{background:var(--down)}
+.cell.hit{outline:2px solid var(--acc);outline-offset:1px;opacity:1}.cell.chg{box-shadow:0 0 0 2px var(--fg)}.cell.dim{opacity:.15}
+.legend span{display:inline-flex;align-items:center;gap:4px;margin-right:12px}.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
 </style>
 </head>
 <body>
@@ -46,6 +52,8 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 <main>
   <div id="inverr" class="card err hide"></div>
   <nav role="tablist">
+    <button role="tab" data-t="map">Rack map</button>
+    <button role="tab" data-t="link">Diagnose a link</button>
     <button role="tab" data-t="scan" aria-selected="true">Scan</button>
     <button role="tab" data-t="bcm">Broadcom shell</button>
     <button role="tab" data-t="path">GPU path</button>
@@ -54,7 +62,34 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
     <button role="tab" data-t="access">SSH access</button>
   </nav>
 
-  <section class="card" data-p="scan">
+  <section class="card hide" data-p="map">
+    <h2>Rack map</h2>
+    <p class="mut">Every GPU link of a scan, by compute tray (GPU x port) or by switch ASIC. Click a link for its cause and to diagnose it now.</p>
+    <div class="grid">
+      <div><label for="map-scan">Scan</label><select id="map-scan"></select></div>
+      <div><label for="map-prev">Mark what changed since</label><select id="map-prev"><option value="">-</option></select></div>
+      <div><label for="map-view">View</label><select id="map-view"><option value="tray">by compute tray</option><option value="switch">by switch ASIC</option></select></div>
+      <div><label for="map-q">Find (port, tray, BDF, cause)</label><input id="map-q" type="search" placeholder="Ethernet257, ct13, 0002:01:00.1, IFCP ..."></div>
+    </div>
+    <div id="map-sum" class="row mut"></div>
+    <div id="map" class="map"></div>
+    <div id="map-detail" class="card hide" style="margin-top:12px"></div>
+  </section>
+
+  <section class="card hide" data-p="link">
+    <h2>Diagnose one link</h2>
+    <p class="mut">Paste whatever you have for the link; only its switch tray and its compute tray are read. Read-only.</p>
+    <div class="grid">
+      <div style="grid-column:1/-1"><label for="link-target">Link</label><input id="link-target" placeholder="st6 Ethernet257 | ct13 0002:01:00.1 33 | ct13 gpu1 port33 | slot17/gpu3/port33 | acc-id: 5, port-id: 32"></div>
+      <div><label for="link-interval">Counter sample (s)</label><input id="link-interval" type="number" min="0" max="120" value="10"></div>
+      <div class="checks" style="align-items:end"><label><input type="checkbox" id="link-bcm" checked>Broadcom lanes</label></div>
+      <div class="checks" style="align-items:end"><label><input type="checkbox" id="link-afm">AFM view</label></div>
+      <div id="link-pw-box" class="hide"><label for="link-afmpw">AFM password (this run only)</label><input id="link-afmpw" type="password" autocomplete="off"></div>
+    </div>
+    <div class="row"><button class="go" data-run="link">Diagnose</button></div>
+  </section>
+
+  <section class="card hide" data-p="scan">
     <h2>Link scan</h2>
     <p class="mut">Every GPU link (switch port to GPU port), one root cause per problem link, GPU state. Read-only.</p>
     <div class="grid">
@@ -156,14 +191,17 @@ function fillInv(){
   $("scan-afm").disabled=!i.afm;
   $("afm-note").textContent=i.afm?"":"AFM view: this inventory has no afm: block.";
   if(!i.afm){$("scan-afm").checked=false;$("afm-pw-box").classList.add("hide")}
+  $("link-afm").disabled=!i.afm;if(!i.afm){$("link-afm").checked=false;$("link-pw-box").classList.add("hide")}
   try{localStorage.setItem("hdbg-inv",i.file)}catch(e){}
   loadHistory();
   if(!document.querySelector('section[data-p="access"]').classList.contains("hide"))loadAccess();
+  if(!document.querySelector('section[data-p="map"]').classList.contains("hide"))loadMap();
 }
 function tab(t){
   document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===t)});
   document.querySelectorAll("section[data-p]").forEach(function(s){s.classList.toggle("hide",s.dataset.p!==t)});
   if(t==="history")loadHistory();
+  if(t==="map")loadMap();
   if(t==="access")loadAccess();
   try{localStorage.setItem("hdbg-tab",t)}catch(e){}
 }
@@ -176,18 +214,20 @@ function req(tool){
   if(tool==="path"){r.src=$("path-src").value;r.src_bdf=$("path-srcbdf").value.trim();r.dst=$("path-dst").value;
     r.dst_bdf=$("path-dstbdf").value.trim();r.dst_acc=$("path-dstacc").value;r.ports=$("path-ports").value.trim();
     r.count=+$("path-count").value;r.no_ping=$("path-noping").checked}
+  if(tool==="link"){r.target=$("link-target").value.trim();r.interval=+$("link-interval").value;r.no_bcm=!$("link-bcm").checked;
+    r.afm=$("link-afm").checked;if(r.afm&&$("link-afmpw").value)r.afm_password=$("link-afmpw").value}
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;
 }
 function run(tool){
-  api("/api/run",req(tool)).then(function(j){$("scan-afmpw").value="";show(j,true)}).catch(function(e){
+  api("/api/run",req(tool)).then(function(j){$("scan-afmpw").value="";$("link-afmpw").value="";show(j,true)}).catch(function(e){
     $("jobinfo").innerHTML='<span class="err">'+esc(e.message)+'</span>'})
 }
 function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<span class="badge '+c+'">'+esc(s)+'</span>'}
 function links(j){
   if(!j||j.status==="running")return "";
   var b="/results/"+j.out+"/";
-  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:["report.html","report.txt"];
+  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:["report.html","report.txt"];
   return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ");
 }
 function show(j,fresh){
@@ -259,6 +299,85 @@ function install(name){
   }).catch(function(e){if(f)f.value="";$("acc-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
 $("acc-check").addEventListener("click",checkAccess);
+// ---------------------------------------------------------------- rack map
+var mapData=null,mapPrev=null,mapScans=[];
+function mapLoadScans(){
+  return api("/api/results").then(function(r){
+    var i=inv(),rack=i&&i.rack;
+    mapScans=r.results.filter(function(x){return x.tool==="scan"&&x.files.indexOf("link_check.json")>=0&&(!rack||x.rack===rack)});
+    var o=mapScans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+"</option>"}).join("");
+    $("map-scan").innerHTML=o||"<option value=''>no scan yet - run one on the Scan tab</option>";
+    $("map-prev").innerHTML='<option value="">-</option>'+o;
+  });
+}
+function loadMap(){
+  mapLoadScans().then(function(){
+    var want=(location.hash.match(/scan=([^&]+)/)||[])[1];
+    if(want&&mapScans.some(function(x){return x.path===decodeURIComponent(want)}))$("map-scan").value=decodeURIComponent(want);
+    mapFetch();
+  }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
+}
+function mapFetch(){
+  var p=$("map-scan").value;if(!p){$("map").innerHTML="";$("map-sum").textContent="";return}
+  api("/api/scan?path="+encodeURIComponent(p)).then(function(d){mapData=d;
+    var q=$("map-prev").value;
+    if(q&&q!==p){api("/api/scan?path="+encodeURIComponent(q)).then(function(e){mapPrev=e;drawMap()})}else{mapPrev=null;drawMap()}
+  }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
+}
+function lkey(l){return l.switch+" "+l.sw_port}
+function drawMap(){
+  var d=mapData;if(!d)return;
+  var prev={};if(mapPrev)mapPrev.links.forEach(function(l){prev[lkey(l)]=l.state});
+  var q=$("map-q").value.trim().toLowerCase(),view=$("map-view").value,cnt={ok:0,degraded:0,down:0},hits=0,chg=0;
+  d.links.forEach(function(l){cnt[l.state]=(cnt[l.state]||0)+1});
+  function cell(l){
+    var cls="cell "+l.state,txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
+    if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
+    if(mapPrev&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
+    return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf||"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
+  }
+  var html="";
+  if(view==="tray"){
+    var by={};d.links.forEach(function(l){var t=l.tray||"(no tray)";(by[t]=by[t]||{});var g=l.bdf||"?";(by[t][g]=by[t][g]||[]).push(l)});
+    Object.keys(by).sort().forEach(function(t){
+      html+='<div class="mblk"><h3>'+esc(t)+"</h3>";
+      Object.keys(by[t]).sort().forEach(function(g){
+        var ls=by[t][g].sort(function(a,b){return (a.gpu_port||0)-(b.gpu_port||0)});
+        html+='<div class="mrow"><span class="lab">'+esc(g)+'</span><div class="cells">'+ls.map(cell).join("")+"</div></div>";
+      });html+="</div>";
+    });
+  }else{
+    var bs={};d.links.forEach(function(l){var k=l.switch+" "+(l.asic||"");(bs[k]=bs[k]||[]).push(l)});
+    Object.keys(bs).sort().forEach(function(k){
+      var ls=bs[k].sort(function(a,b){return (+a.sw_port.replace(/\D/g,""))-(+b.sw_port.replace(/\D/g,""))});
+      html+='<div class="mblk"><div class="mrow"><span class="lab"><b>'+esc(k)+'</b></span><div class="cells">'+ls.map(cell).join("")+"</div></div></div>";
+    });
+  }
+  $("map").innerHTML=html||'<p class="mut">No links in this scan.</p>';
+  var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
+  $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+cnt.ok+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span></span>"+
+    (q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
+  document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
+  try{history.replaceState(null,"","#tab=map&scan="+encodeURIComponent($("map-scan").value))}catch(e){}
+}
+function mapDetail(k){
+  var l=mapData.links.filter(function(x){return lkey(x)===k})[0];if(!l)return;
+  var p=mapPrev&&mapPrev.links.filter(function(x){return lkey(x)===k})[0];
+  var tgt=l.switch+" "+l.sw_port;
+  $("map-detail").classList.remove("hide");
+  $("map-detail").innerHTML="<h2>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" \u2194 "+(l.tray||"?")+" "+(l.bdf||"")+" port "+l.gpu_port)+" "+badge(l.state)+"</h2>"+
+    '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
+    (l.cause?"<p><b>Cause:</b> "+esc(l.cause)+"</p><p><b>Owner:</b> "+esc(l.owner||"")+"</p><p><b>Next step:</b> "+esc(l.action||"")+"</p>":"<p>OK on every layer the scan checked.</p>")+
+    (l.evidence&&l.evidence.length?"<details><summary>Evidence</summary>"+l.evidence.map(function(e){return "<div><code>"+esc(e)+"</code></div>"}).join("")+"</details>":"")+
+    '<div class="row"><button class="go" id="map-diag">Diagnose now</button><button class="sec" id="map-copy">Copy link id</button><span class="mut">reads only '+esc(l.switch)+" and "+esc(l.tray||"its tray")+"</span></div>";
+  $("map-diag").addEventListener("click",function(){$("link-target").value=tgt;tab("link");run("link")});
+  $("map-copy").addEventListener("click",function(){try{navigator.clipboard.writeText(tgt)}catch(e){}});
+  $("map-detail").scrollIntoView({block:"nearest"});
+}
+["map-scan","map-prev"].forEach(function(id){$(id).addEventListener("change",mapFetch)});
+$("map-view").addEventListener("change",drawMap);$("map-q").addEventListener("input",drawMap);
+$("link-afm").addEventListener("change",function(){$("link-pw-box").classList.toggle("hide",!$("link-afm").checked)});
+$("link-target").addEventListener("keydown",function(e){if(e.key==="Enter")run("link")});
 $("acc-keygen").addEventListener("click",function(){
   if(!confirm("Create ~/.ssh/id_ed25519 (no passphrase) on the machine running this UI?"))return;
   api("/api/access/keygen",{}).then(function(){loadAccess()}).catch(function(e){$("acc-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
@@ -276,7 +395,7 @@ api("/api/state").then(function(s){
   if(keep&&invs.some(function(i){return i.file===keep}))$("inv").value=keep;
   fillInv();
   if(s.current){show(s.current,true);poll()}
-  var t="";try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}if(t)tab(t);
+  var t=(location.hash.match(/tab=(\w+)/)||[])[1]||"";if(!t){try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}}tab(t||"map");
 }).catch(function(e){$("inverr").classList.remove("hide");$("inverr").textContent="UI server not answering: "+e.message});
 })();
 </script>

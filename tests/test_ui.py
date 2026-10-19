@@ -154,3 +154,29 @@ def test_local_transport_for_this_machine(monkeypatch):
     monkeypatch.setenv("HELIOS_DEBUG_AUTO_LOCAL", "1")
     assert isinstance(transport.make_transport(h, {"kind": "ssh"}), transport.LocalTransport)
     assert transport.is_local(Host(name="x", host="10.9.9.9", role="switch", extra={"local": True}))
+
+
+def test_link_tool_args_and_target_check(ui):
+    base, _ = ui
+    st = server.Handler.state
+    a, out, rack = server.build_args(st, {"tool": "link", "inventory": "lab.local.yaml", "target": "st1  Ethernet33",
+                                          "interval": 5})
+    assert a[:2] == ["link", "st1 Ethernet33"] and "--no-afm" in a and out.name.startswith("link-")
+    code, body = call(base, "/api/run", {"tool": "link", "inventory": "lab.local.yaml", "target": "st1 Ethernet33; reboot"})
+    assert code == 400 and "link:" in json.loads(body)["error"]
+
+
+def test_scan_view_for_the_rack_map(ui):
+    base, tmp = ui
+    d = tmp / "results" / "link-check" / "lab" / "scan-20261019-000000"
+    d.mkdir(parents=True)
+    (d / "link_check.json").write_text(json.dumps({"time_utc": "x", "rack": "lab", "learned": {"slots": {"c1": 0}},
+        "gpus": [{"tray": "c1", "bdf": "0001:01:00.1", "phase": "PROVIDER"}],
+        "links": [{"switch": "st1", "asic": "asic0", "sw_port": "Ethernet0", "tray": "c1", "bdf": "0001:01:00.1",
+                   "gpu_port": 0, "state": "down", "kind": "phys_went_down", "cause": "c", "evidence": list("abcdefghij"),
+                   "gpu": {"big": "x" * 1000}}]}))
+    code, body = call(base, "/api/scan?path=link-check/lab/scan-20261019-000000")
+    v = json.loads(body)
+    assert code == 200 and v["links"][0]["state"] == "down" and len(v["links"][0]["evidence"]) == 8 and "gpu" not in v["links"][0]
+    assert v["gpus"][0]["phase"] == "PROVIDER" and v["slots"] == {"c1": 0}
+    assert call(base, "/api/scan?path=../../etc")[0] == 400
