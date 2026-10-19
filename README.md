@@ -87,6 +87,9 @@ ssh admin@<switch> 'tar -xzf helios-debug-ui-<v>.tar.gz && helios-debug-ui-<v>/i
   read directly, not over SSH (its address is one of the machine's own).
 - Listens on 127.0.0.1:8780 only. From your machine: `ssh -L 8780:localhost:8780 admin@<switch>`, then
   http://localhost:8780. Requests with another Host header, or a POST without the UI's own header, are refused.
+- SSH access tab: checks a key login + sudo on every node of the inventory; where it fails, type that node's
+  password once and the UI installs the key the tools use there (like ssh-copy-id, through the jump host if
+  the inventory has one). The password is used for that one login and kept nowhere.
 - The AFM password for a scan's AFM view is typed in the page, handed to that one run in its environment and kept
   nowhere else.
 - Not started at boot: run `~/helios-debug-ui/start.sh`. A SONiC image upgrade may not keep the home directory.

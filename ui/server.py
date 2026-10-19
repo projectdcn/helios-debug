@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from heliosdbg.inventory import load_inventory  # noqa: E402
+from ui import access  # noqa: E402
 
 TOOL = ROOT / "tools" / "link_check.py"
 STATIC = Path(__file__).resolve().parent / "static"
@@ -325,6 +326,9 @@ class Handler(BaseHTTPRequestHandler):
                     if not job:
                         return self._json(404, {"error": "no such job"})
                     return self._json(200, public(job, int((q.get("since") or ["0"])[0] or 0)))
+            if u.path == "/api/access":
+                _f, inv = st.inventory((q.get("inventory") or [""])[0])
+                return self._json(200, access.describe(inv))
             if u.path == "/api/results":
                 return self._json(200, {"results": st.results()})
             if u.path.startswith("/results/"):
@@ -356,11 +360,20 @@ class Handler(BaseHTTPRequestHandler):
             u = urlparse(self.path)
             if u.path == "/api/run":
                 return self._json(200, start_job(self.state, req))
+            if u.path in ("/api/access/check", "/api/access/install"):
+                _f, inv = self.state.inventory(req.get("inventory", ""))
+                if u.path.endswith("check"):
+                    names = req.get("hosts") or None
+                    return self._json(200, {"results": access.check(inv, names if isinstance(names, list) else None)})
+                pw = req.pop("password", None)
+                return self._json(200, access.install(inv, str(req.get("host", "")), str(pw or "")))
+            if u.path == "/api/access/keygen":
+                return self._json(200, access.create_key())
             m = re.fullmatch(r"/api/job/([0-9a-f]{12})/stop", u.path)
             if m:
                 return self._json(200, stop_job(self.state, m.group(1)))
             return self._json(404, {"error": "not found"})
-        except BadRequest as e:
+        except (BadRequest, access.AccessError) as e:
             return self._json(400, {"error": str(e)})
         except json.JSONDecodeError:
             return self._json(400, {"error": "bad JSON"})

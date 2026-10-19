@@ -118,7 +118,8 @@ Inventories: $PREFIX/inventory   (copy your rack's inventory there; the switch t
 Results:     $PREFIX/results/link-check/<rack>/
 Control:     $PREFIX/start.sh | stop.sh | status.sh | rollback.sh   (log: $PREFIX/ui.log)
 
-1. Let the UI reach the compute trays (once per tray; and the other switches of a full rack). From this switch:
+1. Let the UI reach the compute trays (once per tray; and the other switches of a full rack): in the UI's
+   SSH access tab (Check all, then the tray's password -> Install key), or from this switch:
      ssh-copy-id -i $KEY.pub <tray user>@<tray address>
    This key: $(cat "$KEY.pub")
 

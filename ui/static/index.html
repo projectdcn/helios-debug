@@ -51,6 +51,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
     <button role="tab" data-t="path">GPU path</button>
     <button role="tab" data-t="pingmap">Ping map</button>
     <button role="tab" data-t="history">History</button>
+    <button role="tab" data-t="access">SSH access</button>
   </nav>
 
   <section class="card" data-p="scan">
@@ -114,6 +115,16 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
     <div class="wrap"><table><thead><tr><th>When (local)</th><th>Rack</th><th>Tool</th><th>Summary</th><th>Files</th></tr></thead><tbody id="hist"></tbody></table></div>
   </section>
 
+  <section class="card hide" data-p="access">
+    <h2>SSH access</h2>
+    <p class="mut">The tools log in with an SSH key and need sudo without a password prompt. Check each node; where the key
+      is missing, type that node's password once and install the key (like ssh-copy-id). The password is used for that one
+      login and not kept.</p>
+    <div class="row" style="margin-top:0"><button class="go" id="acc-check">Check all</button><button class="sec hide" id="acc-keygen">Create an SSH key on this machine</button><span id="acc-msg" class="mut"></span></div>
+    <div id="acc-keys"></div>
+    <div class="wrap" style="margin-top:10px"><table><thead><tr><th>Node</th><th>Login</th><th>Key used</th><th>Status</th><th>Install the key (node password)</th></tr></thead><tbody id="acc"></tbody></table></div>
+  </section>
+
   <section class="card" id="jobcard">
     <h2>Run <span id="jobbadge"></span></h2>
     <div id="jobinfo" class="mut">Nothing running.</div>
@@ -147,11 +158,13 @@ function fillInv(){
   if(!i.afm){$("scan-afm").checked=false;$("afm-pw-box").classList.add("hide")}
   try{localStorage.setItem("hdbg-inv",i.file)}catch(e){}
   loadHistory();
+  if(!document.querySelector('section[data-p="access"]').classList.contains("hide"))loadAccess();
 }
 function tab(t){
   document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===t)});
   document.querySelectorAll("section[data-p]").forEach(function(s){s.classList.toggle("hide",s.dataset.p!==t)});
   if(t==="history")loadHistory();
+  if(t==="access")loadAccess();
   try{localStorage.setItem("hdbg-tab",t)}catch(e){}
 }
 function req(tool){
@@ -205,6 +218,52 @@ function loadHistory(){
     $("scan-cmp").innerHTML='<option value="">no</option>'+scans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+"</option>"}).join("");
   }).catch(function(){})
 }
+var accState={};
+function accStatus(r){
+  if(!r)return '<span class="mut">not checked</span>';
+  if(r.login==="local")return '<span class="badge b-ok">this machine</span>';
+  var c=r.login==="ok"&&r.sudo?"b-ok":r.login==="ok"?"b-run":"b-bad";
+  return '<span class="badge '+c+'">'+esc(r.login==="ok"?(r.sudo?"ok":"no sudo"):"no key login")+'</span> <span class="mut">'+esc(r.detail)+'</span>';
+}
+function drawAccess(d){
+  $("acc-keygen").classList.toggle("hide",!d.can_create);
+  $("acc-keys").innerHTML=d.keys.map(function(k){return '<details style="margin-top:8px"><summary>Public key '+esc(k.path)+'</summary>'+
+    (k.error?'<div class="err">'+esc(k.error)+'</div>':'<pre style="max-height:none">'+esc(k.public)+'</pre>')+'</details>'}).join("");
+  $("acc").innerHTML=d.hosts.map(function(h){
+    var r=accState[h.name],need=!h.local&&h.key&&r&&r.login!=="ok";   /* only after a failed check */
+    return "<tr><td><b>"+esc(h.name)+'</b><div class="mut">'+esc(h.role)+"</div></td><td>"+esc(h.user+"@"+h.host)+"</td><td>"+
+      (h.local?'<span class="mut">read directly</span>':h.key?esc(h.key)+'<div class="mut">'+esc(h.key_from)+"</div>":'<span class="err">'+esc(h.key_from)+"</span>")+
+      '</td><td id="acc-st-'+esc(h.name)+'">'+accStatus(r)+"</td><td>"+(need?'<div style="display:flex;gap:6px"><input type="password" autocomplete="off" aria-label="Password for '+esc(h.name)+'" data-pw="'+esc(h.name)+'" style="min-width:120px"><button class="sec" data-inst="'+esc(h.name)+'">Install key</button></div>':"")+"</td></tr>";
+  }).join("");
+  document.querySelectorAll("button[data-inst]").forEach(function(b){b.addEventListener("click",function(){install(b.dataset.inst)})});
+}
+var accData=null;
+function loadAccess(){
+  $("acc-msg").textContent="";
+  api("/api/access?inventory="+encodeURIComponent($("inv").value)).then(function(d){accData=d;drawAccess(d)}).catch(function(e){$("acc-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
+}
+function checkAccess(){
+  $("acc-msg").textContent="checking (up to ~30 s per unreachable node) ...";$("acc-check").disabled=true;
+  api("/api/access/check",{inventory:$("inv").value}).then(function(d){
+    d.results.forEach(function(r){accState[r.name]=r});
+    var ok=d.results.filter(function(r){return r.login==="local"||(r.login==="ok"&&r.sudo)}).length;
+    $("acc-msg").textContent=ok+" of "+d.results.length+" nodes ready";if(accData)drawAccess(accData);
+  }).catch(function(e){$("acc-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"}).then(function(){$("acc-check").disabled=false});
+}
+function install(name){
+  var f=document.querySelector('input[data-pw="'+name+'"]'),pw=f?f.value:"";
+  if(!pw){$("acc-msg").innerHTML='<span class="err">type the password of '+esc(name)+" first</span>";return}
+  $("acc-msg").textContent="installing the key on "+name+" ...";
+  api("/api/access/install",{inventory:$("inv").value,host:name,password:pw}).then(function(r){
+    if(f)f.value="";accState[name]=r.check;$("acc-msg").textContent=name+": key "+r.result+"; "+r.check.detail;if(accData)drawAccess(accData);
+  }).catch(function(e){if(f)f.value="";$("acc-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
+}
+$("acc-check").addEventListener("click",checkAccess);
+$("acc-keygen").addEventListener("click",function(){
+  if(!confirm("Create ~/.ssh/id_ed25519 (no passphrase) on the machine running this UI?"))return;
+  api("/api/access/keygen",{}).then(function(){loadAccess()}).catch(function(e){$("acc-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
+});
+$("inv").addEventListener("change",function(){accState={}});
 document.querySelectorAll("nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.t)})});
 document.querySelectorAll("button[data-run]").forEach(function(b){b.addEventListener("click",function(){run(b.dataset.run)})});
 $("inv").addEventListener("change",fillInv);
