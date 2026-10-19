@@ -26,6 +26,7 @@ KINDS = {
     "tray_unreachable": "compute tray not reachable",
     "tray_quarantined": "compute tray quarantined in the inventory",
     "tray_missing": "no compute tray in the inventory for this slot",
+    "fdb_empty": "switch forwarding table empty when read - GPU ports could not be identified",
     "gpu_missing": "GPU port not found on the tray",
     "sw_admin_down": "switch port administratively down",
     "gpu_admin": "GPU port administratively disabled",
@@ -358,6 +359,8 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
     return set_("ok", "", "", "", "")
 
 
+FDB_RETRIES, FDB_RETRY_S = 3, 10.0
+
 # kinds where the switch ASIC's own view of the lanes says which side / layer fails
 BCM_KINDS = ("phys_never_up", "phys_went_down", "one_sided", "bit_errors")
 
@@ -421,6 +424,24 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
     sw_res, tr_res = {}, {}
     for sw, val, exc in fan_out(collect_switch, list(rack.switches.values())):
         sw_res[sw.host.name] = val if not exc else {"name": sw.host.name, "asics": {}, "error": str(exc)}
+    # an empty forwarding table (AFM reprogramming at that moment: MR2 19 Oct 01:18, back 30 s later) leaves every
+    # port unmatched - read it again a few times before joining
+    for _ in range(int(FDB_RETRIES)):
+        empty = [n for n, v in sw_res.items() if not v.get("error") and v["asics"]
+                 and not any(r for a in v["asics"].values() for r in a["fdb"] if str(r.get("Type", "")).lower() == "static")]
+        if not empty:
+            break
+        log(f"forwarding table empty on {', '.join(empty)} - reading it again in {FDB_RETRY_S:.0f} s ...")
+        time.sleep(FDB_RETRY_S)
+        for n in empty:
+            sw = rack.switches[n]
+            for ns in list(sw_res[n]["asics"]):
+                try:
+                    sw_res[n]["asics"][ns]["fdb"] = parse_table(sw.sh(f"show mac{ns_flag(ns or None)}", sudo=True, timeout=180))
+                except Exception:  # noqa: BLE001 - keep what we have
+                    pass
+    fdb_empty = {n for n, v in sw_res.items() if not v.get("error") and v["asics"]
+                 and not any(r for a in v["asics"].values() for r in a["fdb"] if str(r.get("Type", "")).lower() == "static")}
     for tr, val, exc in fan_out(collect_tray, list(rack.computes.values())):
         tr_res[tr.host.name] = val if not exc else {"name": tr.host.name, "gpus": [], "error": str(exc), "slot": None}
     links, learned = join(list(sw_res.values()), list(tr_res.values()), quarantined_slots(rack.inv))
@@ -460,6 +481,14 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
         diagnose(ln, tr_res, optics.get(ln.switch, False), span, ifcp_map, ifcp_in_use)
     learned["ifcp"] = ifcp_map
     learned["ifcp_in_use"] = ifcp_in_use
+    for ln in links:
+        if ln.kind == "tray_missing" and ln.switch in fdb_empty:
+            ln.kind, ln.state, ln.owner = "fdb_empty", "degraded", OPERATOR
+            ln.cause = (f"{ln.switch} had no static forwarding entry when read (AFM reprogramming, or no vPOD), so this switch "
+                        f"port could not be matched to a GPU port")
+            ln.action = ("Scan again in a minute; or set slot: for every compute tray in the inventory, so ports are matched "
+                         "by their description even without forwarding entries.")
+    learned["fdb_empty_switches"] = sorted(fdb_empty)
     if bcm_view:
         add_bcm(rack, links, sw_res, log, bcm_max)
     return {"switches": sw_res, "trays": tr_res, "links": links, "learned": learned, "optics_reported": optics,
