@@ -364,7 +364,8 @@ def scan_view(state: State, rel: str) -> dict:
     return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
             "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
-            "slots": (d.get("learned") or {}).get("slots") or {}}
+            "slots": (d.get("learned") or {}).get("slots") or {},
+            "ifcp_in_use": (d.get("learned") or {}).get("ifcp_in_use", True)}
 
 
 SECRET_RX = re.compile(r"^\s*(password|passwd|token|secret)\s*:\s*\S", re.I | re.M)
