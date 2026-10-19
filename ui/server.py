@@ -293,6 +293,27 @@ def overview(state: State) -> list[dict]:
     return out
 
 
+def gpus_view(state: State, inventory: str) -> dict:
+    """Every GPU of every tray as the rack's latest check read it (no login): accelerator, config phase, the GPU ports
+    that were up - for choosing a GPU-to-GPU path."""
+    import gzip
+    f, inv = state.inventory(inventory)
+    runs = sorted((state.results_dir / "link-check" / (inv.rack or f.stem)).glob("scan-*/raw/trays.json.gz"), reverse=True)
+    if not runs:
+        raise BadRequest("no check of this rack yet - run one first (Check all links)")
+    trays = json.load(gzip.open(runs[0], "rt"))
+    d = json.loads((runs[0].parent.parent / "link_check.json").read_text()) if (runs[0].parent.parent / "link_check.json").is_file() else {}
+    slots = (d.get("learned") or {}).get("slots") or {}
+    out = {}
+    for name, t in sorted(trays.items()):
+        out[name] = {"slot": slots.get(name), "error": t.get("error"),
+                     "gpus": [{"bdf": g.get("bdf"), "accelerator": g.get("accelerator"), "phase": g.get("config_phase"),
+                               "up": [p_["port"] for p_ in g.get("ports") or []
+                                      if str(p_.get("link")).upper() == "LINK_UP" and str(p_.get("admin", "")).startswith("enable")]}
+                              for g in t.get("gpus") or []]}
+    return {"time_utc": d.get("time_utc") or runs[0].parent.parent.name.split("-", 1)[-1], "trays": out}
+
+
 def scan_view(state: State, rel: str) -> dict:
     """A scan's links, compact, for the rack map (rel: link-check/<rack>/scan-...)."""
     f = _result_file(state, f"{rel}/link_check.json")
@@ -518,6 +539,8 @@ class Handler(BaseHTTPRequestHandler):
                                   {"Content-Disposition": f'attachment; filename="{inv.rack}-cabling.csv"'})
             if u.path == "/api/overview":
                 return self._json(200, {"racks": overview(st)})
+            if u.path == "/api/gpus":
+                return self._json(200, gpus_view(st, (q.get("inventory") or [""])[0]))
             if u.path == "/api/scan":
                 return self._json(200, scan_view(st, (q.get("path") or [""])[0]))
             if u.path == "/api/results":

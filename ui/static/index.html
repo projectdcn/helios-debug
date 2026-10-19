@@ -60,6 +60,8 @@ dialog{border:1px solid var(--rule);border-radius:10px;background:var(--card);co
 dialog dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}dialog dt{font-weight:700}dialog dd{margin:0}
 .pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 12px;margin:6px 0 10px}
 .progress{font-size:13px;color:var(--mut);margin-left:6px}
+#pp-ports label{display:inline-flex;align-items:center;gap:2px;font:12px ui-monospace,Menlo,Consolas,monospace;border:1px solid var(--rule);border-radius:4px;padding:1px 5px;margin:0;color:var(--fg)}
+#pp-ports label.off{opacity:.35}
 nav button.exp{border-style:dashed}
 </style>
 </head>
@@ -204,18 +206,37 @@ nav button.exp{border-style:dashed}
   <section class="card hide" data-p="path">
     <h2>One GPU-to-GPU path</h2>
     <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Checks one GPU-to-GPU path port by port and sends a few test packets (L2 ping) over it.</dd><dt>When</dt><dd>When links look fine but traffic does not get through.</dd><dt>How long</dt><dd>About 30 seconds.</dd><dt>Safe?</dt><dd>Sends a few test packets; changes nothing.</dd></dl></details>
-    <p class="mut">Checks a path port by port: both forwarding entries, an L2 ping (afmctl ping) and the counters around it. The ping sends a few packets on the scale-up fabric.</p>
-    <div class="grid">
-      <div><label for="path-src">Source tray</label><select id="path-src"></select></div>
-      <div><label for="path-srcbdf">Source GPU BDF</label><input id="path-srcbdf" placeholder="0004:01:00.1"></div>
-      <div><label for="path-dst">Destination tray (empty = source)</label><select id="path-dst"><option value="">same as source</option></select></div>
-      <div><label for="path-dstbdf">Destination GPU BDF</label><input id="path-dstbdf" placeholder="0001:01:00.1"></div>
-      <div><label for="path-dstacc">or destination accelerator id</label><input id="path-dstacc" type="number" min="0" placeholder="8"></div>
-      <div><label for="path-ports">GPU ports (empty = every port up on both)</label><input id="path-ports" placeholder="25,26"></div>
-      <div><label for="path-count">Pings per port set</label><input id="path-count" type="number" min="1" max="100" value="1"></div>
-      <div class="checks" style="align-items:end"><label><input type="checkbox" id="path-noping">no ping (checks only)</label></div>
+    <p class="mut">Pick two GPUs. The tool checks every port they share, port by port: both switch forwarding entries, a few test
+      packets from one GPU to the other (L2 ping), and the error counters around it.</p>
+    <p id="pp-src-note" class="mut"></p>
+    <div class="ends-pick" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+      <div class="card" style="margin:0"><h3 style="margin:0 0 6px;font-size:.95rem">From (source GPU)</h3>
+        <label for="pp-st">Compute tray</label><select id="pp-st"></select>
+        <label for="pp-sg" style="margin-top:6px">GPU</label><select id="pp-sg"></select></div>
+      <div class="card" style="margin:0"><h3 style="margin:0 0 6px;font-size:.95rem">To (destination GPU)</h3>
+        <label for="pp-dt">Compute tray</label><select id="pp-dt"></select>
+        <label for="pp-dg" style="margin-top:6px">GPU</label><select id="pp-dg"></select></div>
     </div>
-    <div class="row"><button class="go" data-run="path">Check path</button></div>
+    <div class="row"><button class="sec" id="pp-swap">Swap from / to</button><button class="sec" id="pp-same">Another GPU on the same tray</button></div>
+    <div style="margin-top:10px"><label>Which GPU ports</label>
+      <div class="checks"><label><input type="radio" name="pp-pm" value="all" checked>every port that is up on both GPUs</label>
+        <label><input type="radio" name="pp-pm" value="pick">only the ports I tick</label></div>
+      <div id="pp-ports" class="cells hide" style="gap:4px;margin-top:6px"></div></div>
+    <div class="grid" style="margin-top:10px">
+      <div><label for="path-count">Test packets per port</label><input id="path-count" type="number" min="1" max="100" value="1"></div>
+      <div class="checks" style="align-items:end"><label><input type="checkbox" id="path-noping">no test packets (checks only)</label></div>
+    </div>
+    <div id="pp-sentence" class="verdict" style="margin-top:12px"></div>
+    <details style="margin-top:6px"><summary class="mut">Type it instead</summary>
+      <div class="grid" style="margin-top:6px">
+        <div><label for="path-src">Source tray</label><select id="path-src"></select></div>
+        <div><label for="path-srcbdf">Source GPU BDF</label><input id="path-srcbdf" placeholder="0004:01:00.1"></div>
+        <div><label for="path-dst">Destination tray (empty = source)</label><select id="path-dst"><option value="">same as source</option></select></div>
+        <div><label for="path-dstbdf">Destination GPU BDF</label><input id="path-dstbdf" placeholder="0001:01:00.1"></div>
+        <div><label for="path-dstacc">or destination accelerator id</label><input id="path-dstacc" type="number" min="0" placeholder="8"></div>
+        <div><label for="path-ports">GPU ports (empty = every port up on both)</label><input id="path-ports" placeholder="25,26"></div>
+      </div></details>
+    <div class="row"><button class="go" data-run="path" id="pp-go">Check this path</button></div>
   </section>
 
   <section class="card hide" data-p="pingmap">
@@ -347,6 +368,7 @@ function fillInv(){
   if(!document.querySelector('section[data-p="map"]').classList.contains("hide"))loadMap();
   if(!document.querySelector('section[data-p="home"]').classList.contains("hide"))renderHome();
   if(!document.querySelector('section[data-p="link"]').classList.contains("hide"))loadPickers();
+  if(!document.querySelector('section[data-p="path"]').classList.contains("hide"))loadPath();
 }
 function tab(t){
   document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===t)});
@@ -356,6 +378,7 @@ function tab(t){
   if(t==="overview")loadOverview();
   if(t==="home")renderHome();
   if(t==="link")loadPickers();
+  if(t==="path")loadPath();
   if(document.querySelector("section[data-p=\""+t+"\"]"))moveJobcard();
   try{history.replaceState(null,"","#tab="+t+"&inv="+encodeURIComponent($("inv").value||""))}catch(e){}
   if(t==="access")loadAccess();
@@ -367,8 +390,10 @@ function req(tool){
     r.no_bcm=!$("scan-bcm").checked;r.afm=$("scan-afm").checked;if(r.afm&&$("scan-afmpw").value)r.afm_password=$("scan-afmpw").value;
     if($("scan-cmp").value)r.compare=$("scan-cmp").value}
   if(tool==="bcm"){r.switches=picked("bcm-sw");r.ports=$("bcm-ports").value.trim();r.all=$("bcm-all").checked}
-  if(tool==="path"){r.src=$("path-src").value;r.src_bdf=$("path-srcbdf").value.trim();r.dst=$("path-dst").value;
-    r.dst_bdf=$("path-dstbdf").value.trim();r.dst_acc=$("path-dstacc").value;r.ports=$("path-ports").value.trim();
+  if(tool==="path"){var typed=$("path-srcbdf").value.trim();
+    if(typed||!ppData){r.src=$("path-src").value;r.src_bdf=typed;r.dst=$("path-dst").value;
+      r.dst_bdf=$("path-dstbdf").value.trim();r.dst_acc=$("path-dstacc").value;r.ports=$("path-ports").value.trim()}
+    else{var ch=ppChosen();r.src=$("pp-st").value;r.src_bdf=$("pp-sg").value;r.dst=$("pp-dt").value;r.dst_bdf=$("pp-dg").value;r.ports=ch===null?"":ch.join(",")}
     r.count=+$("path-count").value;r.no_ping=$("path-noping").checked}
   if(tool==="link"){r.target=$("link-target").value.trim();r.interval=+$("link-interval").value;r.no_bcm=!$("link-bcm").checked;r.no_timeline=!$("link-tl").checked;r.hours=+$("link-hours").value;
     r.afm=$("link-afm").checked;if(r.afm&&$("link-afmpw").value)r.afm_password=$("link-afmpw").value}
@@ -565,11 +590,62 @@ function renderResult(j){
     box.innerHTML='<p><b>'+esc(l.switch+" "+l.sw_port)+"</b> &harr; <b>"+esc(l.tray||"?")+" GPU "+esc(l.bdf||"?")+" port "+esc(l.gpu_port)+"</b></p>"+
       verdictHtml(l.state,l.kind,l.cause,l.owner)+(around.length?'<div class="verdict degraded"><h3>Also around this link</h3><ul>'+around.map(function(c){return "<li>"+esc(c.check+": "+c.detail)+"</li>"}).join("")+"</ul></div>":"")+
       '<p><a href="'+esc(base+"report.html")+'" target="_blank" rel="noopener">Open the full report</a> (both ends, switch signal, 24-hour timeline)</p>'})}
+  else if(j.tool==="path"){fetch(base+"report.txt").then(function(r){return r.ok?r.text():""}).then(function(t){
+    var lines=t.split("\n").filter(function(x){return x.trim()}),bad=j.rc!==0;
+    box.innerHTML='<div class="verdict '+(bad?"down":"ok")+'"><h3>'+(bad?"The path has problems":"The path works")+"</h3>"+
+      (bad?"Some ports of this path did not pass - see below; Diagnose a link on one of them for the cause.":"Every port checked passed (forwarding entries, test packets, counters).")+
+      '</div><pre style="max-height:40vh">'+esc(lines.slice(-30).join("\n"))+"</pre>"})}
   else if(j.tool==="scan"){api("/api/scan?path="+encodeURIComponent(j.out)).then(function(d){box.innerHTML=findingsHtml(d);wireFindingButtons(box)}).catch(function(){})}
   else if(j.tool==="watch"){fetch(base+"watch.json").then(function(r){return r.ok?r.json():null}).then(function(w){if(!w)return;
     box.innerHTML=Object.keys(w.per_link).map(function(k){var p=w.per_link[k],bad=p.link_changes||p.down||Object.keys(p.errors_grew).length;
       return '<div class="verdict '+(bad?"down":"ok")+'"><h3>'+esc(k)+"</h3>Up in "+p.up+" of "+p.rounds+" reads, "+p.link_changes+" changes"+(Object.keys(p.errors_grew).length?", errors grew: "+esc(JSON.stringify(p.errors_grew)):"")+"</div>"}).join("")})}
 }
+
+// ---------------------------------------------------------------- GPU-to-GPU path pickers
+var ppData=null;
+function ppTrayOpts(sel){var t=ppData?ppData.trays:{};$(sel).innerHTML=Object.keys(t).map(function(n){var x=t[n];
+  return '<option value="'+esc(n)+'"'+(x.error?" disabled":"")+">"+esc(n+(x.slot!=null?" (slot "+x.slot+")":"")+(x.error?" - could not be read":""))+"</option>"}).join("")}
+function ppGpuOpts(tsel,gsel,exclude){var t=ppData&&ppData.trays[$(tsel).value];
+  $(gsel).innerHTML=(t?t.gpus:[]).filter(function(g){return g.bdf!==exclude}).map(function(g){
+    var warn=g.phase!=="ACTIVE"?" - NOT ready ("+g.phase+")":"";
+    return '<option value="'+esc(g.bdf)+'">'+esc("GPU "+g.bdf+" · accelerator "+g.accelerator+" · "+g.up.length+" ports up"+warn)+"</option>"}).join("")||'<option value="">no GPU</option>'}
+function ppGpu(tsel,gsel){var t=ppData&&ppData.trays[$(tsel).value];return t?t.gpus.filter(function(g){return g.bdf===$(gsel).value})[0]:null}
+function ppShared(){var a=ppGpu("pp-st","pp-sg"),b=ppGpu("pp-dt","pp-dg");if(!a||!b)return [];return a.up.filter(function(p){return b.up.indexOf(p)>=0}).sort(function(x,y){return x-y})}
+function ppRefreshDst(){var same=$("pp-dt").value===$("pp-st").value;var keep=$("pp-dg").value;ppGpuOpts("pp-dt","pp-dg",same?$("pp-sg").value:null);
+  if(keep&&Array.prototype.some.call($("pp-dg").options,function(o){return o.value===keep}))$("pp-dg").value=keep;ppPorts()}
+function ppPorts(){var a=ppGpu("pp-st","pp-sg"),b=ppGpu("pp-dt","pp-dg"),sh=ppShared(),all=[];for(var i=0;i<36;i++)all.push(i);
+  var prev={};$("pp-ports").querySelectorAll("input:checked").forEach(function(x){prev[x.value]=1});
+  $("pp-ports").innerHTML=all.map(function(p){var ok=sh.indexOf(p)>=0;return '<label class="'+(ok?"":"off")+'" title="'+(ok?"up on both GPUs":"not up on both GPUs")+'"><input type="checkbox" value="'+p+'"'+(ok?"":" disabled")+(ok&&prev[p]?" checked":"")+">"+p+"</label>"}).join("");
+  $("pp-ports").querySelectorAll("input").forEach(function(x){x.addEventListener("change",ppSentence)});ppSentence()}
+function ppChosen(){if(document.querySelector('input[name="pp-pm"]:checked').value==="all")return null;
+  return Array.prototype.map.call($("pp-ports").querySelectorAll("input:checked"),function(x){return +x.value})}
+function ppSentence(){var a=ppGpu("pp-st","pp-sg"),b=ppGpu("pp-dt","pp-dg"),sh=ppShared(),ch=ppChosen(),box=$("pp-sentence"),warn=[];
+  $("pp-ports").classList.toggle("hide",ch===null);
+  if(!a||!b){box.className="verdict down";box.innerHTML="Pick a source and a destination GPU.";$("pp-go").disabled=true;return}
+  if(a.phase!=="ACTIVE")warn.push("the source GPU is not ready ("+a.phase+")");if(b.phase!=="ACTIVE")warn.push("the destination GPU is not ready ("+b.phase+")");
+  var ports=ch===null?sh:ch,noping=$("path-noping").checked;
+  if(!sh.length)warn.push("no GPU port is up on both GPUs");if(ch!==null&&!ch.length)warn.push("tick at least one port");
+  box.className="verdict "+(warn.length?"degraded":"ok");
+  box.innerHTML=(noping?"Check (no test packets) ":"Send "+(+$("path-count").value||1)+" test packet(s) per port ")+"from <b>"+esc($("pp-st").value+" GPU "+a.bdf)+"</b> (accelerator "+esc(a.accelerator)+") to <b>"+
+    esc($("pp-dt").value+" GPU "+b.bdf)+"</b> (accelerator "+esc(b.accelerator)+") over "+(ports.length?ports.length+" port(s): "+esc(ports.join(", ")):"no port")+"."+
+    (warn.length?'<div class="err" style="margin-top:4px">'+esc(warn.join("; "))+"</div>":"")+
+    '<div class="mut" style="margin-top:4px">GPU list from the check of '+esc(stampLocal(ppData.time_utc))+".</div>";
+  $("pp-go").disabled=!sh.length||(ch!==null&&!ch.length);
+}
+function loadPath(){var i=inv();if(!i)return;
+  api("/api/gpus?inventory="+encodeURIComponent(i.file)).then(function(d){ppData=d;$("pp-src-note").textContent="";
+    ppTrayOpts("pp-st");ppTrayOpts("pp-dt");var names=Object.keys(d.trays).filter(function(n){return !d.trays[n].error});
+    if(names.length>1)$("pp-dt").value=names[1];ppGpuOpts("pp-st","pp-sg");ppRefreshDst()})
+  .catch(function(e){ppData=null;$("pp-src-note").innerHTML=friendly(e.message);$("pp-sentence").innerHTML="";$("pp-go").disabled=true})}
+$("pp-st").addEventListener("change",function(){ppGpuOpts("pp-st","pp-sg");ppRefreshDst()});
+$("pp-sg").addEventListener("change",ppRefreshDst);
+$("pp-dt").addEventListener("change",ppRefreshDst);
+$("pp-dg").addEventListener("change",ppPorts);
+document.querySelectorAll('input[name="pp-pm"]').forEach(function(x){x.addEventListener("change",ppSentence)});
+$("path-noping").addEventListener("change",ppSentence);$("path-count").addEventListener("input",ppSentence);
+$("pp-swap").addEventListener("click",function(){var st=$("pp-st").value,sg=$("pp-sg").value,dt=$("pp-dt").value,dg=$("pp-dg").value;
+  $("pp-st").value=dt;ppGpuOpts("pp-st","pp-sg");$("pp-sg").value=dg;$("pp-dt").value=st;ppRefreshDst();$("pp-dg").value=sg;ppPorts()});
+$("pp-same").addEventListener("click",function(){$("pp-dt").value=$("pp-st").value;ppRefreshDst()});
 var accState={};
 function accStatus(r){
   if(!r)return '<span class="mut">not checked</span>';

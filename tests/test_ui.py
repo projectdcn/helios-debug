@@ -214,3 +214,17 @@ def test_page_is_the_one_the_server_started_with(ui, monkeypatch):
     first = call(base, "/")[1]
     monkeypatch.setattr(server, "STATIC", server.STATIC.parent / "nowhere")   # a newer page on disk is not served
     assert call(base, "/")[1] == first and b"Diagnose a link" in first
+
+
+def test_gpus_view_for_the_path_pickers(ui):
+    import gzip
+    base, tmp = ui
+    d = tmp / "results" / "link-check" / "lab" / "scan-20261019-000000"
+    (d / "raw").mkdir(parents=True)
+    (d / "link_check.json").write_text(json.dumps({"time_utc": "20261019-000000", "learned": {"slots": {"c1": 0}}, "links": []}))
+    with gzip.open(d / "raw" / "trays.json.gz", "wt") as fh:
+        json.dump({"c1": {"gpus": [{"bdf": "0001:01:00.1", "accelerator": "3", "config_phase": "ACTIVE", "ports": [
+            {"port": 0, "link": "LINK_UP", "admin": "enabled"}, {"port": 1, "link": "LINK_DOWN", "admin": "enabled"},
+            {"port": 2, "link": "LINK_UP", "admin": "idle"}]}]}, "c2": {"gpus": [], "error": "AuthenticationException"}}, fh)
+    v = json.loads(call(base, "/api/gpus?inventory=lab.local.yaml")[1])
+    assert v["trays"]["c1"]["slot"] == 0 and v["trays"]["c1"]["gpus"][0]["up"] == [0] and v["trays"]["c2"]["error"]
