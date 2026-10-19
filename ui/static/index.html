@@ -39,7 +39,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 .map{display:flex;flex-direction:column;gap:12px;margin-top:8px}.mblk h3{font-size:.9rem;margin:0 0 4px}
 .mrow{display:flex;align-items:center;gap:6px;margin:2px 0}.mrow .lab{width:120px;flex:none;font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cells{display:flex;flex-wrap:wrap;gap:2px}
-svg.topo{width:100%;height:auto;display:block;font-family:inherit}svg.topo .clk{cursor:pointer}svg.topo .clk:hover{opacity:.8}
+svg.topo{max-width:100%;height:auto;display:block;font-family:inherit;margin:0 auto}svg.topo .clk{cursor:pointer}svg.topo .clk:hover{opacity:.8}
 svg.topo text{fill:var(--fg)}svg.topo text.m{fill:var(--mut)}svg.topo .box{fill:var(--card);stroke:var(--rule)}
 .cnts{display:inline-flex;flex-wrap:wrap;gap:4px;font-size:12px;font-weight:400;margin-left:8px;vertical-align:middle}
 .cnts span{padding:0 6px;border-radius:8px;background:var(--code);white-space:nowrap}.cnts .ok{color:var(--ok);background:var(--okbg)}
@@ -1148,10 +1148,10 @@ function topoSvg(d){
   ls.forEach(function(l){var a=l.switch+"|"+(l.asic||"");(sws[l.switch]=sws[l.switch]||{})[l.asic||""]=1;
     var t=l.tray||"(no tray)";(trays[t]=trays[t]||{})[mGpu(l)]=1;var k=t+"#"+a;(pairs[k]=pairs[k]||[]).push(l)});
   var swN=Object.keys(sws).sort(),trN=Object.keys(trays).sort(function(a,b){var sa=(d.slots||{})[a],sb=(d.slots||{})[b];return (sa==null?999:sa)-(sb==null?999:sb)||(a<b?-1:1)});
-  var SWW=Math.max(160,Object.keys(sws[swN[0]]||{}).length*82+12),SWG=14,TW=118,TG=10,perRow=Math.min(9,Math.max(1,trN.length)),rows=Math.ceil(trN.length/perRow);
-  var W=Math.max(swN.length*(SWW+SWG)+20,perRow*(TW+TG)+20),SY=20,ASY=126,TY0=230,TH=96,H=TY0+rows*(TH+28)+10;
+  var SWW=Math.max(150,Object.keys(sws[swN[0]]||{}).length*76+12),SWG=12,TW=112,TG=8,perRow=Math.min(9,Math.max(1,trN.length)),rows=Math.ceil(trN.length/perRow);
+  var W=Math.max(swN.length*(SWW+SWG)+20,perRow*(TW+TG)+20),SY=20,ASY=126,TY0=200,TH=90,H=TY0+rows*(TH+22)+6;
   var asicPos={},trayPos={},gpuPos={},o=[];
-  o.push('<svg class="topo" viewBox="0 0 '+W+" "+H+'" role="img" aria-label="Cabling picture of '+esc(d.rack)+'">');
+  o.push('<svg class="topo" width="'+Math.round(W*0.85)+'" viewBox="0 0 '+W+" "+H+'" role="img" aria-label="Cabling picture of '+esc(d.rack)+'">');
   o.push('<g id="tp-lines"></g>');
   // switch trays + ASICs
   swN.forEach(function(sw,i){var x=10+i*(SWW+SWG)+(W-20-swN.length*(SWW+SWG)+SWG)/2,asics=Object.keys(sws[sw]).sort(),all=ls.filter(function(l){return l.switch===sw}),c=mCount(all);
