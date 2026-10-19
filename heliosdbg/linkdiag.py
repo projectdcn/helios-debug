@@ -294,6 +294,10 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
         return ln
 
     if t is not None and t.get("error"):
+        if re.search(r"authenticat|permission denied", t["error"], re.I):    # MR2 19 Oct, from the switch: key not yet on the trays
+            return set_("down", "tray_unreachable", f"compute tray {ln.tray}: login refused (this machine's SSH key is not "
+                        f"installed there)", OPERATOR, "Install the key on the tray (debug UI: SSH access tab - Check all, "
+                        "the tray's password, Install key; or ssh-copy-id) and scan again. The links themselves are not judged.")
         return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH", SITE,
                     "Check the tray's power and BMC; every link of the tray is affected (one root cause).")
     if not ln.tray and getattr(ln, "_quarantined", None):

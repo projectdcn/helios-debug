@@ -30,7 +30,9 @@ def test_all_good():
 
 def test_problems_named():
     ln = Link("st1", "asic0", "Ethernet33", sw_oper="up", fdb_static=False, gpu={"ifcp": {"ll_up": "no"}})
-    c = {x["check"]: x for x in linkctx.collect(Node("st1", PS, ntp="no"), Node("c2", skew=-16.4), 0, ln)}
+    c = {x["check"]: x for x in linkctx.collect(Node("st1", PS, ntp="no"), Node("c2", skew=-16.4), 0, ln, switches_in_rack=6)}
     assert c["node agent of slot 0"]["ok"] is None and "not on st1" in c["node agent of slot 0"]["detail"]
+    one = {x["check"]: x for x in linkctx.collect(Node("st1", PS), Node("c2"), 0, ln, switches_in_rack=1)}
+    assert one["node agent of slot 0"]["ok"] is False and "only switch tray" in one["node agent of slot 0"]["detail"]
     assert c["clock of st1"]["ok"] is False and c["clock offset between the ends"]["ok"] is False
     assert "-16" in c["clock offset between the ends"]["detail"] and c["IFCP session"]["ok"] is False

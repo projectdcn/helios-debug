@@ -831,7 +831,7 @@ def link_cmd(a) -> int:
                 from heliosdbg import linkctx
                 cab = parse_port_description(hits[0].desc or "")
                 ctx = linkctx.collect(rack.switches[hits[0].switch], rack.computes.get(hits[0].tray or ""),
-                                      cab[0] if cab else None, hits[0])
+                                      cab[0] if cab else None, hits[0], len(inv.switches))
             if hits and not a.no_timeline:
                 from heliosdbg import timeline
                 h0 = hits[0]
@@ -887,7 +887,8 @@ def link_cmd(a) -> int:
     if tl:
         from heliosdbg import timeline
         lines += ["", "timeline:"] + [f"  {x}" for x in timeline.summary(tl)] + \
-                 [f"  {e['t'][:19]}  {e['side']:<6} {e['kind']:<9} {e['text'][:140]}" for e in tl["events"][-15:]] + \
+                 [f"  {e['t'][:19]}  {e['side']:<6} {e['kind']:<9} {e['text'][:140]}" + (f"  (x{e['count']} until {e['until'][11:19]})" if e.get('count') else "")
+                  for e in tl["events"][-15:]] + \
                  [f"  not read on {k}: {v}" for k, v in tl["errors"].items()]
     lines += ["", f"report: {out / 'report.html'}"]
     print("\n".join(lines))
@@ -1137,7 +1138,7 @@ def _timeline_html(tl: dict | None) -> str:
         return ""
     from heliosdbg import timeline
     rows = "".join(f"<tr class='k-{esc(e['kind'])}'><td><code>{esc(e['t'][:23].replace('T', ' '))}</code></td><td>{esc(e['side'])}</td>"
-                   f"<td>{esc(e['source'])}</td><td>{esc(e['kind'])}</td><td>{esc(e['text'])}{(' (x' + str(e['count']) + ')') if e.get('count') else ''}</td></tr>"
+                   f"<td>{esc(e['source'])}</td><td>{esc(e['kind'])}</td><td>{esc(e['text'])}{(' (x' + str(e['count']) + ' until ' + e['until'][11:19] + ')') if e.get('count') else ''}</td></tr>"
                    for e in tl["events"])
     errs = "".join(f"<p class='err'>Not read on the {esc(k)}: {esc(v)}</p>" for k, v in tl["errors"].items())
     return (f"<h2>Timeline (last {tl['hours']} h, UTC)</h2><div class='card'>" +

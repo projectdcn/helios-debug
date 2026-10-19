@@ -41,3 +41,19 @@ def test_tray_lines_collapsed():
 def test_summary_flags_admin_changes_without_a_command():
     tl = {"hours": 24, "events": [e for e in timeline.parse_switch(SW, SINCE) if e["kind"] != "command"], "errors": {}}
     assert any("other than the CLI" in x for x in timeline.summary(tl))
+
+
+def test_alternating_repeats_collapse():
+    lines = "".join(f"2026-10-19T05:55:{i:02d}.000000+00:00 c1 kernel: ifoe 0004:01:00.1: "
+                    + ("MC command 0xc7 inlen 4 failed rc=-38 (raw 38)\n" if i % 2 else "Unhandled mcdi_event subcode 0x2f [c002f000:00000001]\n")
+                    for i in range(40))
+    ev = timeline.parse_tray(lines, SINCE)
+    assert len(ev) == 2 and sorted(e["count"] for e in ev) == [20, 20] and ev[0]["until"].startswith("2026-10-19T05:55:3")
+
+
+def test_different_ports_not_merged():
+    lines = ("2026-10-19T01:15:43.000000+00:00 c1 kernel: ifoe 0004:01:00.1: port 104: link down event (seq 6)\n"
+             "2026-10-19T01:15:44.000000+00:00 c1 kernel: ifoe 0004:01:00.1: port 108: link down event (seq 6)\n"
+             "2026-10-19T01:15:45.000000+00:00 c1 kernel: ifoe 0004:01:00.1: port 104: link down event (seq 7)\n")
+    ev = timeline.parse_tray(lines, SINCE)
+    assert [(e["text"].split(":")[2].strip(), e.get("count")) for e in ev] == [("port 104", 2), ("port 108", None)]

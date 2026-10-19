@@ -127,20 +127,24 @@ def parse_tray(text: str, since: datetime) -> list[dict]:
     return _collapse(out)
 
 
-def _collapse(evs: list[dict], window_s: float = 5.0) -> list[dict]:
-    """Repeated identical driver lines within a few seconds -> one line with a count."""
-    out = []
+def _collapse(evs: list[dict], window_s: float = 10.0) -> list[dict]:
+    """Repeats of the same line (numbers in it ignored) within window_s of its previous occurrence -> one line with a
+    count and the time of the last one, also when two messages alternate (MR2 c1 19 Oct: 'MC command 0xc7 failed' and
+    'Unhandled mcdi_event' every second, 300 lines)."""
+    out, last = [], {}
     for e in evs:
-        key = (e["side"], e["kind"], re.sub(r"0x[0-9a-f]+", "", e["text"]))
-        if out and out[-1].get("_k") == key and \
-                (datetime.fromisoformat(e["t"]) - datetime.fromisoformat(out[-1]["_last"])).total_seconds() <= window_s:
-            out[-1]["count"] = out[-1].get("count", 1) + 1
-            out[-1]["_last"] = e["t"]
+        key = (e["side"], e["kind"], re.sub(r"(?<!port )(0x[0-9a-f]+|\d+)", "#", e["text"]))   # 'port N' kept apart
+        t = datetime.fromisoformat(e["t"])
+        j = last.get(key)
+        if j is not None and (t - datetime.fromisoformat(out[j]["until"] or out[j]["t"])).total_seconds() <= window_s:
+            out[j]["count"] = out[j].get("count", 1) + 1
+            out[j]["until"] = e["t"]
             continue
-        out.append(dict(e, _k=key, _last=e["t"]))
+        last[key] = len(out)
+        out.append(dict(e, until=None))
     for e in out:
-        e.pop("_k", None)
-        e.pop("_last", None)
+        if not e.get("until"):
+            e.pop("until", None)
     return out
 
 
