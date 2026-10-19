@@ -60,6 +60,7 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
     <button role="tab" data-t="bcm">Broadcom shell</button>
     <button role="tab" data-t="path">GPU path</button>
     <button role="tab" data-t="pingmap">Ping map</button>
+    <button role="tab" data-t="isolate" style="color:var(--down)">Isolate (disruptive)</button>
     <button role="tab" data-t="history">History</button>
     <button role="tab" data-t="access">SSH access</button>
     <button role="tab" data-t="newrack">Add a rack</button>
@@ -172,6 +173,21 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
     <div class="row"><button class="go" data-run="pingmap">Run ping map</button></div>
   </section>
 
+  <section class="card hide" data-p="isolate" style="border-color:var(--down)">
+    <h2 style="color:var(--down)">Isolate one link - takes it DOWN</h2>
+    <p>Takes ONE end of ONE GPU link down for a short hold and brings it back, to see which end a fault follows. Only
+      ports described as cabled to a compute tray; never a port in the inventory's avoid list; the end is always brought
+      back (also on Stop); afterwards every port of that switch ASIC that was up before must be up again. Traffic over
+      this link is interrupted - make sure nobody is running on it.</p>
+    <div class="grid">
+      <div><label for="iso-target">Link</label><input id="iso-target" placeholder="st6 Ethernet257"></div>
+      <div><label for="iso-action">Which end</label><select id="iso-action"><option value="switch-flap">switch port (shutdown / startup)</option><option value="gpu-flap">GPU port (afmctl idle / enable)</option></select></div>
+      <div><label for="iso-hold">Hold down (s)</label><input id="iso-hold" type="number" min="1" max="300" value="10"></div>
+      <div><label for="iso-confirm">Type the link again to confirm</label><input id="iso-confirm" autocomplete="off"></div>
+    </div>
+    <div class="row"><button class="go" data-run="isolate" style="background:var(--down)">Take it down and back</button></div>
+  </section>
+
   <section class="card hide" data-p="history">
     <h2>Earlier runs</h2>
     <div class="wrap"><table><thead><tr><th>When (local)</th><th>Rack</th><th>Tool</th><th>Summary</th><th>Files</th></tr></thead><tbody id="hist"></tbody></table></div>
@@ -269,6 +285,7 @@ function req(tool){
     r.afm=$("link-afm").checked;if(r.afm&&$("link-afmpw").value)r.afm_password=$("link-afmpw").value}
   if(tool==="watch"){r.targets=$("watch-targets").value;r.every=+$("watch-every").value;r.duration=Math.round(+$("watch-dur").value*60)}
   if(tool==="cabling"){r.plan=$("cab-plan").value}
+  if(tool==="isolate"){r.target=$("iso-target").value.trim();r.confirm=$("iso-confirm").value.trim();r.action=$("iso-action").value;r.hold=+$("iso-hold").value}
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;
 }
@@ -280,7 +297,7 @@ function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<s
 function links(j){
   if(!j||j.status==="running")return "";
   var b="/results/"+j.out+"/";
-  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:j.tool==="cabling"?["report.html","report.txt","cabling.json"]:["report.html","report.txt"];
+  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:j.tool==="cabling"?["report.html","report.txt","cabling.json"]:j.tool==="isolate"?["report.txt","isolate.json"]:["report.html","report.txt"];
   return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ")+
     ' · <a href="/api/bundle?path='+encodeURIComponent(j.out)+'">bundle.zip</a>';
 }

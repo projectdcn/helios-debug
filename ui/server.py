@@ -35,7 +35,7 @@ from ui import access  # noqa: E402
 
 TOOL = ROOT / "tools" / "link_check.py"
 STATIC = Path(__file__).resolve().parent / "static"
-TOOLS = ("scan", "link", "watch", "cabling", "bcm", "path", "pingmap")
+TOOLS = ("scan", "link", "watch", "cabling", "isolate", "bcm", "path", "pingmap")
 TARGET_RX = re.compile(r"^[A-Za-z0-9 _./:\[\],()-]{1,200}$")
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PORTS_RX = re.compile(r"^Ethernet\d{1,4}(,Ethernet\d{1,4}){0,63}$")
@@ -177,6 +177,16 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
             raise BadRequest("watch: 1 to 64 links, one per line (st6 Ethernet257, ct13 0002:01:00.1 33, ...)")
         a[1:1] = targets
         a += ["--every", str(_int(req, "every", 2, 3600, 10)), "--duration", str(_int(req, "duration", 10, 86400, 600))]
+    elif tool == "isolate":
+        target = " ".join(str(req.get("target") or "").split())
+        if not TARGET_RX.match(target):
+            raise BadRequest("isolate: the link (st6 Ethernet257, ct13 0002:01:00.1 33, ...)")
+        if " ".join(str(req.get("confirm") or "").split()) != target:
+            raise BadRequest("isolate takes the link down: type the link exactly as above to confirm")
+        if req.get("action") not in ("switch-flap", "gpu-flap"):
+            raise BadRequest("action: switch-flap or gpu-flap")
+        a.insert(1, target)
+        a += ["--action", req["action"], "--hold", str(_int(req, "hold", 1, 300, 10)), "--yes-disruptive"]
     elif tool == "cabling":
         plan = str(req.get("plan") or "")
         if not plan.strip() or len(plan) > 2_000_000:

@@ -1048,6 +1048,55 @@ def cabling_cmd(a) -> int:
     return 1 if res["problems"] else 0
 
 
+def isolate_cmd(a) -> int:
+    from heliosdbg import isolate, linkdiag, linkone
+    if not a.yes_disruptive:
+        print("isolate takes one end of a link DOWN and back: add --yes-disruptive to confirm", file=sys.stderr)
+        return 2
+    inv = load_inventory(a.inventory)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"isolate-{stamp}"
+    _OUTS.append(out)
+    _room(out)
+    prev = _latest_scan(out.parent)
+    try:
+        t = linkone.parse(a.target, [h.name for h in inv.switches], [h.name for h in inv.computes])
+        t = linkone.resolve(t, (prev or {}).get("links"), dict((prev or {}).get("learned", {}).get("slots") or {}))
+    except linkone.TargetError as e:
+        print(f"target: {e}", file=sys.stderr)
+        return 2
+    a.switches, a.trays = t.switch, t.tray
+    inv, rack = _filtered_rack(a)
+    avoid = set(inv.th("afm.avoid_ports") or []) | set(inv.th("isolate.avoid_ports") or [])
+    (out / "raw").mkdir(parents=True, exist_ok=True)
+    cmdlog = CommandLog()
+    res = None
+    try:
+        with cmdlog:
+            scan = linkdiag.scan(rack, 0, log=lambda *_: None, bcm_view=False, afm_cfg=None)
+            ln = next((x for x in scan["links"] if t.matches(x)), None)
+            if ln is None:
+                print(f"no GPU link matches '{a.target}'", file=sys.stderr)
+                return 2
+            print(f"ISOLATE ({a.action}, hold {a.hold:.0f} s): {ln.switch} {ln.asic} {ln.sw_port} <-> {ln.tray} {ln.bdf} port {ln.gpu_port}")
+            try:
+                res = isolate.run(rack.switches[ln.switch], rack.computes.get(ln.tray or ""), ln, a.action, a.hold, avoid)
+            except isolate.Refused as e:
+                print(f"refused: {e}", file=sys.stderr)
+                return 2
+    finally:
+        rack.close()
+        cmdlog.save(out / "raw")
+    res |= {"time_utc": stamp, "rack": inv.rack, "target": a.target}
+    (out / "isolate.json").write_text(json.dumps(res, indent=1, default=str))
+    lines = [f"Isolate {stamp} UTC rack {inv.rack}: {res['action']} on {res['link']}, hold {res['hold_s']:.0f} s",
+             f"verdict: {res['verdict']}", ""] + [f"  {s_['t']}  {s_['what']}  " + ", ".join(f"{k}={v}" for k, v in s_.items() if k not in ("t", "what"))
+                                                  for s_ in res["steps"]]
+    print("\n".join(lines))
+    (out / "report.txt").write_text("\n".join(lines) + "\n")
+    return 0 if res["up_after"] and not res["collateral"] else 1
+
+
 def _kv(d: dict | None, keys=None) -> str:
     if not d:
         return "<p class='mut'>not read</p>"
@@ -1321,13 +1370,20 @@ def main(argv=None) -> int:
     c.add_argument("--export", help="write the scan's cabling as a plan CSV to this file ('-' = stdout)")
     c.add_argument("--scan", help="a scan's link_check.json (default: the rack's latest)")
     c.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/cabling-<UTC time>)")
+    i = sub.add_parser("isolate", help="DISRUPTIVE: take one end of ONE GPU link down for a short hold and bring it back")
+    i.add_argument("--inventory", **inv_kw)
+    i.add_argument("target", help="the link, as for 'link'")
+    i.add_argument("--action", choices=("switch-flap", "gpu-flap"), default="switch-flap")
+    i.add_argument("--hold", type=float, default=10.0, help="seconds the end stays down (default 10, at most 300)")
+    i.add_argument("--yes-disruptive", action="store_true", help="required: confirms the link goes down")
+    i.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/isolate-<UTC time>)")
     a = ap.parse_args(argv)
     if a.cmd == "watch":
         a.every, a.duration = max(2.0, a.every), min(86400.0, max(a.every, a.duration))
-    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd, "watch": watch_cmd, "cabling": cabling_cmd}[a.cmd]
+    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd, "watch": watch_cmd, "cabling": cabling_cmd, "isolate": isolate_cmd}[a.cmd]
     if a.cmd == "cabling":                               # no node is logged into
         return fn(a)
-    if a.cmd in ("scan", "link", "watch"):                        # these keep their log in raw/ and in report.html
+    if a.cmd in ("scan", "link", "watch", "isolate"):                        # these keep their log in raw/ and in report.html
         return fn(a)
     log = CommandLog()
     try:
