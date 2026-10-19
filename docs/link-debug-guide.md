@@ -15,7 +15,7 @@ Each question is one section below; a "no" sends you to the layer at fault, and 
 
 ## Run the link check tool first
 
-`tools/link_check.py` does this whole guide in one run: it checks every GPU link of a rack and names the root cause of each one that is down or degraded. It works on any rack described by an inventory (`inventory/example-fullrack.yaml`, see the README), needs SSH (with sudo) to the switch and compute trays, and no AFM password. It only reads, except for one L2 ping in `path` mode.
+`tools/link_check.py` does this whole guide in one run: it checks every GPU link of a rack and names the root cause of each one that is down or degraded. It works on any rack described by an inventory (`inventory/example-fullrack.yaml`, see the README), needs SSH (with sudo) to the switch and compute trays; the AFM password is optional (see GPU state and the AFM view below). It only reads, except for one L2 ping in `path` mode.
 
 ```
 python tools/link_check.py scan --inventory <inventory>
@@ -37,8 +37,27 @@ It writes `report.html` (self-contained, to share with a customer), `report.txt`
 | Bit errors growing on a link that is up | degraded | site (cabling) | reseat, sample again, swap if they follow the cable |
 | Physical link up but no IFCP session | degraded | GPU / AFM vendor | collect the port's `afmctl` output and raise it |
 | Link up but not programmed by AFM (still missing on a second read) | degraded | GPU / AFM vendor | check the GPU is in a vPOD and PortReady in AFM |
+| GPU not configured on the tray (`config_phase` not ACTIVE while other GPUs are) | degraded | GPU / AFM vendor | check its vPOD membership in AFM; reconfigure the tray from AFM if it should be in one |
+| GPU in a vPOD in AFM but not programmed on the tray (AFM view) | down | GPU / AFM vendor | reconfigure the compute tray from AFM; raise it if a GPU reset leaves it unprogrammed |
+| AFM reports the GPU port failed although the link and IFCP are up (AFM view) | degraded | GPU / AFM vendor | compare with the AFM events for the port; raise it if the link stays up |
 
 It also checks the cabling: each GPU port's IFCP session names the switch and port it really reaches, and a link whose IFCP peer is not its described switch port is reported as **miscabled**. On g02-g17 all 2,445 working links matched (18 Oct 07:12 UTC).
+
+**GPU state and the AFM view.** Besides every link, `scan` checks each GPU as a whole. From the trays alone (`afmctl show device`): a GPU whose `config_phase` is not ACTIVE while other GPUs of the rack are ACTIVE is reported under **GPU state**, and its links are marked degraded with that cause. `PROVIDER` also means "in no vPOD", so from the trays alone the tool cannot tell a GPU left out of every vPOD from one that was reset and never re-programmed.
+
+With the AFM view it can. When the inventory has an `afm:` block (`url`, `verify_tls`, `auth.username`, `auth.password_env`) and you set that variable in your shell, `scan` also reads AFM's compute nodes and pairs each tray GPU with AFM's (trays by `afm_name` or slot, GPUs by accelerator id, a single GPU left over on each side by elimination). It then reports:
+
+- a GPU AFM has in a vPOD that the tray reports not ACTIVE, or with another accelerator id: **not programmed** (down)
+- a GPU port AFM reports PortFailed / PortDown while the link and IFCP are up (degraded), and a down link that AFM still shows PortReady (noted on the link)
+- the AFM port state of every link, in the All links table
+
+```
+read -s "HELIOS_AFM_PASSWORD?AFM admin password: " && export HELIOS_AFM_PASSWORD && echo
+python tools/link_check.py scan --inventory <inventory>
+unset HELIOS_AFM_PASSWORD
+```
+
+Without the variable, or with `--no-afm`, the scan says "AFM view not checked" and judges the GPUs from the trays alone. The password is read from the environment only and never written to the report. MR3 19 Oct: after a single-GPU `afmctl reset device -b 0001:01:00.1` on c2 the GPU stayed accelerator 0 / PROVIDER (AFM: 7); the scan reported it under GPU state and marked its 36 links degraded.
 
 For loss that comes and goes, `pingmap` repeats a ring of L2 pings and maps the failures to GPU port numbers and so to switch ASICs, marking each as sticky (every round) or moving:
 
@@ -199,7 +218,7 @@ AFM shows each link from both sides, and the two should agree. Read them through
 | Effect on the fabric | `GET /configs/cluster/v1/vpods/pod-1.system` | `vpod-state` and available / effective / provisioned switch planes |
 | What happened, when | `GET /events/v1/events` | `link_down`, `link_failed`, `ifoe_netport_link_down`, `ifoe_netport_link_failed`, `link_up` |
 
-Three things to know when reading AFM:
+The link check compares the GPU side for you when the AFM password is set (GPU state and the AFM view, above). Three things to know when reading AFM:
 
 - **Events come back unsorted.** AFM ignores `sort-by`, `sort-order` and `page-size` on the events list and returns it in uuid order; sort by `meta.creation-time` yourself before reading "the latest".
 - **PortFailed comes before the link-fail threshold.** A shut port is PortFailed about 2 s later, even with a 30 s threshold; only the vPOD reconfiguration waits for the threshold (product issue 3 of the 17-18 Oct disruptive run). A port that flapped for a few seconds can therefore stay PortFailed.

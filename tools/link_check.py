@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT))
 
 from heliosdbg.afmctl import Afmctl, parse_port_description  # noqa: E402
 from heliosdbg.inventory import load_inventory  # noqa: E402
+from heliosdbg.linkdiag import GPU_LEVEL  # noqa: E402
 from heliosdbg.parsers import parse_table  # noqa: E402
 from heliosdbg.rack import Rack, fan_out  # noqa: E402
 
@@ -475,7 +476,7 @@ def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[di
                       f"<td>{esc(g['owner'])}</td></tr>" for g in groups)
     per_asic = {}
     for ln in links:
-        if ln.state != "ok" and ln.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing"):
+        if ln.state != "ok" and ln.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing", *GPU_LEVEL):
             k = f"{ln.switch} {ln.asic}".strip()
             per_asic[k] = per_asic.get(k, 0) + 1
     asic_rows = "".join(f"<tr><td>{esc(k)}</td><td>{n}</td></tr>" for k, n in sorted(per_asic.items(), key=lambda x: -x[1]))
@@ -504,6 +505,16 @@ def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[di
         notes.append("Optics: this switch platform reports no transceiver presence or optic power, so a cable fault cannot "
                      "be told from a port fault remotely.")
     notes.append(f"Bit errors count only when they grow during the {res['interval_s']:.0f} s sample.")
+    av = res["learned"].get("afm_view") or {}
+    notes.append(f"AFM view: {av.get('nodes')} compute nodes read; {av.get('gpus_paired')} GPUs paired with the trays "
+                 f"(GPU vPOD membership, accelerator ids and AFM's port state checked)." if av.get("checked") else
+                 f"AFM view not checked ({esc(av.get('reason'))}). GPU state is judged from the trays alone; AFM's port "
+                 f"state is not compared.")
+    gf = res.get("gpus") or []
+    gpu_rows = "".join(f"<tr class='{g['state']}'><td>{esc(g['state'])}</td><td>{esc(g['tray'])}</td><td>{esc(g['bdf'])}</td>"
+                       f"<td>{esc(g['accelerator'])}</td><td>{esc(g['phase'])}</td>"
+                       f"<td>{esc((g.get('afm') or {}).get('node') or '')} {esc('GPU ' + str(g['afm']['index']) + ', accelerator ' + str(g['afm']['acc_id']) + ', vPOD ' + str(g['afm']['vpod'] or 'none') if g.get('afm') else '')}</td>"
+                       f"<td>{esc(g['cause'])}</td><td>{esc(g['action'])}</td></tr>" for g in gf)
 
     # ASIC -> GPU map
     amap = asic_gpu_map(links)
@@ -535,7 +546,7 @@ def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[di
         all_rows.append(
             f"<tr class='{ln.state}' data-s='{ln.state}'><td>{esc(ln.state)}</td><td>{esc(ln.switch)}</td><td>{esc(ln.asic)}</td>"
             f"<td>{esc(ln.sw_port)}</td><td>{esc(ln.sw_admin)}/{esc(ln.sw_oper)}</td><td>{esc(ln.tray)}</td><td>{esc(ln.bdf)}</td>"
-            f"<td>{esc(ln.gpu_port)}</td><td>{esc(g.get('admin', ''))}/{esc(str(g.get('link', ''))[:28])}</td><td>{esc(ifcp)}</td>"
+            f"<td>{esc(ln.gpu_port)}</td><td>{esc(g.get('admin', ''))}/{esc(str(g.get('link', ''))[:28])}</td><td>{esc(ifcp)}</td><td>{esc(ln.afm_port or '')}</td>"
             f"<td>{esc(fec)}</td><td>{esc(ln.matched_by)}</td><td>{esc(ln.cause or '')}</td></tr>")
 
     nsw, ntr = len(res["switches"]), len(res["trays"])
@@ -569,6 +580,7 @@ pre{{background:var(--card);border:1px solid var(--rule);border-radius:6px;paddi
 <h2>Notes</h2><ul class='notes'>{''.join(f'<li>{x}</li>' for x in notes)}</ul>
 {(("<h2>Changes since the earlier scan</h2><p>" + esc(f"{len(res['compare']['new_problems'])} new problem(s), {len(res['compare']['recovered'])} recovered, {res['compare']['still_bad']} still bad") + "</p>" + "".join(f"<div><code>new: {esc(x)}</code></div>" for x in res['compare']['new_problems']) + "".join(f"<div><code>recovered: {esc(x)}</code></div>" for x in res['compare']['recovered'])) if res.get('compare') else '')}
 {("<h2>Patterns</h2>" + "".join(f"<p>{esc(x)}</p>" for x in res.get('suspects') or [])) if res.get('suspects') else ''}
+<h2>GPU state</h2>{("<div class='wrap'><table><tr><th>State</th><th>Tray</th><th>GPU (BDF)</th><th>Accelerator</th><th>Phase</th><th>AFM</th><th>Cause</th><th>Next step</th></tr>" + gpu_rows + "</table></div>") if gpu_rows else ("<p>Every GPU is ACTIVE on the trays read" + (" and matches AFM." if av.get('checked') else ".") + "</p>" if any(not t.get('error') for t in res['trays'].values()) else "<p class='err'>Not checked: no compute tray could be read.</p>")}
 <h2>Root causes</h2><div class='wrap'><table><tr><th>State</th><th>Links</th><th>Cause</th><th>Owner</th></tr>{summary or "<tr><td colspan=4>No problem links.</td></tr>"}</table></div>
 <h2>Problem links</h2><div class='wrap'><table><tr><th>State</th><th>Switch port</th><th>GPU port</th><th>Cause</th><th>Owner</th><th>Next step</th><th>Evidence</th></tr>
 {''.join(rows) or ("<tr><td colspan=7>All links ok.</td></tr>" if links and not any(r == "switch" for _n, r, _e, _h in _not_checked(res)) else "<tr><td colspan=7>No problem found among the links that could be checked - see Not checked above.</td></tr>")}</table></div>
@@ -581,7 +593,7 @@ pre{{background:var(--card);border:1px solid var(--rule);border-radius:6px;paddi
 <select id='st' aria-label='State'><option value=''>all states</option><option>ok</option><option>degraded</option><option>down</option></select>
 <span id='cnt' class='mut'></span></div>
 <div class='scroll'><table id='all'><thead><tr><th>State</th><th>Switch</th><th>ASIC</th><th>Switch port</th><th>Admin/oper</th><th>Tray</th><th>GPU (BDF)</th>
-<th>GPU port</th><th>GPU admin/link</th><th>IFCP</th><th>FEC corr / uncorr (sample)</th><th>Matched by</th><th>Cause</th></tr></thead>
+<th>GPU port</th><th>GPU admin/link</th><th>IFCP</th><th>AFM port</th><th>FEC corr / uncorr (sample)</th><th>Matched by</th><th>Cause</th></tr></thead>
 <tbody>{''.join(all_rows)}</tbody></table></div>
 {("<h2>Command logs</h2><p class='mut'>Every command run on each switch and compute tray during this scan, with its output (trimmed to " + str(log_keep) + " lines per command here; everything is in raw/commands.log.gz).</p>" + cmdlog.html(sorted(res['switches']) + sorted(res['trays']), log_keep)) if cmdlog and cmdlog.entries else ''}
 <script>
@@ -646,7 +658,8 @@ def scan_cmd(a) -> int:
     cmdlog = CommandLog()
     try:
         with cmdlog:
-            res = linkdiag.scan(rack, a.interval, bcm_view=not a.no_bcm, bcm_max=a.bcm_max)
+            res = linkdiag.scan(rack, a.interval, bcm_view=not a.no_bcm, bcm_max=a.bcm_max,
+                                afm_cfg=None if a.no_afm else (inv.afm or {}))
     finally:
         rack.close()
     cmdlog.save(out / "raw")
@@ -665,7 +678,7 @@ def scan_cmd(a) -> int:
         lines.append(f"{'':15}next: {g['links'][0].action}")
     per_asic = {}
     for ln in links:
-        if ln.state != "ok" and ln.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing"):
+        if ln.state != "ok" and ln.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing", *GPU_LEVEL):
             k = f"{ln.switch} {ln.asic}".strip()
             per_asic[k] = per_asic.get(k, 0) + 1
     sus = linkdiag.suspects(links)
@@ -685,6 +698,19 @@ def scan_cmd(a) -> int:
     if not res["learned"].get("ifcp_in_use", True):
         lines.append("note: IFCP is not running on this rack - no GPU port has an IFCP session or peer; links are judged "
                      "on the other layers (check with `path`: an L2 ping that passes means the data path works without it)")
+    av = res["learned"].get("afm_view") or {}
+    lines.append("")
+    lines.append(f"AFM view: {av['nodes']} compute nodes, {av['gpus_paired']} GPUs paired with the trays"
+                 + (f" ({av['by_elimination']} by elimination - accelerator id differs)" if av.get("by_elimination") else "")
+                 if av.get("checked") else f"AFM view not checked: {av.get('reason')}")
+    gf = res.get("gpus") or []
+    read = [t for t in res["trays"].values() if not t.get("error")]
+    lines.append("GPU state: " + ("not checked - no compute tray could be read" if not read else
+                                  f"{len(gf)} GPU(s) not right:" if gf else
+                                  f"every GPU ACTIVE on the {len(read)} tray(s) read" + (" and matching AFM" if av.get("checked") else "")))
+    for g in gf:
+        lines.append(f"  {g['state'].upper():<9}{g['tray']} {g['bdf']} (accelerator {g['accelerator'] or '?'}, {g['phase'] or '?'}): {g['cause']}")
+        lines.append(f"{'':11}next: {g['action']}")
     nc = _not_checked(res)
     sw_missing = [n for n, r, _e, _h in nc if r == "switch"]
     if nc:
@@ -714,7 +740,7 @@ def scan_cmd(a) -> int:
             json.dump(data, fh, default=str)
     (out / "link_check.json").write_text(json.dumps({
         "time_utc": stamp, "rack": inv.rack, "interval_s": res["interval_s"], "learned": res["learned"],
-        "optics_reported": res["optics_reported"], "links": [linkdiag.link_dict(x) for x in links], "compare": res.get("compare"), "patterns": res.get("suspects"),
+        "optics_reported": res["optics_reported"], "gpus": res.get("gpus") or [], "links": [linkdiag.link_dict(x) for x in links], "compare": res.get("compare"), "patterns": res.get("suspects"),
         "root_causes": [{k: v for k, v in g.items() if k != "links"} | {"links": [f"{x.switch} {x.sw_port}" for x in g["links"]]}
                         for g in groups]}, indent=1, default=str))
     write_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), res, groups,
@@ -839,6 +865,8 @@ def main(argv=None) -> int:
     s.add_argument("--no-bcm", action="store_true", help="skip the Broadcom shell view of physical-layer problem links")
     s.add_argument("--log-keep", type=int, default=200, help="lines of each command's output shown in report.html (200; "
                                                            "raw/commands.log.gz keeps all)")
+    s.add_argument("--no-afm", action="store_true", help="skip the AFM view (GPU vPOD membership / accelerator ids / AFM "
+                   "port state); it is used when the inventory has afm.url and the afm.auth.password_env variable is set")
     s.add_argument("--bcm-max", type=int, default=64, help="at most this many problem ports read in the Broadcom shell (64)")
     for x in (s,):
         x.add_argument("--switches", help="only these switches (comma-separated inventory names)")

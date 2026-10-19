@@ -20,6 +20,8 @@ FEC = ("FEC_CORR", "FEC_UNCORR", "FEC_SYMBOL_ERR")
 
 # owners: who acts on a cause
 OPERATOR, SITE, SWITCH_VENDOR, GPU_VENDOR = "operator", "site (cabling)", "switch vendor", "GPU / AFM vendor"
+# kinds judged per GPU, not per link: reported in "GPU state", left out of the per-ASIC / per-GPU patterns
+GPU_LEVEL = ("gpu_not_active", "gpu_not_programmed")
 
 # root-cause kinds: grouping key and the one-line summary of a group
 KINDS = {
@@ -38,6 +40,10 @@ KINDS = {
     "ifcp": "physical link up but no IFCP session",
     "not_programmed": "link up but not programmed by AFM",
     "miscabled": "GPU port reaches a different switch port than described",
+    "gpu_not_active": "GPU not configured on the tray (afmctl config_phase not ACTIVE)",
+    "gpu_not_programmed": "GPU in a vPOD in AFM but not programmed on the tray",
+    "afm_port_failed": "AFM reports the GPU port failed although the link and IFCP are up",
+    "afm_port_stale": "AFM still reports the GPU port ready although the link is down",
 }
 
 
@@ -140,6 +146,7 @@ class Link:
     evidence: list = field(default_factory=list)
     owner: str = ""
     action: str = ""
+    afm_port: str | None = None         # AFM gpu-info port oper-state (with the AFM view)
 
 
 def join(switches: list[dict], trays: list[dict], quarantined: dict | None = None) -> tuple[list[Link], dict]:
@@ -418,7 +425,105 @@ def quarantined_slots(inv) -> dict:
     return out
 
 
-def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_max: int = 64) -> dict:
+def afm_pairs(trays: dict, slots: dict, afm_nodes: list[dict], inv_afm_names: dict) -> tuple[dict, dict]:
+    """Pair tray GPUs with AFM GPUs. Trays -> ComputeNodes by inventory afm_name, else slot (learned from the switch
+    port descriptions, = AFM spec.slot-id). GPUs within a pair by accelerator id = AFM acc-id; one GPU left over on
+    each side is paired by elimination (MR3 19 Oct: a reset GPU came back accelerator 0 while AFM still had 7).
+    Returns ({(tray, bdf): (node name, AFM gpu record)}, {tray: node name})."""
+    by_name = {n["meta"]["name"]: n for n in afm_nodes}
+    by_slot = {(n.get("spec") or {}).get("slot-id"): n for n in afm_nodes}
+    node_of, out = {}, {}
+    for t in trays.values():
+        n = by_name.get(inv_afm_names.get(t["name"]) or "") or by_slot.get(slots.get(t["name"]))
+        if not n or t.get("error"):
+            continue
+        node_of[t["name"]] = n["meta"]["name"]
+        afm_gpus = list((((n.get("status") or {}).get("scale-up-info") or {}).get("gpu-info") or {}).values())
+        left = list(afm_gpus)
+        rest = []
+        for g in t["gpus"]:
+            m = next((a for a in left if str(a.get("acc-id")) == str(g.get("accelerator"))), None)
+            if m is not None:
+                left.remove(m)
+                out[(t["name"], g["bdf"])] = (n["meta"]["name"], m)
+            else:
+                rest.append(g)
+        if len(rest) == 1 and len(left) == 1:
+            out[(t["name"], rest[0]["bdf"])] = (n["meta"]["name"], left[0] | {"_paired": "elimination"})
+    return out, node_of
+
+
+def check_gpus(trays: dict, links: list[Link], pairs: dict | None) -> list[dict]:
+    """GPU-level state (not per link): a GPU whose afmctl config_phase is not ACTIVE. Without the AFM view it is
+    flagged only when other GPUs of the rack are ACTIVE (PROVIDER also means "in no vPOD"); with it, when AFM has the
+    GPU in a vPOD or AFM's accelerator id differs. The GPU's links that are otherwise ok become degraded with it.
+    Returns [{tray, bdf, accelerator, phase, kind, cause, action, afm}]."""
+    gpus = [(t["name"], g) for t in trays.values() if not t.get("error") for g in t["gpus"]]
+    any_active = any(str(g.get("config_phase")).upper() == "ACTIVE" for _t, g in gpus)
+    found = []
+    for tname, g in gpus:
+        phase, acc = str(g.get("config_phase") or ""), str(g.get("accelerator") or "")
+        node, a = (pairs or {}).get((tname, g["bdf"]), (None, None))
+        f = None
+        if pairs is not None and a is not None:
+            in_vpod = a.get("vpod-membership") or ""
+            if phase.upper() != "ACTIVE" and in_vpod:
+                f = ("down", "gpu_not_programmed",
+                     f"AFM has {node} GPU {a.get('index')} (accelerator {a.get('acc-id')}) in vPOD {in_vpod}, but the tray "
+                     f"reports it {phase or '?'} with accelerator {acc or '?'} - not programmed (e.g. after a GPU reset)")
+            elif acc != str(a.get("acc-id")) and phase.upper() == "ACTIVE":
+                f = ("degraded", "gpu_not_programmed",
+                     f"tray accelerator {acc} differs from AFM's {a.get('acc-id')} for {node} GPU {a.get('index')}")
+        elif phase.upper() != "ACTIVE" and any_active:
+            f = ("degraded", "gpu_not_active",
+                 f"config_phase {phase or '?'} (accelerator {acc or '?'}) while other GPUs of the rack are ACTIVE - in no "
+                 f"vPOD, or a GPU reset that was not re-programmed (add the AFM view to tell which)")
+        if not f:
+            continue
+        state, kind, cause = f
+        action = (f"Reconfigure the compute tray from AFM (POST .../computenodes/{node}/Reconfigure, or the AFM UI) and "
+                  f"check `afmctl show device` shows the GPU ACTIVE again; raise it with the AFM vendor if a GPU reset "
+                  f"leaves it unprogrammed." if node else
+                  "Check the GPU's vPOD membership in AFM; reconfigure the tray from AFM if it should be in one.")
+        found.append({"tray": tname, "bdf": g["bdf"], "accelerator": acc, "phase": phase, "state": state, "kind": kind,
+                      "cause": cause, "action": action, "afm": {"node": node, "index": (a or {}).get("index"),
+                                                               "acc_id": (a or {}).get("acc-id"),
+                                                               "vpod": (a or {}).get("vpod-membership")} if a else None})
+        for ln in links:
+            if ln.tray == tname and ln.bdf == g["bdf"]:
+                ln.evidence.append(f"GPU {g['bdf']}: {cause}")
+                if ln.state == "ok":
+                    ln.state, ln.kind, ln.cause, ln.owner, ln.action = state, kind, cause, GPU_VENDOR, action
+    return found
+
+
+def check_afm_ports(links: list[Link], pairs: dict) -> None:
+    """With the AFM view: AFM's port oper-state against the real link. PortFailed / PortDown on a link that is up
+    with IFCP (or IFCP not in use) -> afm_port_failed; PortReady on a link that is down -> afm_port_stale."""
+    for ln in links:
+        _node, a = pairs.get((ln.tray, ln.bdf), (None, None))
+        if a is None or ln.gpu_port is None:
+            continue
+        ports = a.get("ports") or []
+        p = next((x for x in ports if x.get("id") == ln.gpu_port), None)
+        if p is None and 0 <= ln.gpu_port < len(ports) and "id" not in ports[ln.gpu_port]:
+            p = ports[ln.gpu_port]
+        if p is None:
+            continue
+        ln.afm_port = p.get("oper-state")
+        if ln.state == "ok" and ln.afm_port not in ("PortReady", "PortDisabled", None):
+            ln.state, ln.kind, ln.owner = "degraded", "afm_port_failed", GPU_VENDOR
+            ln.cause = f"AFM reports {ln.tray} {ln.bdf} port {ln.gpu_port} {ln.afm_port} although the link and IFCP are up"
+            ln.action = ("Compare with the AFM events for this port (link_failed / ifoe_netport_*); if the link stays up, "
+                         "raise it with the AFM vendor (AFM state not following the link).")
+        elif ln.state == "down" and ln.afm_port == "PortReady":
+            ln.evidence.append(f"AFM still reports the GPU port PortReady (link down for {ln.kind})")
+            if ln.kind in ("phys_never_up", "phys_went_down", "one_sided", "sw_admin_down", "gpu_admin"):
+                ln.cause += "; AFM still reports the port PortReady"
+
+
+def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_max: int = 64,
+         afm_cfg: dict | None = None) -> dict:
     t0 = time.monotonic()
     log(f"reading {len(rack.switches)} switches and {len(rack.computes)} compute trays ...")
     sw_res, tr_res = {}, {}
@@ -489,10 +594,29 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
             ln.action = ("Scan again in a minute; or set slot: for every compute tray in the inventory, so ports are matched "
                          "by their description even without forwarding entries.")
     learned["fdb_empty_switches"] = sorted(fdb_empty)
+    afm_view, pairs = {"checked": False, "reason": "not asked for"}, None
+    if afm_cfg is not None:
+        from .afm import Afm, AfmUnavailable
+        try:
+            nodes = Afm(afm_cfg).computes()
+            names = {h.name: (h.extra or {}).get("afm_name") for h in rack.inv.computes if (h.extra or {}).get("afm_name")}
+            pairs, node_of = afm_pairs(tr_res, learned.get("slots") or {}, nodes, names)
+            check_afm_ports(links, pairs)
+            afm_view = {"checked": True, "nodes": len(nodes), "trays_paired": node_of,
+                        "gpus_paired": len(pairs), "by_elimination": sum(1 for _n, a in pairs.values() if a.get("_paired"))}
+            log(f"AFM view: {len(nodes)} compute nodes, {len(pairs)} GPUs paired with the trays")
+        except AfmUnavailable as e:
+            afm_view = {"checked": False, "reason": str(e)}
+            log(f"AFM view not checked: {e}")
+        except Exception as e:  # noqa: BLE001 - the switch / tray scan stands without it
+            afm_view = {"checked": False, "reason": f"{type(e).__name__}: {str(e)[:160]}"}
+            log(f"AFM view not checked: {afm_view['reason']}")
+    learned["afm_view"] = afm_view
+    gpu_findings = check_gpus(tr_res, links, pairs)
     if bcm_view:
         add_bcm(rack, links, sw_res, log, bcm_max)
     return {"switches": sw_res, "trays": tr_res, "links": links, "learned": learned, "optics_reported": optics,
-            "interval_s": span}
+            "interval_s": span, "gpus": gpu_findings}
 
 
 def group_causes(links: list[Link]) -> list[dict]:
@@ -654,8 +778,8 @@ def suspects(links: list[Link], min_links: int = 2) -> list[str]:
     - several on one GPU: that GPU / tray side (or, all on one ASIC, either end)
     - the same GPU position (BDF) on several trays: something shared by that position (cable bundle / cartridge)
     - several on one switch ASIC: that ASIC, the more so on adjacent ports (one connector / cage)."""
-    bad = [x for x in links if x.state != "ok" and x.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing")]
-    judged = [x for x in links if x.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing")]
+    bad = [x for x in links if x.state != "ok" and x.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing", *GPU_LEVEL)]
+    judged = [x for x in links if x.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing", *GPU_LEVEL)]
     kinds = {x.kind for x in bad}
     if len(bad) >= 8 and len(kinds) == 1 and len(bad) >= 0.9 * len(judged):
         return [f"rack-wide: {len(bad)} of {len(judged)} links have the same cause ({KINDS.get(next(iter(kinds)), next(iter(kinds)))})"

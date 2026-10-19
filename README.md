@@ -4,7 +4,9 @@ Debug tools for the AMD Helios scale-up fabric, separate from the test-case auto
 
 - **Link check** (`tools/link_check.py`): every GPU link of a rack (switch port <-> GPU port), its state
   (ok / degraded / down) and, for each problem, one root cause with the evidence, who owns the fix and the next step.
-  Read-only, SSH only, no AFM password. Runs on any rack described by an inventory.
+  Also each GPU's state (`afmctl` config phase), and with the AFM password set (optional, `afm:` block in the
+  inventory) AFM's view: vPOD membership, accelerator ids and port state. Read-only, SSH (+ AFM GETs). Runs on
+  any rack described by an inventory.
 - **Debug guide** (`docs/link-debug-guide.md`, `docs/link-debug-guide.html` to share; regenerate with `python3 tools/md_to_html.py docs/link-debug-guide.md`): how to isolate a link problem by hand, layer by layer, with every
   command, and the abbreviations.
 - **Topology** (`docs/scaleup-topology.html`): how the GPUs / compute trays are cabled to the switch trays (planes,
@@ -76,7 +78,7 @@ log per switch / tray - each command, its exit code and output, trimmed to `--lo
 
 ```
 heliosdbg/   linkdiag.py (join + root cause), bcm.py (Broadcom shell view), sonic.py / afmctl.py / parsers.py (read and parse), inventory.py,
-             transport.py (SSH, jump host), rack.py, compute.py
+             transport.py (SSH, jump host), rack.py, compute.py, afm.py (read-only AFM client, standard library)
 tools/       link_check.py
 docs/        link-debug-guide.md, scaleup-topology.html
 inventory/   templates (+ your git-ignored *.local.yaml)
