@@ -748,6 +748,200 @@ def scan_cmd(a) -> int:
     return 2 if (sw_missing or not links) else 1 if groups else 0
 
 
+# ------------------------------------------------------------------ one link
+
+def _latest_scan(rack_dir: Path) -> dict | None:
+    for f in sorted(rack_dir.glob("scan-*/link_check.json"), reverse=True):
+        try:
+            return json.loads(f.read_text()) | {"_file": str(f)}
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _hand_commands(ln) -> list[tuple[str, str]]:
+    n = re.sub(r"\D", "", ln.asic or "")
+    ns = f" -n {ln.asic}" if ln.asic else ""
+    out = [(ln.switch, f"show interfaces status{ns} {ln.sw_port}"),
+           (ln.switch, f"show interfaces counters{ns} -i {ln.sw_port}"),
+           (ln.switch, f"show interfaces counters fec-stats{ns} | grep -w {ln.sw_port}"),
+           (ln.switch, f"show mac{ns} | grep -w {ln.sw_port}"),
+           (ln.switch, f"sudo bcmcmd{' -n ' + n if n else ''} 'ps'   # then the lt lookups in the debug guide, Layer 1 from the Broadcom shell")]
+    if ln.tray and ln.bdf:
+        out += [(ln.tray, "sudo afmctl show device --json"),
+                (ln.tray, f"sudo afmctl show port -b {ln.bdf} --json"),
+                (ln.tray, f"sudo afmctl show station -b {ln.bdf} --json")]
+    return out
+
+
+def link_cmd(a) -> int:
+    from heliosdbg import linkdiag, linkone
+    from heliosdbg.rack import fan_out
+    inv = load_inventory(a.inventory)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"link-{stamp}"
+    _OUTS.append(out)
+    _room(out)
+    prev = None if a.no_cache else _latest_scan(out.parent)
+    try:
+        t = linkone.parse(a.target, [h.name for h in inv.switches], [h.name for h in inv.computes])
+    except linkone.TargetError as e:
+        print(f"target: {e}", file=sys.stderr)
+        return 2
+    full = Rack(inv)
+    slots = dict((prev or {}).get("learned", {}).get("slots") or {})
+    slots.update({n: s for n, s in ((n, tray_slot(c)) for n, c in full.computes.items()) if s is not None})
+
+    def read_desc():
+        res = {}
+        for sw, val, exc in fan_out(lambda w: {p_: d for ns in w.namespaces() for p_, d in w.port_descriptions(ns).items()},
+                                    list(full.switches.values())):
+            if not exc:
+                res[sw.host.name] = val
+        return res
+
+    def read_devices():
+        res = {}
+        for tr, val, exc in fan_out(lambda c: {d.bdf: d.accel_id for d in Afmctl(c).devices()}, list(full.computes.values())):
+            if not exc:
+                res[tr.host.name] = val
+        return res
+    try:
+        t = linkone.resolve(t, (prev or {}).get("links"), slots, read_desc, read_devices)
+    except linkone.TargetError as e:
+        full.close()
+        print(f"target: {e}", file=sys.stderr)
+        return 2
+    full.close()
+    print(f"link {a.target}: switch {t.switch or 'any'} {t.sw_port or ''}, tray {t.tray or 'any'}"
+          f"{' ' + t.bdf if t.bdf else ''}{' port ' + str(t.gpu_port) if t.gpu_port is not None else ''}  ({t.how})")
+    a.switches, a.trays = t.switch, t.tray
+    inv, rack = _filtered_rack(a)
+    (out / "raw").mkdir(parents=True, exist_ok=True)
+    cmdlog = CommandLog()
+    try:
+        with cmdlog:
+            res = linkdiag.scan(rack, a.interval, bcm_view=False, afm_cfg=None if a.no_afm else (inv.afm or {}))
+            hits = [ln for ln in res["links"] if t.matches(ln)]
+            if hits and not a.no_bcm:
+                linkdiag.add_bcm(rack, hits[:1], res["switches"], limit=1, force={(hits[0].switch, hits[0].sw_port)})
+    finally:
+        rack.close()
+    cmdlog.save(out / "raw")
+    if not hits:
+        nc = _not_checked(res)
+        msg = (f"no link matches '{a.target}' on {', '.join(rack.switches)} / {', '.join(rack.computes)}"
+               + (" - not checked: " + "; ".join(f"{r} {n}: {e[:80]}" for n, r, e, _h in nc) if nc else
+                  " - is the port cabled to a GPU (described 'To ComputeTray ...') and the GPU port number right?"))
+        print(msg)
+        (out / "report.txt").write_text(msg + "\n")
+        return 2
+    ln = hits[0]
+    asic = res["switches"][ln.switch]["asics"].get(ln.asic) or {}
+    tray = res["trays"].get(ln.tray or "") or {}
+    dev = next((g for g in tray.get("gpus", []) if g["bdf"] == ln.bdf), {})
+    detail = {
+        "target": a.target, "resolved_by": t.how, "time_utc": stamp, "rack": inv.rack,
+        "link": linkdiag.link_dict(ln), "gpu_port": ln.gpu,
+        "switch_port": (asic.get("status") or {}).get(ln.sw_port),
+        "switch_counters": (asic.get("counters") or {}).get(ln.sw_port),
+        "switch_fdb": [r for r in asic.get("fdb") or [] if r.get("Port") == ln.sw_port],
+        "presence": (asic.get("presence") or {}).get(ln.sw_port),
+        "gpu": {k: dev.get(k) for k in ("bdf", "accelerator", "config_phase", "vpod_accelerators")} if dev else None,
+        "gpu_state": [g for g in res.get("gpus") or [] if g["tray"] == ln.tray and g["bdf"] == ln.bdf],
+        "afm_view": res["learned"].get("afm_view"), "interval_s": res["interval_s"],
+        "hand_commands": _hand_commands(ln),
+    }
+    (out / "link.json").write_text(json.dumps(detail, indent=1, default=str))
+    lines = [f"{ln.state.upper()}  {ln.switch} {ln.asic} {ln.sw_port}  <->  {ln.tray} {ln.bdf} port {ln.gpu_port}",
+             f"cause: {ln.cause or 'none - the link is ok on every layer checked'}"]
+    if ln.state != "ok":
+        lines += [f"owner: {ln.owner}", f"next:  {ln.action}"]
+    lines += ["", "evidence:"] + [f"  {e}" for e in ln.evidence] + ["", f"report: {out / 'report.html'}"]
+    print("\n".join(lines))
+    (out / "report.txt").write_text("\n".join(lines) + "\n")
+    write_link_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), ln, detail,
+                    cmdlog, a.log_keep, list(rack.switches) + list(rack.computes))
+    return 0 if ln.state == "ok" else 1
+
+
+def _kv(d: dict | None, keys=None) -> str:
+    if not d:
+        return "<p class='mut'>not read</p>"
+    items = [(k, d.get(k)) for k in keys] if keys else list(d.items())
+    return "<table class='kv'>" + "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in items if v not in (None, "")) + "</table>"
+
+
+def _lanes_table(v: dict | None, ref: dict | None) -> str:
+    if not v:
+        return "<p class='mut'>Broadcom view not read for this link.</p>"
+    if v.get("error"):
+        return f"<p class='err'>{esc(v['error'])}</p>"
+    fields = ("RX_SIGNAL_DETECT", "RX_SQUELCH", "TX_SQUELCH", "RX_SNR", "EYE_UP", "EYE_DOWN", "AM_LOCK_LIVE", "LINK_TIME")
+    present = [f for f in fields if any(f in x for x in v.get("lane") or [])]
+    head = "<tr><th>Lane</th>" + "".join(f"<th>{esc(f)}</th>" for f in present) + "</tr>"
+    rows = "".join("<tr><td>" + str(i) + "</td>" + "".join(f"<td>{esc(x.get(f))}</td>" for f in present) + "</tr>"
+                   for i, x in enumerate(v.get("lane") or []))
+    ref_line = ""
+    if ref and not ref.get("error"):
+        from heliosdbg import bcm
+        ref_line = f"<p class='mut'>Reference (a working port on the same ASIC): {esc(bcm.brief(ref))}</p>"
+    from heliosdbg import bcm
+    return (f"<p><b>{esc(bcm.brief(v))}</b></p>" + _kv(v.get("port")) +
+            f"<div class='wrap'><table>{head}{rows}</table></div>" + ref_line)
+
+
+def write_link_html(path: Path, rack_name: str, when: str, ln, d: dict, cmdlog, log_keep: int, nodes: list[str]) -> None:
+    g = ln.gpu or {}
+    i = g.get("ifcp") or {}
+    colour = {"ok": "ok", "degraded": "degraded", "down": "down"}.get(ln.state, "down")
+    gs = "".join(f"<li class='{esc(x['state'])}'><b>{esc(x['state'])}</b>: {esc(x['cause'])}<br><span class='mut'>next: {esc(x['action'])}</span></li>"
+                 for x in d.get("gpu_state") or [])
+    av = d.get("afm_view") or {}
+    hand = "".join(f"<tr><td>{esc(n)}</td><td><code>{esc(c)}</code></td></tr>" for n, c in d["hand_commands"])
+    path.write_text(f"""<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Link {esc(ln.switch)} {esc(ln.sw_port)} - {esc(rack_name)}</title><style>
+:root{{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--card:#fff;--down:#b42318;--deg:#b54708;--ok:#067647;--code:#eef1f5}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#12161b;--fg:#e6eaef;--mut:#96a2b0;--rule:#2b3540;--card:#1a2027;--down:#f97066;--deg:#fdb022;--ok:#47cd89;--code:#0f1318}}}}
+body{{background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,'Segoe UI',Arial,sans-serif;margin:0;padding:24px max(16px,4vw)}}
+h1{{font-size:1.35rem;margin:0}}h2{{font-size:1.05rem;margin:22px 0 8px}}.mut{{color:var(--mut)}}
+.verdict{{border-left:6px solid var(--{colour});background:var(--card);border-radius:8px;padding:12px 16px;margin:14px 0}}
+.verdict b.s{{color:var(--{colour});text-transform:uppercase}}
+.ends{{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}}
+.card{{background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:12px 16px}}
+.wrap{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--rule);vertical-align:top}}
+th{{color:var(--mut);font-weight:600}}table.kv th{{width:42%}}code{{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:1px 4px;border-radius:4px}}
+li.down b{{color:var(--down)}}li.degraded b{{color:var(--deg)}}.err{{color:var(--down);font-weight:600}}
+details{{margin:4px 0}}pre{{background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:8px;overflow-x:auto;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace}}
+</style></head><body>
+<h1>{esc(ln.switch)} {esc(ln.asic)} {esc(ln.sw_port)} &harr; {esc(ln.tray)} {esc(ln.bdf)} port {esc(ln.gpu_port)}</h1>
+<div class='mut'>{esc(rack_name)} · {esc(when)} UTC · asked for: <code>{esc(d['target'])}</code> ({esc(d['resolved_by'])}) · read-only</div>
+<div class='verdict'><b class='s'>{esc(ln.state)}</b> - {esc(ln.cause or 'the link is ok on every layer checked')}
+{f"<div><span class='mut'>Owner:</span> {esc(ln.owner)}</div><div><span class='mut'>Next step:</span> {esc(ln.action)}</div>" if ln.state != 'ok' else ''}</div>
+<div class='ends'>
+<div class='card'><h2>Switch end: {esc(ln.switch)} {esc(ln.asic)} {esc(ln.sw_port)}</h2>
+<p class='mut'>Described as: {esc(ln.desc)}</p>
+{_kv(d.get('switch_port'), ['Admin', 'Oper', 'Speed', 'FEC', 'MTU', 'Vlan', 'Lanes', 'Alias', 'Type'])}
+<h2>Counters</h2><p class='mut'>Growth during the {d['interval_s']:.0f} s sample: {esc(', '.join(f'{k} +{v}' for k, v in ln.deltas.items()) or 'none')}</p>
+{_kv(d.get('switch_counters'))}
+<h2>Forwarding entries for this port</h2>{('<ul>' + ''.join(f"<li><code>{esc(r.get('Vlan'))} {esc(r.get('MacAddress'))} {esc(r.get('Type'))}</code></li>" for r in d['switch_fdb']) + '</ul>') if d['switch_fdb'] else "<p class='mut'>none</p>"}
+<p class='mut'>Transceiver presence: {esc(d.get('presence') or 'not reported by this platform')}</p></div>
+<div class='card'><h2>GPU end: {esc(ln.tray)} {esc(ln.bdf)} port {esc(ln.gpu_port)}</h2>
+{_kv(d.get('gpu'))}
+{_kv({'admin': g.get('admin'), 'link': g.get('link'), 'fault': g.get('fault'), 'up since boot (ms)': g.get('up_ms'), 'down since boot (ms)': g.get('down_ms'), 'FEC mode': g.get('fec_mode'), 'station': g.get('station'), 'MAC': g.get('mac')})}
+<h2>IFCP</h2>{_kv(i)}
+{('<h2>GPU state</h2><ul>' + gs + '</ul>') if gs else ''}
+<h2>AFM</h2><p>{esc(('AFM reports this GPU port ' + str(ln.afm_port)) if ln.afm_port else ('AFM view on, port not found in AFM' if av.get('checked') else 'AFM view not checked: ' + str(av.get('reason'))))}</p></div>
+</div>
+<h2>Switch ASIC (Broadcom shell)</h2><div class='card'>{_lanes_table(ln.bcm, ln.bcm_ref)}</div>
+<h2>Evidence</h2><div class='card'><ul>{''.join(f'<li>{esc(e)}</li>' for e in ln.evidence) or '<li>none</li>'}</ul></div>
+<h2>Check it by hand</h2><div class='card wrap'><table><tr><th>On</th><th>Command</th></tr>{hand}</table></div>
+{("<h2>Command logs</h2>" + cmdlog.html(nodes, log_keep)) if cmdlog and cmdlog.entries else ''}
+</body></html>
+""")
+
+
+
 def pingmap_cmd(a) -> int:
     from heliosdbg import linkdiag
     inv, rack = _filtered_rack(a)
@@ -896,9 +1090,19 @@ def main(argv=None) -> int:
     b.add_argument("--ports", help="SONiC ports, e.g. Ethernet257,Ethernet261 (default: every oper-down trunk port)")
     b.add_argument("--all", action="store_true", help="every trunk port cabled to a GPU, healthy ones too (one line each)")
     b.add_argument("--out", type=Path, help="evidence folder (default results/link-check/<rack>/bcm-<UTC time>)")
+    k = sub.add_parser("link", help="one link end to end, from any identifier of it")
+    k.add_argument("--inventory", **inv_kw)
+    k.add_argument("target", help="st6 Ethernet257 | ct13 0002:01:00.1 33 | ct13 gpu1 port33 | slot17/gpu3/port33 | "
+                                  "'acc-id: 5, port-id: 32'")
+    k.add_argument("--interval", type=float, default=10.0, help="seconds between the two counter samples (default 10)")
+    k.add_argument("--no-bcm", action="store_true", help="skip the Broadcom shell view of the switch port")
+    k.add_argument("--no-afm", action="store_true", help="skip the AFM view")
+    k.add_argument("--no-cache", action="store_true", help="do not use the rack's latest scan to find the link")
+    k.add_argument("--log-keep", type=int, default=400, help="lines of each command's output shown in report.html")
+    k.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/link-<UTC time>)")
     a = ap.parse_args(argv)
-    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd}[a.cmd]
-    if a.cmd == "scan":                                  # the scan keeps its log in raw/ and in report.html
+    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd}[a.cmd]
+    if a.cmd in ("scan", "link"):                        # these keep their log in raw/ and in report.html
         return fn(a)
     log = CommandLog()
     try:

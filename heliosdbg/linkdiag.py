@@ -137,6 +137,7 @@ class Link:
     fdb_static_late: bool | None = None  # the second read of the forwarding table (None = not re-read)
     vpod_accelerators: int | None = None
     bcm: dict | None = None             # Broadcom shell view of the switch port (problem links only)
+    bcm_ref: dict | None = None         # the same view of a working port on that ASIC (reference)
     deltas: dict = field(default_factory=dict)
     fec_total: dict = field(default_factory=dict)
     presence: str = ""
@@ -372,13 +373,13 @@ FDB_RETRIES, FDB_RETRY_S = 3, 10.0
 BCM_KINDS = ("phys_never_up", "phys_went_down", "one_sided", "bit_errors")
 
 
-def add_bcm(rack, links: list, sw_res: dict, log=print, limit: int = 64) -> None:
+def add_bcm(rack, links: list, sw_res: dict, log=print, limit: int = 64, force: set | None = None) -> None:
     """Broadcom shell evidence for physical-layer problem links (at most ``limit`` ports, read-only): per lane
     signal detect / lock / SNR, and a sharper cause. Skipped quietly where bcmcmd is missing."""
     from . import bcm
     todo: dict = {}
     for ln in links:
-        if ln.kind in BCM_KINDS and sum(len(v) for v in todo.values()) < limit:
+        if (ln.kind in BCM_KINDS or (ln.switch, ln.sw_port) in (force or ())) and sum(len(v) for v in todo.values()) < limit:
             todo.setdefault((ln.switch, ln.asic), []).append(ln)
     if not todo:
         return
@@ -404,6 +405,7 @@ def add_bcm(rack, links: list, sw_res: dict, log=print, limit: int = 64) -> None
                 v = (val or {}).get(asic, {}).get(ln.sw_port) if not exc else {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
                 ln.bcm = {k: x for k, x in (v or {}).items() if k != "raw"} or None
                 ref = (val or {}).get(asic, {}).get("__ref__") if not exc else None
+                ln.bcm_ref = {k: x for k, x in (ref or {}).items() if k != "raw"} or None
                 finding, ev = bcm.judge(v or {}, ref, oper_down=str(ln.sw_oper or "").lower() != "up")
                 ln.evidence += ev
                 if finding:
