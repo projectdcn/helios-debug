@@ -230,7 +230,8 @@ function links(j){
   if(!j||j.status==="running")return "";
   var b="/results/"+j.out+"/";
   var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:["report.html","report.txt"];
-  return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ");
+  return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ")+
+    ' · <a href="/api/bundle?path='+encodeURIComponent(j.out)+'">bundle.zip</a>';
 }
 function show(j,fresh){
   if(fresh){job=j;since=0;$("log").textContent=""}
@@ -254,7 +255,8 @@ function loadHistory(){
     var i=inv(),rack=i&&i.rack,rows=r.results.filter(function(x){return !rack||x.rack===rack});
     $("hist").innerHTML=rows.map(function(x){
       return "<tr><td>"+esc(new Date(x.mtime*1000).toLocaleString())+"</td><td>"+esc(x.rack)+"</td><td>"+esc(x.tool)+"</td><td>"+esc(x.summary)+
-        "</td><td>"+x.files.map(function(f){return '<a href="/results/'+esc(x.path+"/"+f)+'" target="_blank" rel="noopener">'+esc(f)+'</a>'}).join("<br>")+"</td></tr>"
+        "</td><td>"+x.files.map(function(f){return '<a href="/results/'+esc(x.path+"/"+f)+'" target="_blank" rel="noopener">'+esc(f)+'</a>'}).join("<br>")+
+        '<br><a href="/api/bundle?path='+encodeURIComponent(x.path)+'">bundle.zip</a></td></tr>"
     }).join("")||'<tr><td colspan="5" class="mut">No runs yet for this rack.</td></tr>';
     var scans=rows.filter(function(x){return x.tool==="scan"&&x.files.indexOf("link_check.json")>=0});
     $("scan-cmp").innerHTML='<option value="">no</option>'+scans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+"</option>"}).join("");

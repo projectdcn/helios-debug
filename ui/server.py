@@ -215,6 +215,14 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
     return a, out, rack
 
 
+def _result_dir(state: State, rel: str) -> Path:
+    base = state.results_dir.resolve()
+    p = (base / unquote(rel)).resolve()
+    if base not in p.parents or not p.is_dir() or p.parent.parent.name != "link-check":
+        raise BadRequest("no such run")
+    return p
+
+
 def _result_file(state: State, rel: str) -> Path:
     base = (state.results_dir).resolve()
     p = (base / unquote(rel)).resolve()
@@ -357,6 +365,13 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/access":
                 _f, inv = st.inventory((q.get("inventory") or [""])[0])
                 return self._json(200, access.describe(inv))
+            if u.path == "/api/bundle":
+                from heliosdbg import bundle
+                rel = (q.get("path") or [""])[0]
+                run = _result_dir(st, rel)
+                data, _stats = bundle.build(run)
+                return self._send(200, data, "application/zip",
+                                  {"Content-Disposition": f'attachment; filename="{run.parent.name}-{run.name}.zip"'})
             if u.path == "/api/scan":
                 return self._json(200, scan_view(st, (q.get("path") or [""])[0]))
             if u.path == "/api/results":
