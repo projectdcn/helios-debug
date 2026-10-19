@@ -36,6 +36,9 @@ from ui import access  # noqa: E402
 
 TOOL = ROOT / "tools" / "link_check.py"
 STATIC = Path(__file__).resolve().parent / "static"
+# The page is read once, when the server starts: page and server code always match. (19 Oct: a server started before
+# the Diagnose tab served the new page from disk and refused its 'link' runs - restart to get a newer UI.)
+PAGE = (STATIC / "index.html").read_bytes()
 TOOLS = ("scan", "link", "watch", "cabling", "isolate", "bcm", "path", "pingmap")
 TARGET_RX = re.compile(r"^[A-Za-z0-9 _./:\[\],()-]{1,200}$")
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -463,7 +466,7 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         try:
             if u.path in ("/", "/index.html"):
-                return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8",
+                return self._send(200, PAGE, "text/html; charset=utf-8",
                                   {"Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; "
                                                               "script-src 'self' 'unsafe-inline'; frame-ancestors 'none'"})
             if u.path == "/api/state":

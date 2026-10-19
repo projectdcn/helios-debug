@@ -207,3 +207,10 @@ def test_page_script_parses(tmp_path):
     f.write_text(js)
     r = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_page_is_the_one_the_server_started_with(ui, monkeypatch):
+    base, _ = ui
+    first = call(base, "/")[1]
+    monkeypatch.setattr(server, "STATIC", server.STATIC.parent / "nowhere")   # a newer page on disk is not served
+    assert call(base, "/")[1] == first and b"Diagnose a link" in first
