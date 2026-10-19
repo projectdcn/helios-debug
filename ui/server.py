@@ -261,6 +261,75 @@ def scan_view(state: State, rel: str) -> dict:
             "slots": (d.get("learned") or {}).get("slots") or {}}
 
 
+SECRET_RX = re.compile(r"^\s*(password|passwd|token|secret)\s*:\s*\S", re.I | re.M)
+ADDR_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$")
+USER_RX = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
+
+
+def discover_rack(req: dict) -> dict:
+    from heliosdbg import discover
+    from heliosdbg.rack import fan_out
+    rack = str(req.get("rack") or "").strip()
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", rack):
+        raise BadRequest("rack name: lower case letters, digits, - and _ (e.g. mr4)")
+    addrs = [x for x in re.split(r"[\s,]+", str(req.get("switches") or "")) if x]
+    if not addrs or len(addrs) > 16 or not all(ADDR_RX.match(x) for x in addrs):
+        raise BadRequest("switch addresses: 1 to 16, comma or space separated")
+    us, uc = str(req.get("switch_user") or "admin"), str(req.get("compute_user") or "")
+    if not USER_RX.match(us) or (uc and not USER_RX.match(uc)):
+        raise BadRequest("user names: letters, digits, _ . -")
+    key = str(req.get("key_file") or "").strip() or None
+    if key and not re.match(r"^[~A-Za-z0-9_./-]{1,200}$", key):
+        raise BadRequest("key file: a path like ~/.ssh/id_ed25519")
+    found, errors = [], {}
+    for a, v, e in fan_out(lambda x: discover.read_switch(x, us, key_file=key), addrs):
+        if e:
+            errors[a] = f"{type(e).__name__}: {str(e)[:200]}"
+        else:
+            found.append(v)
+    if not found:
+        raise BadRequest("no switch could be read: " + "; ".join(f"{a}: {m}" for a, m in errors.items()))
+    afm_url = str(req.get("afm_url") or "").strip() or f"https://{addrs[0]}"
+    trays = None
+    if req.get("afm") and req.get("afm_password"):
+        from heliosdbg.afm import Afm, AfmUnavailable
+        env = "HELIOS_DEBUG_DISCOVER_AFM_PW"
+        os.environ[env] = str(req["afm_password"])
+        try:
+            trays = discover.afm_trays(Afm({"url": afm_url, "auth": {"password_env": env}}), set(addrs))
+        except AfmUnavailable as e:
+            errors["afm"] = str(e)
+        finally:
+            os.environ.pop(env, None)
+    text = discover.draft(rack, found, us, uc or "FILL-ME-tray-user", afm_url, trays, key)
+    return {"yaml": text, "switches": found, "errors": errors}
+
+
+def save_inventory(state: State, req: dict) -> dict:
+    name = str(req.get("name") or "").strip()
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", name):
+        raise BadRequest("file name: lower case letters, digits, - and _ (saved as <name>.local.yaml)")
+    text = str(req.get("yaml") or "")
+    if not text.strip() or len(text) > 500_000:
+        raise BadRequest("empty inventory")
+    if SECRET_RX.search(text):
+        raise BadRequest("the inventory holds a password / token - use key login or password_env: VAR")
+    f = state.inventory_dir / f"{name}.local.yaml"
+    if f.exists() and not req.get("overwrite"):
+        raise BadRequest(f"{f.name} exists - tick overwrite to replace it")
+    tmp = state.inventory_dir / f".{name}.check.yaml"
+    tmp.write_text(text)
+    try:
+        inv = load_inventory(tmp)
+    except Exception as e:  # noqa: BLE001
+        raise BadRequest(f"not a valid inventory: {type(e).__name__}: {str(e)[:200]}") from None
+    finally:
+        tmp.unlink(missing_ok=True)
+    f.write_text(text)
+    return {"file": f.name, "rack": inv.rack, "switches": len(inv.switches), "computes": len(inv.computes),
+            "fill_me": sum(ln.count("FILL-ME") for ln in text.splitlines() if not ln.lstrip().startswith("#"))}
+
+
 # ------------------------------------------------------------------ jobs
 
 def start_job(state: State, req: dict) -> dict:
@@ -437,6 +506,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, {"results": access.check(inv, names if isinstance(names, list) else None)})
                 pw = req.pop("password", None)
                 return self._json(200, access.install(inv, str(req.get("host", "")), str(pw or "")))
+            if u.path == "/api/discover":
+                pw = req.get("afm_password")
+                req["afm_password"] = None
+                return self._json(200, discover_rack(dict(req, afm_password=pw)))
+            if u.path == "/api/inventory/save":
+                return self._json(200, save_inventory(self.state, req))
             if u.path == "/api/access/keygen":
                 return self._json(200, access.create_key())
             m = re.fullmatch(r"/api/job/([0-9a-f]{12})/stop", u.path)
