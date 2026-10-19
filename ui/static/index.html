@@ -40,7 +40,9 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padd
 .mrow{display:flex;align-items:center;gap:6px;margin:2px 0}.mrow .lab{width:120px;flex:none;font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cells{display:flex;flex-wrap:wrap;gap:2px}
 svg.topo{max-width:100%;height:auto;display:block;font-family:inherit;margin:0 auto}
-.ddsvg{margin:6px 0 10px;overflow-x:auto}.ddsvg svg{max-width:100%;height:auto;display:block;margin:0 auto}
+.ddsvg{margin:6px 0 10px;overflow-x:auto}
+.topo-wrap{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}
+@media (min-width:1280px){.topo-wrap.split{grid-template-columns:minmax(0,58%) minmax(0,42%)}.topo-wrap.split #map-detail{position:sticky;top:8px;max-height:calc(100vh - 16px);overflow:auto;margin:0}}.ddsvg svg{max-width:100%;height:auto;display:block;margin:0 auto}
 .ddsvg text{fill:var(--fg)}.ddsvg text.m{fill:var(--mut)}.ddsvg .clk{cursor:pointer}.ddsvg .clk:hover{opacity:.75}.ddsvg .box{fill:var(--card);stroke:var(--rule)}svg.topo .clk{cursor:pointer}svg.topo .clk:hover{opacity:.8}
 svg.topo text{fill:var(--fg)}svg.topo text.m{fill:var(--mut)}svg.topo .box{fill:var(--card);stroke:var(--rule)}
 .cnts{display:inline-flex;flex-wrap:wrap;gap:4px;font-size:12px;font-weight:400;margin-left:8px;vertical-align:middle}
@@ -131,11 +133,18 @@ nav button.exp{border-style:dashed}
   </section>
 
   <section class="card hide" data-p="topology">
-    <h2>Scale-up topology (g02-g17 full rack)</h2>
-    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>How every GPU port of the g02-g17 full rack is cabled to a switch port: 18 compute trays x 4 GPUs x 36 ports over 6 switch trays, and which switch chip serves which plane.</dd><dt>When</dt><dd>To understand why a problem on one switch chip or one GPU port number affects many GPUs, or to find where a port is cabled.</dd><dt>How long</dt><dd>Instant.</dd><dt>Safe?</dt><dd>Yes - a reference page; nothing is read from the rack. For a mini rack (MR2, MR3) use the Rack map after a check.</dd></dl></details>
-    <p class="mut" id="topo-hint">Click a GPU square, a switch chip (asic box), an st / CT name, or a row of a GPU's port table: its state from the
-      latest check of g02-g17 opens below the drawing - the same drill down as the Rack map.</p>
-    <iframe id="topo-frame" title="g02-g17 scale-up topology" style="width:100%;height:calc(100vh - 230px);min-height:520px;border:1px solid var(--rule);border-radius:8px;background:#fff" loading="lazy"></iframe>
+    <h2 id="topo-title">Scale-up topology</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>How the compute trays' GPUs are cabled to the switch trays of the rack chosen at the top: switch chips on top, compute trays and their GPUs below, one line per tray-to-chip bundle coloured by its worst link (red: a link is down) - drawn from the rack's latest check, so it fits any rack (mini rack, full rack).</dd><dt>When</dt><dd>To see where problems sit and what they share, then click down: tray, GPU, link, switch chip.</dd><dt>How long</dt><dd>Instant (the latest check).</dd><dt>Safe?</dt><dd>Yes - nothing is read from the rack. Live mode (Rack map) colours it live.</dd></dl></details>
+    <p class="mut" id="topo-hint">Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture (below it on a narrow screen).</p>
+    <div class="topo-wrap" id="topo-wrap">
+      <div id="topo-left">
+        <div id="topo-dyn"></div>
+        <div id="topo-detailed" class="hide" style="margin-top:10px">
+          <label class="checks"><input type="checkbox" id="topo-show-detailed">Show the detailed port-level drawing (g02-g17 full rack)</label>
+          <iframe id="topo-frame" class="hide" title="g02-g17 scale-up topology" style="width:100%;height:calc(100vh - 230px);min-height:520px;border:1px solid var(--rule);border-radius:8px;background:#fff;margin-top:6px"></iframe>
+        </div>
+      </div>
+    </div>
   </section>
 
   <div id="topo-detail-slot"></div>
@@ -417,6 +426,7 @@ function fillInv(){
   if(!document.querySelector('section[data-p="home"]').classList.contains("hide"))renderHome();
   if(!document.querySelector('section[data-p="link"]').classList.contains("hide"))loadPickers();
   if(!document.querySelector('section[data-p="path"]').classList.contains("hide"))loadPath();
+  if(!document.querySelector('section[data-p="topology"]').classList.contains("hide")){$("map-detail").classList.add("hide");loadTopology()}
 }
 function tab(t){
   document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===t)});
@@ -427,7 +437,7 @@ function tab(t){
   if(t==="home")renderHome();
   if(t==="link")loadPickers();
   if(t==="path")loadPath();
-  if(t==="topology"&&!$("topo-frame").getAttribute("src"))$("topo-frame").setAttribute("src","/topology");
+  if(t==="topology")loadTopology();
   if(t==="guide"&&!$("guide-frame").getAttribute("src"))$("guide-frame").setAttribute("src","/guide");
   if(document.querySelector("section[data-p=\""+t+"\"]"))moveJobcard();
   try{history.replaceState(null,"","#tab="+t+"&inv="+encodeURIComponent($("inv").value||""))}catch(e){}
@@ -934,7 +944,7 @@ function drawMap(){
     if(lastSw!==null)html+="</div>";
   }
   $("map").innerHTML=html||'<p class="mut">No links in this scan.</p>';
-  if(view==="topo")wireTopoSvg();
+  if(view==="topo")wireTopoSvg($("map"));
   if(mapPrev){
     var nw=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p==="ok"&&l.state!=="ok"}),
         rc=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p!=="ok"&&l.state==="ok"});
@@ -1119,7 +1129,10 @@ function drillAsic(sw,a){
   for(var i=1;i<bad.length;i++)if(bad[i]-bad[i-1]<=8)near++;
   if(bad.length>ls.length/2)near=0;
   $("map-detail").innerHTML=crumbs([["Rack",drillRack],[sw,function(){drillSwitch(sw)}],[a||"?"]])+"<h2>Switch chip "+esc(sw+" "+a)+"</h2>"+
-    bundleDiagram(Object.keys(gp).sort().map(function(k){var x=k.split("|");return {key:k,label:x[0]+" "+(x[1].indexOf(":")>0?x[1].slice(0,4):x[1].replace(" (described)","*")),links:gp[k]}}),ls,"connectivity of "+sw+" "+a,"The GPUs whose links land on this chip","data-ddg")+
+    (Object.keys(gp).length>18?(function(){var tr={};ls.forEach(function(l){(tr[l.tray||"(no tray)"]=tr[l.tray||"(no tray)"]||[]).push(l)});
+      return bundleDiagram(Object.keys(tr).sort().map(function(t){return {key:t,label:trayName(t==="(no tray)"?"":t,mapData.slots)||t,links:tr[t]}}),ls,"connectivity of "+sw+" "+a,
+        "The compute trays whose GPUs land on this chip ("+Object.keys(gp).length+" GPUs - click a tray for its GPUs)","data-ddtr")})()
+     :bundleDiagram(Object.keys(gp).sort().map(function(k){var x=k.split("|");return {key:k,label:x[0]+" "+(x[1].indexOf(":")>0?x[1].slice(0,4):x[1].replace(" (described)","*")),links:gp[k]}}),ls,"connectivity of "+sw+" "+a,"The GPUs whose links land on this chip","data-ddg"))+
     (near>=3?'<div class="verdict degraded"><h3>Problems sit on neighbouring ports</h3>'+near+" pairs of problem ports are within 8 port numbers of each other - something shared by them (one connector / cage / cable bundle) is more likely than separate faults.</div>":"")+
     '<div class="wrap"><table class="dl"><tr><th>GPU (tray)</th><th>Links on this chip</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
     Object.keys(gp).sort().map(function(k){var x=k.split("|");return '<tr class="clk" data-gpu="'+esc(k)+'"><td>'+esc(trayName(x[0]==="(no tray)"?"":x[0],mapData.slots)+" "+x[1])+"</td>"+cntCells(mCount(gp[k]),gp[k].length)+"</tr>"}).join("")+"</table></div>"+
@@ -1175,8 +1188,8 @@ function portExtra(k){
 }
 
 // ---------------------------------------------------------------- topology tab -> drill down
-function placeDetail(where){var d=$("map-detail");if(where==="topo"){var sec=document.querySelector('section[data-p="topology"]');if(d.parentNode!==sec)sec.appendChild(d)}
-  else{var m=$("map");if(d.previousElementSibling!==m)m.insertAdjacentElement("afterend",d)}}
+function placeDetail(where){var d=$("map-detail");if(where==="topo"){var wr=$("topo-wrap");if(d.parentNode!==wr)wr.appendChild(d);wr.classList.add("split")}
+  else{var m=$("map");if(d.previousElementSibling!==m)m.insertAdjacentElement("afterend",d);var w2=$("topo-wrap");if(w2)w2.classList.remove("split")}}
 function ensureMap(file){
   var i=invs.filter(function(x){return x.file===file})[0];
   if(mapData&&i&&mapData.rack===i.rack)return Promise.resolve(mapData);
@@ -1198,9 +1211,11 @@ function topoDrill(x){
     else if(x.asic)drillAsic(x.asic[0],x.asic[1]);
     else if(x.sw)drillSwitch(x.sw);
     else if(x.port){if(!d.links.some(function(y){return lkey(y)===x.port}))throw new Error(x.port+" is not in the check");mapDetail(x.port)}
-    $("topo-hint").textContent="Showing "+(x.port||x.sw||(x.asic&&x.asic.join(" "))||(x.slot!=null?"slot "+x.slot:"")||(x.gpu?"slot "+x.gpu[0]+" GPU"+x.gpu[1]:""))+" from the check of "+stampLocal(d.time_utc)+" (below the drawing).";
+    $("topo-hint").textContent="Showing "+(x.port||x.sw||(x.asic&&x.asic.join(" "))||(x.slot!=null?"slot "+x.slot:"")||(x.gpu?"slot "+x.gpu[0]+" GPU"+x.gpu[1]:""))+" from the check of "+stampLocal(d.time_utc)+".";
   }).catch(function(e){$("topo-hint").innerHTML='<span class="err">'+friendly(e.message)+"</span>"});
 }
+$("topo-show-detailed").addEventListener("change",function(){var on=this.checked;$("topo-frame").classList.toggle("hide",!on);
+  if(on&&!$("topo-frame").getAttribute("src"))$("topo-frame").setAttribute("src","/topology")});
 $("topo-frame").addEventListener("load",function(){
   var doc;try{doc=$("topo-frame").contentDocument}catch(e){return}if(!doc)return;
   var st=doc.createElement("style");st.textContent="svg rect[data-sw],svg rect[data-s],svg text,#rows tr{cursor:pointer}#rows tr:hover td{background:rgba(47,91,211,.08)}";doc.head.appendChild(st);
@@ -1225,7 +1240,7 @@ function topoSvg(d){
   var W=Math.max(swN.length*(SWW+SWG)+20,perRow*(TW+TG)+20),SY=20,ASY=126,TY0=200,TH=90,H=TY0+rows*(TH+22)+6;
   var asicPos={},trayPos={},gpuPos={},o=[];
   o.push('<svg class="topo" width="'+Math.round(W*0.85)+'" viewBox="0 0 '+W+" "+H+'" role="img" aria-label="Cabling picture of '+esc(d.rack)+'">');
-  o.push('<g id="tp-lines"></g>');
+  o.push('<g class="tp-lines"></g>');
   // switch trays + ASICs
   swN.forEach(function(sw,i){var x=10+i*(SWW+SWG)+(W-20-swN.length*(SWW+SWG)+SWG)/2,asics=Object.keys(sws[sw]).sort(),all=ls.filter(function(l){return l.switch===sw}),c=mCount(all);
     o.push('<rect class="box" x="'+x+'" y="'+SY+'" width="'+SWW+'" height="118" rx="8"/>');
@@ -1262,8 +1277,8 @@ function topoSvg(d){
   return '<p class="mut" style="margin:0 0 4px">Lines: compute tray to switch chip, coloured by the worst link they carry (red: a link is down). Click a GPU to see its own lines; click a tray, GPU, chip or switch name for its drill down.'+
     (Object.keys(trays).some(function(t){return Object.keys(trays[t]).some(function(g){return g.indexOf("described")>0})})?" G1* = GPU numbered as the switch port descriptions (GPU end not matched).":"")+"</p>"+o.join("");
 }
-function drawTopoLines(){
-  var geo=topoSvg._geo,g=document.getElementById("tp-lines");if(!geo||!g)return;var out=[];
+function drawTopoLines(root){
+  var geo=topoSvg._geo,g=(root||$("map")).querySelector(".tp-lines");if(!geo||!g)return;var out=[];
   if(topoSel&&!geo.gpuPos[topoSel])topoSel=null;      /* a GPU of another rack / check: show all lines again */
   if(topoSel){var x=topoSel.split("|"),ls=geo.ls.filter(function(l){return (l.tray||"(no tray)")===x[0]&&mGpu(l)===x[1]}),by={};
     ls.forEach(function(l){var k=l.switch+"|"+(l.asic||"");(by[k]=by[k]||[]).push(l)});var gp=geo.gpuPos[topoSel];
@@ -1273,12 +1288,29 @@ function drawTopoLines(){
       out.push('<path d="M'+tp.x+" "+tp.y+"C"+tp.x+" "+my+" "+a.x+" "+my+" "+a.x+" "+a.y+'" fill="none" stroke="'+stColor(st)+'" stroke-width="'+(st==="ok"?1:2.2)+'" stroke-opacity="'+(st==="ok"?.35:.9)+'"><title>'+esc(x[0]+" to "+x[1].replace("|"," ")+": "+ls.length+" links, "+st)+"</title></path>")});
   g.innerHTML=out.join("");
 }
-function wireTopoSvg(){
-  drawTopoLines();
-  document.querySelectorAll("#map [data-tsw]").forEach(function(e){e.addEventListener("click",function(){drillSwitch(e.dataset.tsw)})});
-  document.querySelectorAll("#map [data-tas]").forEach(function(e){e.addEventListener("click",function(){var x=e.dataset.tas.split("|");drillAsic(x[0],x[1])})});
-  document.querySelectorAll("#map [data-ttr]").forEach(function(e){e.addEventListener("click",function(){topoSel=null;drawTopoLines();drillTray(e.dataset.ttr)})});
-  document.querySelectorAll("#map [data-tgp]").forEach(function(e){e.addEventListener("click",function(){topoSel=e.dataset.tgp;drawMap();var x=topoSel.split("|");drillGpu(x[0],x[1])})});
+function wireTopoSvg(root){
+  root=root||$("map");drawTopoLines(root);var inTopo=root.id==="topo-dyn";
+  function go(f){if(inTopo)placeDetail("topo");f()}
+  root.querySelectorAll("[data-tsw]").forEach(function(e){e.addEventListener("click",function(){go(function(){drillSwitch(e.dataset.tsw)})})});
+  root.querySelectorAll("[data-tas]").forEach(function(e){e.addEventListener("click",function(){var x=e.dataset.tas.split("|");go(function(){drillAsic(x[0],x[1])})})});
+  root.querySelectorAll("[data-ttr]").forEach(function(e){e.addEventListener("click",function(){topoSel=null;drawTopoLines(root);go(function(){drillTray(e.dataset.ttr)})})});
+  root.querySelectorAll("[data-tgp]").forEach(function(e){e.addEventListener("click",function(){topoSel=e.dataset.tgp;if(inTopo)drawTopoInto();else drawMap();var x=topoSel.split("|");go(function(){drillGpu(x[0],x[1])})})});
+}
+function drawTopoInto(){
+  var box=$("topo-dyn");if(!box||!mapData)return;
+  box.innerHTML=topoSvg(mapData).replace('<svg class="topo" width="','<svg class="topo" data-big="1" width="');
+  var sv=box.querySelector("svg.topo"),vb=sv.getAttribute("viewBox").split(" ");sv.setAttribute("width",Math.round(+vb[2]*1.1));   /* bigger here than in the map */
+  wireTopoSvg(box);
+}
+function loadTopology(){
+  var i=inv();if(!i){$("topo-dyn").innerHTML='<p class="mut">Pick a rack at the top right.</p>';return}
+  $("topo-title").textContent="Scale-up topology: "+i.rack;
+  var big=i.rack==="g02-g17";$("topo-detailed").classList.toggle("hide",!big);
+  if(!big){$("topo-show-detailed").checked=false;$("topo-frame").classList.add("hide")}
+  $("topo-dyn").innerHTML='<p class="mut">drawing '+esc(i.rack)+" ...</p>";
+  ensureMap(i.file).then(function(){drawTopoInto();
+    $("topo-hint").textContent="From the check of "+stampLocal(mapData.time_utc)+" ("+mapData.links.length+" links). Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture.";})
+  .catch(function(e){$("topo-dyn").innerHTML='<p class="mut">'+friendly(e.message)+"</p>"});
 }
 function mapDetail(k){
   var l=mapData.links.filter(function(x){return lkey(x)===k})[0];if(!l)return;
