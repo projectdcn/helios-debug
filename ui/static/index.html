@@ -63,6 +63,12 @@ dialog dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}dialog
 #pp-ports label{display:inline-flex;align-items:center;gap:2px;font:12px ui-monospace,Menlo,Consolas,monospace;border:1px solid var(--rule);border-radius:4px;padding:1px 5px;margin:0;color:var(--fg)}
 #pp-ports label.off{opacity:.35}
 nav button.exp{border-style:dashed}
+.live-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 12px;border:1px solid var(--rule);border-radius:8px;margin:8px 0}
+.live-bar.on{border-color:var(--ok);background:var(--okbg)}.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:var(--mut)}
+.live-bar.on .dot,#live-ind .dot{background:var(--ok);animation:pulse 1.6s infinite}@keyframes pulse{50%{opacity:.35}}
+#live-ind{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ok);cursor:pointer}
+.cell.fresh{animation:pulse 1s 6}
+#live-changes div{font:12px ui-monospace,Menlo,Consolas,monospace;padding:2px 0;border-bottom:1px solid var(--rule)}
 </style>
 </head>
 <body>
@@ -70,6 +76,7 @@ nav button.exp{border-style:dashed}
   <div><h1>Helios link debug</h1><div class="mut" id="where">checks of the links between the GPUs and the switch trays</div></div>
   <div class="hdr-right">
     <div style="min-width:240px"><label for="inv">Rack</label><select id="inv"></select></div>
+    <span id="live-ind" class="hide" title="Live mode is on - click to open the rack map"><span class="dot"></span><span id="live-ind-t">Live</span></span>
     <div><label>Mode</label><div class="mode" role="group" aria-label="Mode"><button id="m-simple" aria-pressed="true" title="The main tasks only">Simple</button><button id="m-expert" aria-pressed="false" title="Every tool, including the disruptive one">Expert</button></div></div>
     <div class="row" style="margin:0"><button class="sec" id="glossary-open">Glossary</button><button class="sec" id="guide-open">Debug guide</button></div>
   </div>
@@ -133,10 +140,12 @@ nav button.exp{border-style:dashed}
       <div><label for="map-view">View</label><select id="map-view"><option value="tray">by compute tray</option><option value="switch">by switch ASIC</option></select></div>
       <div><label for="map-q">Find (port, tray, BDF, cause)</label><input id="map-q" type="search" placeholder="Ethernet257, ct13, 0002:01:00.1, IFCP ..."></div>
     </div>
+    <div id="live-bar" class="live-bar"></div>
     <div id="map-banner" class="hide" style="margin-top:10px;padding:8px 12px;border-radius:6px;background:var(--degbg)"></div>
     <div id="map-sum" class="row mut"></div>
     <div id="map" class="map"></div>
     <div id="map-detail" class="card hide" style="margin-top:12px"></div>
+    <div id="live-box" class="hide" style="margin-top:12px"><h3 style="font-size:.95rem;margin:0 0 4px">Live changes</h3><div id="live-changes" class="mut"></div></div>
   </section>
 
   <section class="card hide" data-p="link">
@@ -389,7 +398,7 @@ function tab(t){
   document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===t)});
   document.querySelectorAll("section[data-p]").forEach(function(s){s.classList.toggle("hide",s.dataset.p!==t)});
   if(t==="history")loadHistory();
-  if(t==="map")loadMap();
+  if(t==="map"){loadMap();liveBar();liveList();livePoll()}
   if(t==="overview")loadOverview();
   if(t==="home")renderHome();
   if(t==="link")loadPickers();
@@ -665,6 +674,61 @@ $("path-noping").addEventListener("change",ppSentence);$("path-count").addEventL
 $("pp-swap").addEventListener("click",function(){var st=$("pp-st").value,sg=$("pp-sg").value,dt=$("pp-dt").value,dg=$("pp-dg").value;
   $("pp-st").value=dt;ppGpuOpts("pp-st","pp-sg");$("pp-sg").value=dg;$("pp-dt").value=st;ppRefreshDst();$("pp-dg").value=sg;ppPorts()});
 $("pp-same").addEventListener("click",function(){$("pp-dt").value=$("pp-st").value;ppRefreshDst()});
+
+// ---------------------------------------------------------------- live mode
+var live=null,liveSeq=0,liveChanges=[],liveTimer=null;
+function liveMine(){var i=inv();return live&&live.running&&i&&live.inventory===i.file}
+function mm2(x){x=Math.max(0,Math.round(x));return x>=3600?Math.floor(x/3600)+" h "+Math.floor(x%3600/60)+" min":Math.floor(x/60)+" min"}
+function liveBar(){
+  var b=$("live-bar");if(!b)return;var i=inv();
+  if(liveMine()){
+    var f=live.followers||{},names=Object.keys(f),streams=names.filter(function(n){return f[n].kind!=="re-read"&&f[n].kind!=="afm"}),
+        bad=names.filter(function(n){return f[n].ok===false}),
+        conn=streams.filter(function(n){return f[n].ok}).length;
+    b.className="live-bar on";
+    b.innerHTML='<span class="dot"></span><b>Live</b><span>on since '+esc(new Date(live.started*1000).toLocaleTimeString())+" ("+mm2(Date.now()/1000-live.started)+")"+
+      " · "+(live.jump_limited?"re-reads only (jump host)":conn+" of "+streams.length+" log streams connected")+
+      " · re-read every "+Math.round(live.reconcile_s/60)+" min ("+live.reconciles+" done)"+
+      " · last change "+(live.last_event?esc(new Date(live.last_event).toLocaleTimeString()):"-")+"</span>"+
+      (bad.length?'<span class="err">'+esc(bad.length+" not connected: ")+bad.map(function(n){return esc(n)+" ("+friendly(f[n].error)+")"}).join("; ")+"</span>":"")+
+      '<button class="sec" id="live-off">Turn live off</button>';
+    $("live-off").addEventListener("click",function(){api("/api/live/stop",{}).then(livePoll)});
+  }else{
+    var other=live&&live.running?' <span class="mut">(live mode is on for '+esc(live.rack)+" - turning it on here turns that off)</span>":"";
+    var why=live&&!live.running&&live.stop_reason&&live.inventory===(i&&i.file)?' <span class="mut">Last live session: '+esc(live.stop_reason)+".</span>":"";
+    b.className="live-bar";
+    b.innerHTML='<span class="dot"></span><b>Live: off</b> <span class="mut">The map shows the last check. Live mode follows the switch and tray logs and re-reads every few minutes, '+
+      'so the map changes as links change. It keeps a connection open to every tray - turn it off when done (it stops by itself after 8 h, or 30 min after nobody looks).</span>'+
+      '<label class="checks" style="margin:0">re-read every <select id="live-rec" style="width:auto;margin-left:4px"><option value="60">1 min</option><option value="300" selected>5 min</option><option value="900">15 min</option></select></label>'+
+      '<button class="go" id="live-on">Turn live on</button>'+other+why;
+    $("live-on").addEventListener("click",function(){$("live-on").disabled=true;$("live-on").textContent="starting ...";
+      api("/api/live/start",{inventory:i.file,reconcile_s:+$("live-rec").value}).then(function(){liveSeq=0;liveChanges=[];livePoll()})
+      .catch(function(e){b.insertAdjacentHTML("beforeend",'<span class="err">'+friendly(e.message)+"</span>");$("live-on").disabled=false;$("live-on").textContent="Turn live on"})});
+  }
+}
+function livePoll(){
+  clearTimeout(liveTimer);
+  api("/api/live?since="+liveSeq).then(function(d){
+    var newDown=[];
+    if(d.running===false&&!d.rack){live=null}else{
+      if(live&&live.started!==d.started){liveSeq=0;liveChanges=[]}
+      (d.changes||[]).forEach(function(c){liveChanges.push(c);if(c.what==="state"&&c.to==="down")newDown.push(c.link)});
+      liveChanges=liveChanges.slice(-300);liveSeq=d.seq||liveSeq;live=d}
+    $("live-ind").classList.toggle("hide",!(live&&live.running));
+    if(live&&live.running)$("live-ind-t").textContent="Live: "+live.rack;
+    var onMap=!document.querySelector('section[data-p="map"]').classList.contains("hide");
+    if(onMap){liveBar();if(mapData)drawMap();liveList();
+      if(newDown.length&&liveMine()){$("map-banner").classList.remove("hide");$("map-banner").style.background="var(--downbg)";
+        $("map-banner").innerHTML="<b>Link(s) went down just now:</b> "+esc(newDown.slice(0,8).join(", "))+(newDown.length>8?" ...":"")}}
+    liveTimer=setTimeout(livePoll,(live&&live.running&&onMap)?3000:15000);
+  }).catch(function(){liveTimer=setTimeout(livePoll,15000)});
+}
+function liveList(){
+  var box=$("live-box");if(!box)return;box.classList.toggle("hide",!liveMine());if(!liveMine())return;
+  var rows=liveChanges.slice(-25).reverse();
+  $("live-changes").innerHTML=rows.map(function(c){return "<div>"+esc(new Date(c.t).toLocaleTimeString())+"  "+esc(c.link?c.link+"  "+c.what+": "+c.from+" -> "+c.to:c.to)+'  <span class="mut">['+esc(c.source)+"]</span></div>"}).join("")||"no change yet";
+}
+$("live-ind").addEventListener("click",function(){var lf=live&&live.inventory;if(lf&&$("inv").value!==lf){$("inv").value=lf;fillInv()}tab("map")});
 var accState={};
 function accStatus(r){
   if(!r)return '<span class="mut">not checked</span>';
@@ -768,9 +832,12 @@ function drawMap(){
   var d=mapData;if(!d)return;
   var prev={};if(mapPrev)mapPrev.links.forEach(function(l){prev[lkey(l)]=l.state});
   var q=$("map-q").value.trim().toLowerCase(),view=$("map-view").value,cnt={ok:0,degraded:0,down:0},hits=0,chg=0;
-  d.links.forEach(function(l){cnt[l.state]=(cnt[l.state]||0)+1});
-  function cell(l){
-    var cls="cell "+l.state,txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
+  d.links.forEach(function(l){var st=(liveMine()&&live.rack===d.rack&&live.links[lkey(l)]&&live.links[lkey(l)].state)||l.state;cnt[st]=(cnt[st]||0)+1});
+  var lv=liveMine()&&live.rack===d.rack?live.links:null,fresh={};
+  if(lv)liveChanges.forEach(function(c){if(c.link&&c.what==="state"&&Date.now()-new Date(c.t).getTime()<600000)fresh[c.link]=1});
+  function cell(l0){
+    var l=l0;if(lv&&lv[lkey(l0)]&&lv[lkey(l0)].state){l=Object.assign({},l0,{state:lv[lkey(l0)].state})}
+    var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
     if(mapPrev&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
     return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf||"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
@@ -844,7 +911,7 @@ api("/api/state").then(function(s){
   if(keep&&invs.some(function(i){return i.file===keep}))$("inv").value=keep;
   fillInv();
   if(s.current){show(s.current,true);poll()}
-  var t=(location.hash.match(/tab=(\w+)/)||[])[1]||"";if(!t){try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}}setMode(expert);tab(t||"home");
+  var t=(location.hash.match(/tab=(\w+)/)||[])[1]||"";if(!t){try{t=localStorage.getItem("hdbg-tab")||""}catch(e){}}setMode(expert);tab(t||"home");livePoll();
 }).catch(function(e){$("inverr").classList.remove("hide");$("inverr").textContent="UI server not answering: "+e.message});
 })();
 </script>

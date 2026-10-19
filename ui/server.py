@@ -61,6 +61,9 @@ class State:
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
         self.access_checks: dict[str, dict] = {}     # inventory file -> {time, results} of its last access check
+        self.live = None                               # heliosdbg.live.LiveRack of the one rack in live mode
+        self.live_inventory = None
+        self.live_view = 0.0                           # last time a page asked for the live state
         self.current: str | None = None
 
     def inventories(self) -> list[dict]:
@@ -394,6 +397,53 @@ def save_inventory(state: State, req: dict) -> dict:
             "fill_me": sum(ln.count("FILL-ME") for ln in text.splitlines() if not ln.lstrip().startswith("#"))}
 
 
+def live_start(state: State, req: dict) -> dict:
+    from heliosdbg.live import LiveRack
+    from heliosdbg.rack import Rack
+    name = req.get("inventory", "")
+    f, inv = state.inventory(name)
+    runs = sorted((state.results_dir / "link-check" / (inv.rack or f.stem)).glob("scan-*/link_check.json"), reverse=True)
+    if not runs:
+        raise BadRequest("live mode starts from a check of the rack - run Check all links first")
+    d = json.loads(runs[0].read_text())
+    links = [x for x in d.get("links") or [] if x.get("switch") and x.get("sw_port")]
+    if not links:
+        raise BadRequest("the latest check of this rack has no links - run Check all links again")
+    afm = None
+    if req.get("afm") and req.get("afm_password") and (inv.afm or {}).get("url"):
+        from heliosdbg.afm import Afm, AfmUnavailable
+        env = "HELIOS_DEBUG_LIVE_AFM_PW"
+        os.environ[env] = str(req["afm_password"])
+        try:
+            afm = Afm(dict(inv.afm, auth=dict((inv.afm or {}).get("auth") or {}, password_env=env)))
+        except AfmUnavailable as e:
+            raise BadRequest(str(e)) from None
+        finally:
+            os.environ.pop(env, None)
+    with state.lock:
+        if state.live is not None:
+            state.live.stop(f"live mode turned on for {inv.rack}" if state.live_inventory != name else "restarted")
+        state.live_view = time.time()
+        jump = (inv.transport or {}).get("jump") or {}
+        state.live = LiveRack(Rack(inv), links, rack_name=inv.rack or f.stem,
+                              ifcp_in_use=bool((d.get("learned") or {}).get("ifcp_in_use", False)),
+                              reconcile_s=float(_int(req, "reconcile_s", 60, 3600, 300)), afm=afm,
+                              log_dir=state.results_dir / "live", last_view=lambda: state.live_view,
+                              jump_limited=jump.get("via") == "exec")
+        state.live_inventory = name
+        state.live.start()
+    return {"started": True, "rack": inv.rack, "links": len(links), "from_check": d.get("time_utc")}
+
+
+def live_status(state: State, since: int) -> dict:
+    with state.lock:
+        lv = state.live
+        state.live_view = time.time()
+    if lv is None:
+        return {"running": False}
+    return lv.status(since) | {"inventory": state.live_inventory}
+
+
 # ------------------------------------------------------------------ jobs
 
 def start_job(state: State, req: dict) -> dict:
@@ -547,6 +597,8 @@ class Handler(BaseHTTPRequestHandler):
                                   {"Content-Disposition": f'attachment; filename="{inv.rack}-cabling.csv"'})
             if u.path == "/api/overview":
                 return self._json(200, {"racks": overview(st)})
+            if u.path == "/api/live":
+                return self._json(200, live_status(st, int((q.get("since") or ["0"])[0] or 0)))
             if u.path == "/api/gpus":
                 return self._json(200, gpus_view(st, (q.get("inventory") or [""])[0]))
             if u.path == "/api/scan":
@@ -592,6 +644,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, {"results": res})
                 pw = req.pop("password", None)
                 return self._json(200, access.install(inv, str(req.get("host", "")), str(pw or "")))
+            if u.path == "/api/live/start":
+                pw = req.pop("afm_password", None)
+                return self._json(200, live_start(self.state, dict(req, afm_password=pw)))
+            if u.path == "/api/live/stop":
+                with self.state.lock:
+                    lv = self.state.live
+                if lv is not None:
+                    lv.stop("turned off in the UI")
+                return self._json(200, {"running": False})
             if u.path == "/api/discover":
                 pw = req.get("afm_password")
                 req["afm_password"] = None
