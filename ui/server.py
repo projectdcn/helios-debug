@@ -356,15 +356,36 @@ def port_view(state: State, rel: str, key: str) -> dict:
     return out
 
 
+QUARANTINED_RX = re.compile(r"compute tray (\S+) is quarantined")
+DESC_SLOT_RX = re.compile(r"Slot(\d+)/GPU", re.I)
+
+
+def name_unread_trays(links: list, slots: dict) -> None:
+    """Links of a tray the check did not read (quarantined) carry no tray name - the map showed them as '?'
+    (g02-g17 ct05, 144 links). Name the tray from the cause, else from the slot in the switch port description."""
+    by_slot = {str(v): k for k, v in slots.items()}
+    for ln in links:
+        if ln.get("tray"):
+            continue
+        m, s = QUARANTINED_RX.search(ln.get("cause") or ""), DESC_SLOT_RX.search(ln.get("desc") or "")
+        name = m.group(1) if m else by_slot.get(s.group(1)) if s else None
+        if name:
+            ln["tray"], ln["tray_named_from"] = name, "switch port description"
+            if s and name not in slots:
+                slots[name] = int(s.group(1))
+
+
 def scan_view(state: State, rel: str) -> dict:
     """A scan's links, compact, for the rack map (rel: link-check/<rack>/scan-...)."""
     f = _result_file(state, f"{rel}/link_check.json")
     d = json.loads(f.read_text())
     links = [{k: ln.get(k) for k in LINK_KEYS} | {"evidence": (ln.get("evidence") or [])[:8]} for ln in d.get("links") or []]
+    slots = dict((d.get("learned") or {}).get("slots") or {})
+    name_unread_trays(links, slots)
     return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
             "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
-            "slots": (d.get("learned") or {}).get("slots") or {},
+            "slots": slots,
             "ifcp_in_use": (d.get("learned") or {}).get("ifcp_in_use", True)}
 
 

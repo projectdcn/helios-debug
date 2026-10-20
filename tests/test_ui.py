@@ -262,3 +262,16 @@ def test_port_view_both_ends_and_history(ui):
     assert v["switch"]["status"]["Oper"] == "down" and v["switch"]["fdb"] and v["gpu"]["link"] == "LINK_DOWN"
     assert v["gpu_device"]["accelerator"] == "5" and [h["state"] for h in v["history"]] == ["down", "ok"]
     assert call(base, "/api/port?path=link-check/lab/scan-20261019-000000&key=st1%20Ethernet9")[0] == 400
+
+
+def test_quarantined_tray_named_on_the_map():
+    """g02-g17 19 Oct: ct05's 144 links had no tray name and the rack map showed them under '?'."""
+    from ui.server import name_unread_trays
+    links = [{"tray": None, "desc": "To ComputeTray Slot4/GPU3[19]/Port35", "cause": "compute tray ct05 is quarantined in the inventory (Down)"},
+             {"tray": None, "desc": "To ComputeTray Slot1/GPU0[4]/Port2", "cause": ""},
+             {"tray": "ct01", "desc": "To ComputeTray Slot0/GPU0[0]/Port1"},
+             {"tray": None, "desc": "", "cause": ""}]
+    slots = {"ct01": 0, "ct02": 1}
+    name_unread_trays(links, slots)
+    assert [x["tray"] for x in links] == ["ct05", "ct02", "ct01", None]
+    assert slots["ct05"] == 4
