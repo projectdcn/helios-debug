@@ -70,9 +70,12 @@ log per switch / tray - each command, its exit code and output, trimmed to `--lo
 
 ## Web UI on a switch tray
 
-`ui/` is a small web UI for the same tools: Overview of all racks, Rack map, Diagnose a link (with timeline and
-what is around it), Watch links, Cabling plan, scan / Broadcom / GPU path / ping map, Isolate (disruptive, typed
-confirmation), History with evidence bundles, SSH access, Add a rack. Standard library only: it installs on a SONiC switch tray and runs on the switch's own
+`ui/` is a small web UI for the same tools: Start here (rack, access, a check of all links, then what it found in
+plain words), Simple / Expert mode, Overview of all racks, Rack map (by compute tray, by switch ASIC, or topology)
+with drill down from rack to tray, GPU, port and link - each level with its connectivity picture, Topology tab for
+the rack chosen at the top (drill down beside the drawing), Diagnose a link (with timeline and what is around it),
+Watch links, Cabling plan, scan / Broadcom / GPU path / ping map, Isolate (disruptive, typed confirmation), History
+with evidence bundles, SSH access, Add a rack, and the debug guide. Standard library only: it installs on a SONiC switch tray and runs on the switch's own
 python3, PyYAML and paramiko - no sudo, nothing outside the user's home.
 
 ```
@@ -115,6 +118,10 @@ tools/       link_check.py
 docs/        link-debug-guide.md, scaleup-topology.html
 inventory/   templates (+ your git-ignored *.local.yaml)
 ```
+
+Repository: [projectdcn/helios-debug](https://github.com/projectdcn/helios-debug). The test automation and its web UI
+are in [projectdcn/helios-tests](https://github.com/projectdcn/helios-tests); its rack health check runs this repo's
+scan as HC-012 and its UI installer bundles this repo.
 
 `heliosdbg/{sonic,afmctl,parsers,inventory,transport,compute}.py` started as copies of helios-tests' `helios/`
 modules (18 Oct 2026); the two repos are independent from here on.
