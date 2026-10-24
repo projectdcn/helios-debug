@@ -325,8 +325,9 @@ class LiveRack:
         self.stop_ev.set()
         self.stopped, self.stop_reason = time.time(), reason
         with self.lock:
-            for st in list(self.streams):
-                st.close()
+            streams = list(self.streams)
+        for st in streams:                            # closing waits (up to seconds each): not under the lock
+            st.close()
         self.note(f"live mode off: {reason}", "live")
         try:
             self.rack.close()

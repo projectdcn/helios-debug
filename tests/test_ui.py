@@ -436,3 +436,33 @@ def test_ai_status_and_ask_with_a_stand_in_model(ui, monkeypatch):
         assert "turned off" in json.loads(call(base, "/api/ai/ask", {"path": "link-check/lab/scan-20261024-000000"})[1])["error"]
     finally:
         m.shutdown()
+
+
+def test_review_fixes_cable_unknown_device_truncated_raw_and_latest_full(ui, tmp_path):
+    """IFCP peer on a device the check could not name = unconfirmed (not miscabled); a truncated raw gzip does not
+    break the scan view; an old unscoped check that read few trays is partial; the newer note keeps the role."""
+    import gzip as _gz
+    import json as _j
+    base, tmp = ui
+    trays = {"c1": {"gpus": [{"bdf": "b", "ports": [{"port": 1, "ifcp": {"peer_device_id": "9", "peer_port_id": "4"}},
+                                                     {"port": 2, "ifcp": {"peer_device_id": "1", "peer_port_id": None}}]}]}}
+    links = [{"switch": "st1", "sw_port": "Ethernet4", "tray": "c1", "bdf": "b", "gpu_port": 1},
+             {"switch": "st1", "sw_port": "Ethernet5", "tray": "c1", "bdf": "b", "gpu_port": 2}]
+    n = server.ifcp_cabling(links, trays, {"device": {"st1": "1"}, "port_is_ethernet": True})
+    assert (n["confirmed"], n["miscabled"], n["unconfirmed"]) == (0, 0, 2)
+    d = tmp / "results" / "link-check" / "lab" / "scan-20261024-000000"
+    (d / "raw").mkdir(parents=True)
+    (d / "link_check.json").write_text(_j.dumps({"time_utc": "x", "rack": "lab", "links": [{"switch": "st1", "sw_port": "E1"}]}))
+    (d / "raw" / "trays.json.gz").write_bytes(_gz.compress(b'{"c1": {"gpus": []}}')[:12])     # truncated
+    code, body = call(base, "/api/scan?path=link-check/lab/scan-20261024-000000")
+    assert code == 200 and _j.loads(body)["links"]
+    r = tmp_path / "lc" / "r"
+    for name, body in (("scan-20261018-000000", {"links": [{"tray": f"c{i}"} for i in range(18)]}),
+                       ("scan-20261019-000000", {"links": [{"tray": "c1"}]}),
+                       ("scan-20261024-000000", {"links": [], "scope": {"switches": "st1"},
+                                                 "not_checked": [{"node": "ct06", "role": "tray", "error": "x"}]})):
+        (r / name).mkdir(parents=True)
+        (r / name / "link_check.json").write_text(_j.dumps(body))
+    v = server.latest_full("r", sorted(r.glob("scan-*/link_check.json"), reverse=True), computes=18)
+    assert v["latest_full"].endswith("scan-20261018-000000")            # the one-tray old scan is partial
+    assert v["newer_partial"]["not_checked"][0]["role"] == "tray"

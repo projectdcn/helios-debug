@@ -298,12 +298,12 @@ def overview(state: State) -> list[dict]:
                         "links": len(d.get("links") or []), "gpus_not_right": len(d.get("gpus") or [])}
             except (OSError, ValueError) as e:
                 row["error"] = f"latest scan unreadable: {e}"
-            row |= latest_full(i["rack"], runs)
+            row |= latest_full(i["rack"], runs, len(i["computes"]))
         out.append(row)
     return out
 
 
-def latest_full(rack: str, runs: list) -> dict:
+def latest_full(rack: str, runs: list, computes: int = 0) -> dict:
     """The newest scan of the whole rack that checked links (the Topology picture is drawn from it) and, when newer
     scans are partial (--switches / --trays) or checked no link, the newest of those with what it reported."""
     out, newer = {}, None
@@ -313,14 +313,19 @@ def latest_full(rack: str, runs: list) -> dict:
         except (OSError, ValueError):
             continue
         sc = d.get("scope") or {}
-        if not sc.get("switches") and not sc.get("trays") and d.get("links"):
+        partial = bool(sc.get("switches") or sc.get("trays"))
+        if not d.get("scope") and d.get("links") and computes:    # older scans: no scope recorded
+            trays = {x.get("tray") for x in d["links"] if x.get("tray")}
+            partial = bool(trays) and len(trays) < computes - 1   # (one quarantined / unreadable tray is still full)
+        if not partial and d.get("links"):
             out["latest_full"] = f"link-check/{rack}/{f.parent.name}"
             break
         if newer is None:
             newer = {"path": f"link-check/{rack}/{f.parent.name}", "time_utc": d.get("time_utc"),
                      "only": ", ".join(x for x in (sc.get("switches"), sc.get("trays")) if x),
                      "links": len(d.get("links") or []), "fdb_broken": d.get("fdb_broken") or [],
-                     "not_checked": [{"node": x.get("node"), "error": str(x.get("error"))[:300]} for x in d.get("not_checked") or []][:6]}
+                     "not_checked": [{"node": x.get("node"), "role": x.get("role"), "error": str(x.get("error"))[:300]}
+                                     for x in d.get("not_checked") or []][:6]}
     if newer and out.get("latest_full"):
         out["newer_partial"] = newer
     return out
@@ -334,7 +339,10 @@ def gpus_view(state: State, inventory: str) -> dict:
     runs = sorted((state.results_dir / "link-check" / (inv.rack or f.stem)).glob("scan-*/raw/trays.json.gz"), reverse=True)
     if not runs:
         raise BadRequest("no check of this rack yet - run one first (Check all links)")
-    trays = json.load(gzip.open(runs[0], "rt"))
+    try:
+        trays = json.load(gzip.open(runs[0], "rt"))
+    except (OSError, ValueError, EOFError) as e:      # truncated copy (full disk): say so instead of a 500
+        raise BadRequest(f"the latest check's tray data is unreadable ({type(e).__name__}) - run Check all links again") from None
     d = json.loads((runs[0].parent.parent / "link_check.json").read_text()) if (runs[0].parent.parent / "link_check.json").is_file() else {}
     slots = (d.get("learned") or {}).get("slots") or {}
     out = {}
@@ -364,7 +372,7 @@ def port_view(state: State, rel: str, key: str) -> dict:
         out["switch"] = {"status": (a.get("status") or {}).get(port), "counters": (a.get("counters") or {}).get(port),
                          "fec": (a.get("fec") or {}).get(port), "presence": (a.get("presence") or {}).get(port),
                          "fdb": [r for r in a.get("fdb") or [] if r.get("Port") == port]}
-    except (OSError, ValueError):
+    except (OSError, ValueError, EOFError):
         pass
     try:
         if ln.get("tray") and ln.get("bdf"):
@@ -373,7 +381,7 @@ def port_view(state: State, rel: str, key: str) -> dict:
             if g:
                 out["gpu_device"] = {k: g.get(k) for k in ("bdf", "accelerator", "config_phase", "vpod_accelerators")}
                 out["gpu"] = next((p_ for p_ in g.get("ports") or [] if p_.get("port") == ln.get("gpu_port")), None)
-    except (OSError, ValueError):
+    except (OSError, ValueError, EOFError):
         pass
     for f in sorted(run.parent.glob("scan-*/link_check.json"), reverse=True)[:12]:
         try:
@@ -453,7 +461,10 @@ def ifcp_cabling(links: list, trays: dict, ifcp: dict) -> dict:
         return n
     for ln in links:
         i = by_port.get((ln.get("tray"), ln.get("bdf"), ln.get("gpu_port"))) or {}
-        if i.get("peer_device_id") in (None, "") or not ln.get("bdf"):
+        if i.get("peer_device_id") in (None, "") or i.get("peer_port_id") in (None, "") or not ln.get("bdf") \
+                or str(i["peer_device_id"]) not in dev:
+            # no peer, or a device id this check could not name (e.g. a switch whose links were matched by
+            # description only): not a verdict either way
             n["unconfirmed"] += 1
             continue
         peer = (dev.get(str(i["peer_device_id"])) or f"device {i['peer_device_id']}", f"Ethernet{i.get('peer_port_id')}")
@@ -552,7 +563,7 @@ def scan_view(state: State, rel: str) -> dict:
                 for g in (t or {}).get("gpus") or []:
                     if g.get("bdf") and str(g.get("accelerator", "")).isdigit():
                         acc[f"{tn}:{g['bdf']}"] = int(g["accelerator"])
-        except (OSError, ValueError):
+        except (OSError, ValueError, EOFError):        # truncated raw file: the view without IFCP / accelerator ids
             acc, trays = {}, {}
     cabling = ifcp_cabling(links, trays, (d.get("learned") or {}).get("ifcp"))
     sw_ids = afm_switch_ids(state, d.get("rack"))
@@ -659,8 +670,10 @@ def live_start(state: State, req: dict) -> dict:
         finally:
             os.environ.pop(env, None)
     with state.lock:
-        if state.live is not None:
-            state.live.stop(f"live mode turned on for {inv.rack}" if state.live_inventory != name else "restarted")
+        old, state.live = state.live, None
+    if old is not None:                               # closing its streams takes seconds: not under the lock
+        old.stop(f"live mode turned on for {inv.rack}" if state.live_inventory != name else "restarted")
+    with state.lock:
         state.live_view = time.time()
         jump = (inv.transport or {}).get("jump") or {}
         state.live = LiveRack(Rack(inv), links, rack_name=inv.rack or f.stem,

@@ -6,7 +6,8 @@ A session is a real login shell with a pseudo-terminal, opened the way the read-
   * the node the UI runs on (local) - a shell under a local pseudo-terminal.
 The page polls the output (``read``: waits up to ``wait`` s for new bytes) and posts keystrokes (``write``). What is
 typed is never stored or logged; only open / close (node, time, how) is appended to ``results/term/sessions.log``.
-At most MAX_SESSIONS at once; a session nobody reads for IDLE_S is closed.
+At most MAX_SESSIONS at once; a session nobody reads for IDLE_S (its page was closed / reloaded) is closed. Terminals
+through the jump host get a connection of their own, so they never take the shared one's few session slots.
 """
 from __future__ import annotations
 
@@ -17,10 +18,10 @@ import threading
 import time
 from pathlib import Path
 
-from .transport import SshTransport, _jump_client, is_local
+from .transport import _JUMP_LOCK, _JUMPS, SshTransport, _jump_client, is_local
 
 MAX_SESSIONS = 6
-IDLE_S = 30 * 60
+IDLE_S = 5 * 60                  # an open page reads every <=15 s; a session nobody reads this long has lost its page
 KEEP_BYTES = 2_000_000           # output kept per session for the page (older output is dropped)
 
 
@@ -156,22 +157,33 @@ def open_session(host, transport_cfg: dict, cols: int = 120, rows: int = 32, con
     jump = (transport_cfg or {}).get("jump")
     if is_local(host):
         return _open_local(host, cols, rows)
-    if jump and jump.get("via") == "exec":
-        s = Session(host.name, "through the jump host (ssh -tt)", cols, rows)
-        client = _jump_client(jump, max(connect_timeout, 60))
-        chan = client.get_transport().open_session(timeout=connect_timeout)
-        chan.get_pty(term="xterm-256color", width=cols, height=rows)
-        target = f"{host.user}@{host.host}" if host.user else host.host
-        chan.exec_command(f"ssh -tt -o ConnectTimeout={int(connect_timeout)} -p {host.port} {shlex.quote(target)}")
-        s._chan = chan                      # the shared jump connection stays open for the other tools
-    else:
-        s = Session(host.name, "SSH" + (" through the jump host" if jump else ""), cols, rows)
-        t = SshTransport(host, connect_timeout=connect_timeout, jump=jump)
-        client = t._connect()               # our own connection: closed with the session
-        chan = client.get_transport().open_session(timeout=connect_timeout)
-        chan.get_pty(term="xterm-256color", width=cols, height=rows)
-        chan.invoke_shell()
-        s._chan, s._client = chan, client
+    client = chan = None
+    try:
+        if jump and jump.get("via") == "exec":
+            s = Session(host.name, "through the jump host (ssh -tt)", cols, rows)
+            tag = "term-" + s.id                 # a jump connection of its own (closed with the session)
+            client = _jump_client(jump, max(connect_timeout, 60), tag=tag)
+            with _JUMP_LOCK:                     # not shared: take it out of the cache
+                for k in [k for k, v in _JUMPS.items() if v is client]:
+                    _JUMPS.pop(k, None)
+            chan = client.get_transport().open_session(timeout=connect_timeout)
+            chan.get_pty(term="xterm-256color", width=cols, height=rows)
+            target = f"{host.user}@{host.host}" if host.user else host.host
+            chan.exec_command(f"ssh -tt -o ConnectTimeout={int(connect_timeout)} -p {host.port} {shlex.quote(target)}")
+        else:
+            s = Session(host.name, "SSH" + (" through the jump host" if jump else ""), cols, rows)
+            client = SshTransport(host, connect_timeout=connect_timeout, jump=jump)._connect()   # our own connection
+            chan = client.get_transport().open_session(timeout=connect_timeout)
+            chan.get_pty(term="xterm-256color", width=cols, height=rows)
+            chan.invoke_shell()
+    except Exception:
+        for x in (chan, client):                 # nothing left half-open on a failure
+            try:
+                x and x.close()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    s._chan, s._client = chan, client
     threading.Thread(target=s._pump_chan, daemon=True, name=f"term-{host.name}").start()
     return s
 

@@ -157,7 +157,6 @@ nav button.exp{border-style:dashed}
       <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="vlan" style="width:auto;margin:0">VLAN</label>
       <select id="topo-vlan" class="hide" style="width:auto" aria-label="VLAN to draw"><option value="all">all VLANs</option></select></div>
     <div class="legend" id="topo-legend" style="margin:0 0 6px" aria-label="colour legend"></div>
-    <div id="topo-ai"></div>
     <p class="mut" id="topo-hint">Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture (below it on a narrow screen).</p>
     <div class="topo-wrap" id="topo-wrap">
       <div id="topo-left">
@@ -166,6 +165,7 @@ nav button.exp{border-style:dashed}
           <label class="checks"><input type="checkbox" id="topo-show-detailed">Show the detailed port-level drawing (g02-g17 full rack)</label>
           <iframe id="topo-frame" class="hide" title="g02-g17 scale-up topology" style="width:100%;height:calc(100vh - 230px);min-height:520px;border:1px solid var(--rule);border-radius:8px;background:#fff;margin-top:6px"></iframe>
         </div>
+        <div id="topo-ai"></div>
       </div>
     </div>
   </section>
@@ -366,12 +366,13 @@ nav button.exp{border-style:dashed}
     <h2 style="margin-top:22px">Terminal</h2>
     <p class="mut">A shell on a switch tray or compute tray, the way the checks log in (the inventory user and key; through the
       jump host when the inventory says so). <b>Not read-only</b>: what you type runs on the rack. Only open / close is logged,
-      never what you type; a terminal nobody looks at for 30 min is closed.</p>
+      never what you type; a terminal whose page is closed is closed 5 min later.</p>
     <div class="row" style="margin-top:0;align-items:end">
       <div><label for="term-node">Node</label><select id="term-node" style="min-width:260px"></select></div>
       <button class="go" id="term-open">Connect</button><button class="sec" id="term-close" disabled>Disconnect</button>
       <span id="term-msg" class="mut"></span>
     </div>
+    <div id="term-orphans" class="row" style="margin:6px 0 0"></div>
     <div id="term-tabs" class="row" style="margin:6px 0 0"></div>
     <div id="term-box" class="hide" style="margin-top:6px;height:min(62vh,640px);background:#111;border-radius:8px;padding:6px"></div>
   </section>
@@ -480,7 +481,7 @@ function tab(t){
   document.querySelectorAll("section[data-p]").forEach(function(s){s.classList.toggle("hide",s.dataset.p!==t)});
   if(t==="history")loadHistory();
   if(t==="map"){placeDetail("map");loadMap();liveBar();liveList();livePoll()}
-  if(t==="access"){fillNodePick("term-node");termFit()}
+  if(t==="access"){fillNodePick("term-node");termFit();termOrphans()}
   if(t==="config")fillNodePick("cfg-node");
   if(t==="overview")loadOverview();
   if(t==="home")renderHome();
@@ -827,7 +828,7 @@ function liveBar(){
     var f=live.followers||{},names=Object.keys(f),streams=names.filter(function(n){return f[n].kind!=="re-read"&&f[n].kind!=="afm"}),
         bad=names.filter(function(n){return f[n].ok===false}),
         conn=streams.filter(function(n){return f[n].ok}).length;
-    b.className="live-bar on";
+    b.className="live-bar on";b.dataset.key="on";
     b.innerHTML='<span class="dot"></span><b>Live</b><span>on since '+esc(new Date(live.started*1000).toLocaleTimeString())+" ("+mm2(Date.now()/1000-live.started)+")"+
       " · "+(live.jump_limited?"re-reads only (jump host)":conn+" of "+streams.length+" log streams connected")+
       " · re-read every "+Math.round(live.reconcile_s/60)+" min ("+live.reconciles+" done)"+
@@ -840,16 +841,20 @@ function liveBar(){
   }else{
     var other=live&&live.running?' <span class="mut">(live mode is on for '+esc(live.rack)+" - turning it on here turns that off)</span>":"";
     var why=live&&!live.running&&live.stop_reason&&live.inventory===(i&&i.file)?' <span class="mut">Last live session: '+esc(live.stop_reason)+".</span>":"";
+    var key="off|"+(i&&i.file)+"|"+other+"|"+why;
+    if(b.dataset.key===key)return;                 /* unchanged: keep the user's choices, an open dropdown, an error */
+    b.dataset.key=key;
     b.className="live-bar";
     b.innerHTML='<span class="dot"></span><b>Live: off</b> <span class="mut">The map shows the last check. Live mode follows the switch and tray logs and re-reads every few minutes, '+
       'so the map changes as links change. It keeps a connection open to every tray - turn it off when done.</span>'+
       '<label class="checks" style="margin:0">re-read every <select id="live-rec" style="width:auto;margin-left:4px"><option value="60">1 min</option><option value="300" selected>5 min</option><option value="900">15 min</option></select></label>'+
       '<label class="checks" style="margin:0">stop after <select id="live-max" style="width:auto;margin-left:4px"><option value="8" selected>8 h</option><option value="24">24 h</option><option value="72">3 days</option><option value="0">until turned off</option></select></label>'+
-      '<label class="checks" style="margin:0" title="otherwise it stops 30 min after the last page showing this UI was closed"><input type="checkbox" id="live-keep">keep on when no page is open</label>'+
+      '<label class="checks" style="margin:0" title="otherwise Live stops 30 min after the last page showing this UI was closed"><input type="checkbox" id="live-keep">keep on when no page is open</label>'+
       '<button class="go" id="live-on">Turn live on</button>'+other+why;
     $("live-on").addEventListener("click",function(){$("live-on").disabled=true;$("live-on").textContent="starting ...";
       api("/api/live/start",{inventory:i.file,reconcile_s:+$("live-rec").value,max_h:+$("live-max").value,keep_unwatched:$("live-keep").checked}).then(function(){liveSeq=0;liveChanges=[];livePoll()})
-      .catch(function(e){b.insertAdjacentHTML("beforeend",'<span class="err">'+friendly(e.message)+"</span>");$("live-on").disabled=false;$("live-on").textContent="Turn live on"})});
+      .catch(function(e){b.insertAdjacentHTML("beforeend",'<span class="err">'+friendly(e.message)+"</span>");$("live-on").disabled=false;$("live-on").textContent="Turn live on"})
+      .then(function(){b.dataset.key=""})});
   }
 }
 function livePoll(){
@@ -992,18 +997,31 @@ function termSend(t){                                  /* keystrokes in order, b
   api("/api/term/write",{id:t.id,data:d}).catch(function(e){t.x.write("\r\n\x1b[31m["+e.message+"]\x1b[0m\r\n")}).then(function(){t.sending=false;termSend(t)});
 }
 function termRead(t){
-  fetch("/api/term/read?id="+encodeURIComponent(t.id)+"&since="+t.next).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})})
-  .then(function(j){
+  fetch("/api/term/read?id="+encodeURIComponent(t.id)+"&since="+t.next).then(function(r){return r.json().then(function(j){if(!r.ok){var e=new Error(j.error||r.status);e.final=true;throw e}return j})})
+  .then(function(j){t.fails=0;
     if(j.data){var b=atob(j.data),u=new Uint8Array(b.length);for(var k=0;k<b.length;k++)u[k]=b.charCodeAt(k);t.x.write(u)}
     t.next=j.next;
     if(j.closed){t.closed=j.closed;t.x.write("\r\n\x1b[33m["+j.closed+"]\x1b[0m\r\n");termTabs();return}
     termRead(t);
-  }).catch(function(e){t.closed=e.message;t.x.write("\r\n\x1b[31m["+e.message+"]\x1b[0m\r\n");termTabs()});
+  }).catch(function(e){
+    if(!e.final&&(t.fails=(t.fails||0)+1)<=5){setTimeout(function(){termRead(t)},Math.min(8000,1000*t.fails));return}   /* a blip: try again */
+    t.closed=e.message;t.x.write("\r\n\x1b[31m["+e.message+"]\x1b[0m\r\n");termTabs()});
 }
 function termClose(){
   var t=terms[termCur];if(!t)return;
-  if(!t.closed)api("/api/term/close",{id:t.id}).catch(function(){});
+  api("/api/term/close",{id:t.id}).catch(function(){});     /* always: a session the page lost is still open there */
   t.x.dispose();t.el.remove();delete terms[t.id];termCur=Object.keys(terms)[0]||null;if(termCur)termShow(termCur);else termTabs();termMsg("");
+}
+/* terminals left open by an earlier page (reload / closed tab): the server keeps them until it has not been read 5 min */
+function termOrphans(){
+  api("/api/term/list").then(function(d){
+    var mine={};Object.keys(terms).forEach(function(k){mine[k]=1});
+    var left=(d.terminals||[]).filter(function(x){return !mine[x.id]&&!x.closed});
+    var el=$("term-orphans");if(!el)return;
+    el.innerHTML=left.length?'<span class="mut">'+left.length+" terminal"+(left.length>1?"s":"")+" left open by an earlier page ("+esc(left.map(function(x){return nodeLabel(x.node)}).join(", "))+
+      ')</span> <button class="sec" id="term-orph-close">Close '+(left.length>1?"them":"it")+"</button>":"";
+    if(left.length)$("term-orph-close").addEventListener("click",function(){Promise.all(left.map(function(x){return api("/api/term/close",{id:x.id}).catch(function(){})})).then(termOrphans)});
+  }).catch(function(){});
 }
 $("term-open").addEventListener("click",termOpen);
 aiStatus();
@@ -1011,11 +1029,12 @@ $("term-close").addEventListener("click",termClose);
 window.addEventListener("resize",termFit);
 
 /* ---------------------------------------------------------------- config view */
-var cfgData=null;
+var cfgData=null,cfgSeq=0;
 function cfgRead(){
-  var node=$("cfg-node").value,i=inv();if(!node||!i)return;
+  var node=$("cfg-node").value,i=inv(),seq=++cfgSeq;if(!node||!i)return;
   $("cfg-read").disabled=true;$("cfg-msg").textContent="reading "+nodeLabel(node)+" ...";$("cfg-out").innerHTML="";
-  api("/api/config",{inventory:i.file,node:node}).then(function(d){cfgData=d;$("cfg-msg").textContent="read "+new Date(d.time_utc).toLocaleTimeString()+" in "+d.read_s+" s";cfgDraw()})
+  api("/api/config",{inventory:i.file,node:node}).then(function(d){if(seq!==cfgSeq)return;cfgData=d;cfgSec=null;cfgTable=null;
+    $("cfg-msg").textContent=nodeLabel(d.node)+" ("+d.address+"), read "+new Date(d.time_utc).toLocaleTimeString()+" in "+d.read_s+" s";cfgDraw()})
   .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"}).then(function(){$("cfg-read").disabled=false});
 }
 var cfgSec=null,cfgTable=null;
@@ -1143,7 +1162,7 @@ function mapFetch(){
   var p=$("map-scan").value;if(!p){$("map").innerHTML="";$("map-sum").textContent="";return}
   api("/api/scan?path="+encodeURIComponent(p)).then(function(d){mapData=d;
     var q=$("map-prev").value;
-    if(q&&q!==p){api("/api/scan?path="+encodeURIComponent(q)).then(function(e){mapPrev=e;drawMap()})}else{mapPrev=null;drawMap()}
+    if(q&&q!==p){api("/api/scan?path="+encodeURIComponent(q)).then(function(e){mapPrev=e;drawMap()}).catch(function(){mapPrev=null;drawMap()})}else{mapPrev=null;drawMap()}
   }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
 function lkey(l){return l.switch+" "+l.sw_port}
@@ -1437,14 +1456,17 @@ function portExtra(k){
 // ---------------------------------------------------------------- topology tab -> drill down
 function placeDetail(where){var d=$("map-detail");if(where==="topo"){var wr=$("topo-wrap");if(d.parentNode!==wr)wr.appendChild(d);wr.classList.add("split")}
   else{var m=$("map");if(d.previousElementSibling!==m)m.insertAdjacentElement("afterend",d);var w2=$("topo-wrap");if(w2)w2.classList.remove("split")}}
+var ensureSeq=0;
 function ensureMap(file){
-  var i=invs.filter(function(x){return x.file===file})[0];
-  var sc=(mapData&&mapData.scope)||{};      /* reuse only a full check that checked links (the map may show a partial one) */
-  if(mapData&&i&&mapData.rack===i.rack&&mapData.links.length&&!sc.switches&&!sc.trays)return Promise.resolve(mapData);
+  /* the newest check of the whole rack (not a one-switch / empty one, not an older one the Rack map shows), and the
+     note about a newer partial check - asked every time, so a check that just finished is picked up */
+  var i=invs.filter(function(x){return x.file===file})[0],seq=++ensureSeq;
   return api("/api/overview").then(function(r){var ov=(r.racks||[]).filter(function(x){return x.file===file})[0];
-    if(!ov||!ov.latest)throw new Error("no check of g02-g17 yet - run one first (Check all links)");
-    topoNewer=ov.newer_partial||null;     /* the picture: the newest check of the whole rack, not a one-switch / empty one */
-    return api("/api/scan?path="+encodeURIComponent(ov.latest_full||ov.latest)).then(function(d){mapData=d;mapPrev=null;return d})});
+    if(!ov||!ov.latest)throw new Error("no check of "+((i&&i.rack)||file)+" yet - run one first (Check all links)");
+    topoNewer=ov.newer_partial||null;
+    var want=ov.latest_full||ov.latest;
+    if(mapData&&mapData.path===want)return mapData;
+    return api("/api/scan?path="+encodeURIComponent(want)).then(function(d){if(seq===ensureSeq){mapData=d;mapPrev=null}return mapData})});
 }
 function topoDrill(x){
   var g=invs.filter(function(i){return i.rack==="g02-g17"})[0];
@@ -1489,6 +1511,7 @@ function stColor(st){return st==="down"?"var(--down)":st==="degraded"?"var(--deg
    Live is on, else the check's tray read. ok = session up; degraded = link up, no IFCP session; down = IFCP error or a
    cable the IFCP peer says is elsewhere (miscabled); unknown = no physical link / not read. */
 function ifcpState(l){
+  if(mapData&&mapData.ifcp_in_use===false)return "unknown";   /* this rack runs no IFCP: nothing to judge */
   if(l.cable&&String(l.cable).indexOf("miscabled")===0)return "down";
   var lv=liveMine()&&mapData&&live.rack===mapData.rack?live.links[lkey(l)]:null,i=l.ifcp||{},ll=lv&&lv.ll_up!=null?lv.ll_up:i.ll;
   var phys=lv?(String(lv.gpu_link||"").toUpperCase()==="LINK_UP"&&String(lv.sw_oper||"")==="up"):(l.state!=="down"&&l.state!=="unknown");
@@ -1496,7 +1519,7 @@ function ifcpState(l){
   if(i.err)return "down";
   return ll==="yes"?"ok":ll==="no"?"degraded":"unknown";
 }
-function LB(m){return m==="ifcp"||m===true?{ok:"IFCP up",degraded:"no session",down:"error",unknown:"no link"}
+function LB(m){return m==="ifcp"||m===true?{ok:"IFCP up",degraded:"no session",down:"error",unknown:"no link / not read"}
   :m==="vlan"?{ok:"in VLAN",degraded:"VLAN differs",down:"no VLAN",unknown:"not read"}:{ok:"ok",degraded:"deg",down:"down",unknown:"?"}}
 /* VLAN view: ok = the port is in a VLAN, the same one the chip uses for that GPU port number; degraded = its VLAN /
    tagging differs (vlan_mismatch); down = a GPU port in no VLAN, or a static entry off its port's VLAN; unknown = not read */
@@ -1533,7 +1556,7 @@ function topoSvg(d,mode){
     var t=l.tray||"(no tray)";(trays[t]=trays[t]||{})[mGpu(l)]=1;var k=t+"#"+a;(pairs[k]=pairs[k]||[]).push(l)});
   var unread={};(d.not_checked||[]).forEach(function(x){if(x.role==="switch"){unread[x.node]=x;sws[x.node]=sws[x.node]||{}}});
   var swN=Object.keys(sws).sort(),trN=Object.keys(trays).sort(function(a,b){var sa=(d.slots||{})[a],sb=(d.slots||{})[b];return (sa==null?999:sa)-(sb==null?999:sb)||(a<b?-1:1)});
-  var SWW=Math.max(150,Object.keys(sws[swN[0]]||{}).length*76+12),SWG=12,TW=(d.afm_names?150:112),TG=8,perRow=Math.min(9,Math.max(1,trN.length)),rows=Math.ceil(trN.length/perRow);
+  var SWW=Math.max(150,Math.max.apply(null,swN.map(function(x){return Object.keys(sws[x]||{}).length}).concat([0]))*76+12),SWG=12,TW=(d.afm_names?150:112),TG=8,perRow=Math.min(9,Math.max(1,trN.length)),rows=Math.ceil(trN.length/perRow);
   var W=Math.max(swN.length*(SWW+SWG)+20,perRow*(TW+TG)+20),SY=20,ASY=126,TY0=200,TH=90,H=TY0+rows*(TH+22)+6;
   var asicPos={},trayPos={},gpuPos={},o=[];
   o.push('<svg class="topo" width="'+Math.round(W*0.85)+'" viewBox="0 0 '+W+" "+H+'" role="img" aria-label="Cabling picture of '+esc(d.rack)+'">');
@@ -1613,7 +1636,8 @@ function topoHint(){
   $("topo-hint").innerHTML=(lv?"<b>Live</b>: link states as they are now (from the logs, re-read every "+Math.round(live.reconcile_s/60)+" min); trays and cabling from the check of "+esc(stampLocal(mapData.time_utc))
       :"From the check of "+esc(stampLocal(mapData.time_utc))+(age>=1?' <span class="err">('+Math.floor(age)+" day"+(Math.floor(age)>1?"s":"")+" old - Check all links, or turn Live on in Rack map, for today's state)</span>":""))+
     " ("+mapData.links.length+" links)."+(c?" Cables: "+c.confirmed+" confirmed by IFCP"+(c.miscabled?', <b class="err">'+c.miscabled+" miscabled</b>":", 0 miscabled")+".":"")+
-    (topoMode==="ifcp"?" <b>IFCP view</b>: each link by its IFCP control-plane session; miscabled = the GPU port's IFCP peer is another switch port.":"")+
+    (topoMode==="ifcp"?(mapData.ifcp_in_use===false?' <b>IFCP view</b>: <span class="err">this rack runs no IFCP (no GPU port had a session or peer in this check) - nothing to show here.</span>':
+      " <b>IFCP view</b>: each link by its IFCP control-plane session; miscabled = the GPU port's IFCP peer is another switch port."):"")+
     (topoMode==="vlan"?" <b>VLAN view</b>: each switch port by its VLAN membership; the chip boxes list their VLANs (V100 · p31 · 72 = Vlan100 carries GPU port 31, 72 members). "+vlanSum():"")+
     " Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture."+topoNewerHtml();
 }
@@ -1630,7 +1654,7 @@ function topoNewerHtml(){
   if(mapData)h+=switchProblemsHtml(mapData.fdb_broken||[],(mapData.not_checked||[]).filter(function(x){return x.role==="switch"}),
     "<b>In this check</b>: ");
   if(!n)return h;
-  return h+switchProblemsHtml(n.fdb_broken||[],n.not_checked||[],"<b>Newer check "+esc(stampLocal(n.time_utc))+(n.only?" (only "+esc(n.only)+")":"")+": "+n.links+" link"+(n.links===1?"":"s")+
+  return h+switchProblemsHtml(n.fdb_broken||[],(n.not_checked||[]).filter(function(x){return !x.role||x.role==="switch"}),"<b>Newer check "+esc(stampLocal(n.time_utc))+(n.only?" (only "+esc(n.only)+")":"")+": "+n.links+" link"+(n.links===1?"":"s")+
     " checked</b> - the picture stays on the last full check. ",true);
 }
 /* switches a check could not judge: forwarding entries without a switch port per switch (where they came from), other errors */
@@ -1676,8 +1700,9 @@ function drawTopoInto(){
 }
 function topoLegend(){
   var el=$("topo-legend");if(!el||!mapData)return;var ifcp=topoMode==="ifcp",vlan=topoMode==="vlan",S=ifcp?ifcpState:vlan?vlanStateFn(mapData):mEff,c={ok:0,degraded:0,down:0,unknown:0};
-  mapData.links.forEach(function(l){c[S(l)]=(c[S(l)]||0)+1});
-  var items=vlan?[["ok","in its VLAN"],["degraded","VLAN / tagging differs"],["down","no VLAN / entry off VLAN"],["unknown","VLANs not read"]]:ifcp?[["ok","IFCP session up"],["degraded","link up, no IFCP session"],["down","IFCP error / miscabled"],["unknown","no physical link"]]
+  (vlan&&topoVlan!=="all"?mapData.links.filter(function(l){return (l.vlans||[]).some(function(v){return v[0]===topoVlan})}):mapData.links)
+    .forEach(function(l){c[S(l)]=(c[S(l)]||0)+1});
+  var items=vlan?[["ok","in its VLAN"],["degraded","VLAN / tagging differs"],["down","no VLAN / entry off VLAN"],["unknown","VLANs not read"]]:ifcp?[["ok","IFCP session up"],["degraded","link up, no IFCP session"],["down","IFCP error / miscabled"],["unknown",mapData.ifcp_in_use===false?"IFCP not used on this rack":"no physical link / IFCP not read"]]
                 :[["ok","link ok"],["degraded","degraded"],["down","down"],["unknown","not known"]];
   el.innerHTML=items.map(function(x){return '<span title="'+esc(x[1])+'"><i style="background:'+stColor(x[0])+(x[0]==="ok"?";opacity:.55":"")+'"></i>'+esc(x[1])+' <b>'+c[x[0]]+"</b></span>"}).join("")+
     '<span class="mut">worst link wins for a line, chip or GPU; problem lines are drawn thicker</span>';
