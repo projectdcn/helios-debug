@@ -805,11 +805,13 @@ function livePoll(){
       liveChanges=liveChanges.slice(-300);liveSeq=d.seq||liveSeq;live=d}
     $("live-ind").classList.toggle("hide",!(live&&live.running));
     if(live&&live.running)$("live-ind-t").textContent="Live: "+live.rack;
-    var onMap=!document.querySelector('section[data-p="map"]').classList.contains("hide");
+    var onMap=!document.querySelector('section[data-p="map"]').classList.contains("hide"),
+        onTopo=!document.querySelector('section[data-p="topology"]').classList.contains("hide");
+    if(onTopo&&liveMine()&&mapData&&$("topo-dyn")&&$("topo-dyn").firstChild&&(d.changes||[]).length)drawTopoInto();   /* the picture follows Live too */
     if(onMap){liveBar();if(mapData)drawMap();liveList();
       if(newDown.length&&liveMine()){$("map-banner").classList.remove("hide");$("map-banner").style.background="var(--downbg)";
         $("map-banner").innerHTML="<b>Link(s) went down just now:</b> "+esc(newDown.slice(0,8).join(", "))+(newDown.length>8?" ...":"")}}
-    liveTimer=setTimeout(livePoll,(live&&live.running&&onMap)?3000:15000);
+    liveTimer=setTimeout(livePoll,(live&&live.running&&(onMap||onTopo))?3000:15000);
   }).catch(function(){liveTimer=setTimeout(livePoll,15000)});
 }
 function liveList(){
