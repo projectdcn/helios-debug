@@ -88,6 +88,12 @@ dialog dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}dialog
 #pp-ports label{display:inline-flex;align-items:center;gap:2px;font:12px ui-monospace,Menlo,Consolas,monospace;border:1px solid var(--rule);border-radius:4px;padding:1px 5px;margin:0;color:var(--fg)}
 #pp-ports label.off{opacity:.35}
 nav button.exp{border-style:dashed}
+.aibadge{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--rule);white-space:nowrap}
+.aibadge.ok{color:var(--ok);background:var(--okbg);border-color:transparent}.aibadge.off{color:var(--mut)}
+.ai{border:1px solid var(--rule);border-radius:8px;padding:10px 14px;margin:10px 0;background:var(--card)}
+.ai h4{margin:10px 0 4px;font-size:.95rem}.ai .ans p{margin:4px 0}.ai .ans ol,.ai .ans ul{margin:4px 0 6px 20px;padding:0}
+.ai .cite{display:inline-block;font-size:11px;font-weight:600;padding:0 5px;border-radius:5px;background:var(--code);cursor:help}
+.ai .cite.bad{color:var(--down)}.ai .warn{color:var(--down);font-weight:600;margin-top:6px}
 .live-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 12px;border:1px solid var(--rule);border-radius:8px;margin:8px 0}
 .live-bar.on{border-color:var(--ok);background:var(--okbg)}.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:var(--mut)}
 .live-bar.on .dot,#live-ind .dot{background:var(--ok);animation:pulse 1.6s infinite}@keyframes pulse{50%{opacity:.35}}
@@ -104,6 +110,7 @@ nav button.exp{border-style:dashed}
   <div><h1>Helios link debug</h1><div class="mut" id="where">checks of the links between the GPUs and the switch trays</div></div>
   <div class="hdr-right">
     <div style="min-width:240px"><label for="inv">Rack</label><select id="inv"></select></div>
+    <span id="ai-ind" class="aibadge" title="the AI model for root cause / debug / remediation advice" style="cursor:default">AI: checking</span>
     <span id="live-ind" class="hide" title="Live mode is on - click to open the rack map"><span class="dot"></span><span id="live-ind-t">Live</span></span>
     <div><label>Mode</label><div class="mode" role="group" aria-label="Mode"><button id="m-simple" aria-pressed="true" title="The main tasks only">Simple</button><button id="m-expert" aria-pressed="false" title="Every tool, including the disruptive one">Expert</button></div></div>
     <div class="row" style="margin:0"><button class="sec" id="glossary-open">Glossary</button><button class="sec" id="guide-open">Debug guide</button></div>
@@ -150,6 +157,7 @@ nav button.exp{border-style:dashed}
       <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="vlan" style="width:auto;margin:0">VLAN</label>
       <select id="topo-vlan" class="hide" style="width:auto" aria-label="VLAN to draw"><option value="all">all VLANs</option></select></div>
     <div class="legend" id="topo-legend" style="margin:0 0 6px" aria-label="colour legend"></div>
+    <div id="topo-ai"></div>
     <p class="mut" id="topo-hint">Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture (below it on a narrow screen).</p>
     <div class="topo-wrap" id="topo-wrap">
       <div id="topo-left">
@@ -750,7 +758,8 @@ function renderResult(j){
           :dm?"compute tray in slot "+dm[1]+" GPU"+dm[2]+" port "+dm[3]+" (as the switch port description says; the tray was not read)":"? GPU ? port";
     box.innerHTML='<p><b>'+esc(l.switch+" "+l.sw_port)+"</b> &harr; <b>"+esc(gpuEndTxt)+"</b></p>"+
       verdictHtml(l.state,l.kind,l.cause,l.owner)+(around.length?'<div class="verdict degraded"><h3>Also around this link</h3><ul>'+around.map(function(c){return "<li>"+esc(c.check+": "+c.detail)+"</li>"}).join("")+"</ul></div>":"")+
-      '<p><a href="'+esc(base+"report.html")+'" target="_blank" rel="noopener">Open the full report</a> (both ends, switch signal, 24-hour timeline)</p>'})}
+      '<p><a href="'+esc(base+"report.html")+'" target="_blank" rel="noopener">Open the full report</a> (both ends, switch signal, 24-hour timeline)</p><div id="ai-diag"></div>';
+    aiPanel($("ai-diag"),{path:j.out,label:"link "+l.switch+" "+l.sw_port})})}
   else if(j.tool==="path"){fetch(base+"report.txt").then(function(r){return r.ok?r.text():""}).then(function(t){
     var lines=t.split("\n").filter(function(x){return x.trim()}),bad=j.rc!==0;
     box.innerHTML='<div class="verdict '+(bad?"down":"ok")+'"><h3>'+(bad?"The path has problems":"The path works")+"</h3>"+
@@ -889,6 +898,56 @@ function drawAccess(d){
   document.querySelectorAll("button[data-inst]").forEach(function(b){b.addEventListener("click",function(){install(b.dataset.inst)})});
 }
 var accData=null;
+/* ---------------------------------------------------------------- AI: root cause, debug next, remediation (advisory) */
+var aiState={ok:false,model:"",error:""};
+function aiStatus(){
+  api("/api/ai/status").then(function(st){aiState={ok:!!st.reachable,model:st.model||"",error:st.error||""}}).catch(function(e){aiState={ok:false,model:"",error:e.message}})
+  .then(function(){var b=$("ai-ind");b.textContent=aiState.ok?"AI: "+String(aiState.model).split("/").pop():"AI: not connected";
+    b.className="aibadge "+(aiState.ok?"ok":"off");b.title=aiState.ok?"advice from "+aiState.model:aiState.error;
+    document.querySelectorAll(".ai-go").forEach(function(x){x.disabled=!aiState.ok;x.title=aiState.ok?"":aiState.error});
+    setTimeout(aiStatus,aiState.ok?120000:20000)});
+}
+/* the model's answer: escaped, then headings / lists / `code` / **bold** / [E3] citations */
+function aiMd(t,ev){
+  var refs={};(ev||[]).forEach(function(x){refs[x.ref]=x.text});
+  var out=[],list=null;
+  esc(t).split("\n").forEach(function(ln){
+    var m;
+    if((m=/^\s*#{2,4}\s*(.+)$/.exec(ln))){if(list){out.push("</"+list+">");list=null}out.push("<h4>"+m[1]+"</h4>");return}
+    if((m=/^\s*(\d+)[.)]\s+(.*)$/.exec(ln))||(m=/^\s*[-*•]\s+(.*)$/.exec(ln))){var tag=m.length===3?"ol":"ul";if(list!==tag){if(list)out.push("</"+list+">");out.push("<"+tag+">");list=tag}out.push("<li>"+(m[2]||m[1])+"</li>");return}
+    if(list){out.push("</"+list+">");list=null}
+    if(ln.trim())out.push("<p>"+ln+"</p>");
+  });
+  if(list)out.push("</"+list+">");
+  return out.join("").replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
+    .replace(/\[?\b(E\d+)\b\]?/g,function(all,ref){return '<span class="cite'+(refs[ref]?"":" bad")+'" title="'+esc(refs[ref]||"not one of the evidence items given")+'">'+ref+"</span>"});
+}
+/* an "Ask the AI" panel in box: ctx {path, link?, label} */
+function aiPanel(box,ctx){
+  if(!box)return;var hist=[];
+  box.innerHTML='<div class="ai"><div class="row" style="margin:0;align-items:center"><b>AI: root cause, how to debug, what to do</b><span class="mut" style="font-size:12px">advisory - check its claims against the evidence; it changes nothing</span>'+
+    '<span style="flex:1"></span><button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div>'+
+    '<form class="row ai-more hide" style="margin:6px 0 0"><input class="ai-q" placeholder="Follow-up question (e.g. which command shows the IFCP state on the switch?)" style="flex:1;min-width:240px" maxlength="2000"><button class="sec">Ask</button></form></div>';
+  var out=box.querySelector(".ai-out"),go=box.querySelector(".ai-go"),form=box.querySelector(".ai-more");
+  if(!aiState.ok)go.title=aiState.error;
+  function run(q){
+    go.disabled=true;var wait=document.createElement("p");wait.className="mut";wait.textContent="the model is reading the evidence"+(q?" ("+q+")":"")+" ...";out.appendChild(wait);
+    api("/api/ai/ask",{path:ctx.path,link:ctx.link||"",question:q||"",history:hist}).then(function(a){
+      wait.remove();hist.push({q:q||"root cause / debug / fix of "+(ctx.label||a.subject),a:a.answer});
+      var d=document.createElement("div");d.className="ans";
+      d.innerHTML=(q?'<p class="mut"><b>Q:</b> '+esc(q)+"</p>":"")+aiMd(a.answer,a.evidence)+
+        (a.unsafe?'<div class="warn">Careful: the answer suggests a step that changes the rack ("'+esc(a.unsafe)+'") - only with a go-ahead, and not on coupled ports.</div>':"")+
+        ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
+        (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+" - treat those claims with care.</div>":"")+
+        '<details style="margin-top:6px"><summary class="mut">Evidence given to the model ('+a.evidence.length+") · "+esc(String(a.model).split("/").pop())+" · "+a.seconds+" s</summary>"+
+        a.evidence.map(function(x){return '<div style="font-size:12px"><span class="cite">'+x.ref+"</span> "+esc(x.text)+"</div>"}).join("")+"</details>";
+      out.appendChild(d);form.classList.remove("hide");
+    }).catch(function(e){wait.className="err";wait.textContent=e.message}).then(function(){go.disabled=!aiState.ok;go.textContent="Ask again"});
+  }
+  go.addEventListener("click",function(){run("")});
+  form.addEventListener("submit",function(e){e.preventDefault();var q=form.querySelector(".ai-q").value.trim();if(q){form.querySelector(".ai-q").value="";run(q)}});
+}
+
 /* ---------------------------------------------------------------- node pickers (terminal, config) */
 function nodeLabel(n){var a=((mapData&&mapData.afm_names)||{})[n];return a?a+" ("+n+")":n}
 function fillNodePick(id){
@@ -947,6 +1006,7 @@ function termClose(){
   t.x.dispose();t.el.remove();delete terms[t.id];termCur=Object.keys(terms)[0]||null;if(termCur)termShow(termCur);else termTabs();termMsg("");
 }
 $("term-open").addEventListener("click",termOpen);
+aiStatus();
 $("term-close").addEventListener("click",termClose);
 window.addEventListener("resize",termFit);
 
@@ -1548,6 +1608,7 @@ function wireTopoSvg(root){
 function topoHint(){
   if(!mapData||!$("topo-hint"))return;
   topoLegend();
+  if($("topo-ai")&&$("topo-ai").dataset.path!==mapData.path){$("topo-ai").dataset.path=mapData.path;aiPanel($("topo-ai"),{path:mapData.path,label:"this check"})}
   var lv=liveMine()&&live.rack===mapData.rack,age=(Date.now()-Date.parse(String(mapData.time_utc||"").replace(/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/,"$1-$2-$3T$4:$5:$6Z")))/864e5,c=mapData.cabling;
   $("topo-hint").innerHTML=(lv?"<b>Live</b>: link states as they are now (from the logs, re-read every "+Math.round(live.reconcile_s/60)+" min); trays and cabling from the check of "+esc(stampLocal(mapData.time_utc))
       :"From the check of "+esc(stampLocal(mapData.time_utc))+(age>=1?' <span class="err">('+Math.floor(age)+" day"+(Math.floor(age)>1?"s":"")+" old - Check all links, or turn Live on in Rack map, for today's state)</span>":""))+
@@ -1641,7 +1702,7 @@ function mapDetail(k){
     '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
     '<p class="mut">VLAN: '+esc(l.vlans==null?"not read in this check":l.vlans.length?l.vlans.map(function(v){return v[0]+" ("+(v[1]||"untagged")+")"}).join(", "):"none - this GPU port is in no VLAN")+"</p>"+
     '<p class="'+(l.cable&&l.cable!=="confirmed"?"err":"mut")+'">Cable: '+esc(l.cable==="confirmed"?"confirmed by IFCP - the GPU port's peer is "+l.switch+" "+l.sw_port:l.cable||"not confirmed (no IFCP peer: link down, or the tray was not read)")+"</p>"+
-    verdictHtml(mEff(l)==="ok"?"ok":l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+
+    verdictHtml(mEff(l)==="ok"?"ok":l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+'<div id="ai-link"></div>'+
     (live&&liveMine()&&live.links[k]&&mEff(l)!==l.state?'<p class="mut">Live: now <b>'+esc(mEff(l))+"</b> (was "+esc(l.state)+" at the check).</p>":"")+
     '<div id="dd-port"><p class="mut">reading what the check saved about both ends ...</p></div>'+
     (l.evidence&&l.evidence.length?"<details><summary>Evidence</summary>"+l.evidence.map(function(e){return "<div><code>"+esc(e)+"</code></div>"}).join("")+"</details>":"")+
@@ -1649,7 +1710,7 @@ function mapDetail(k){
   $("map-diag").addEventListener("click",function(){$("link-target").value=tgt;tab("link");run("link")});
   $("map-copy").addEventListener("click",function(){try{navigator.clipboard.writeText(tgt)}catch(e){}});
   $("map-watch").addEventListener("click",function(){var ta=$("watch-targets");if(ta.value.indexOf(tgt)<0)ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+tgt;tab("watch")});
-  wireCrumbs();portExtra(k);$("map-detail").scrollIntoView({block:"nearest"});
+  wireCrumbs();portExtra(k);aiPanel($("ai-link"),{path:mapData.path,link:k,label:"link "+k});$("map-detail").scrollIntoView({block:"nearest"});
 }
 ["map-scan","map-prev"].forEach(function(id){$(id).addEventListener("change",mapFetch)});
 $("map-view").addEventListener("change",drawMap);$("map-q").addEventListener("input",drawMap);

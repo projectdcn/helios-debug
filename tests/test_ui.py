@@ -386,3 +386,53 @@ def test_terminal_local_shell_and_config_route(ui, monkeypatch):
     assert "open st1" in log and "close" in log and "hd-" not in log          # what is typed is never logged
     assert call(base, "/static/vendor/xterm/xterm.js")[0] == 200
     assert call(base, "/static/vendor/../server.py")[0] == 404
+
+
+def test_ai_status_and_ask_with_a_stand_in_model(ui, monkeypatch):
+    """The AI reads the saved check, numbers the evidence, calls the OpenAI-compatible server, flags a step that
+    changes the rack, and checks citations; no model = a clear message; bad paths refused."""
+    import threading as _t
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    base, tmp = ui
+    seen, replies = [], []
+
+    class M(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.end_headers()
+            self.wfile.write(b'{"data": [{"id": "stand-in"}]}')
+
+        def do_POST(self):
+            seen.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200); self.end_headers()
+            self.wfile.write(json.dumps({"choices": [{"message": {"content": replies.pop(0)}}]}).encode())
+
+        def log_message(self, *a):
+            pass
+    m = ThreadingHTTPServer(("127.0.0.1", 0), M)
+    _t.Thread(target=m.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("HELIOS_AI_URL", f"http://127.0.0.1:{m.server_address[1]}/v1")
+        st = json.loads(call(base, "/api/ai/status")[1])
+        assert st["reachable"] and st["model"] == "stand-in"
+        d = tmp / "results" / "link-check" / "lab" / "scan-20261024-000000"
+        d.mkdir(parents=True)
+        (d / "link_check.json").write_text(json.dumps({"time_utc": "20261024-000000", "rack": "lab", "learned": {"slots": {"c1": 0}},
+            "links": [{"switch": "st1", "asic": "asic0", "sw_port": "Ethernet8", "tray": "c1", "bdf": "0004:01:00.1", "gpu_port": 31,
+                       "state": "degraded", "kind": "ifcp_down", "cause": "no IFCP session", "evidence": ["ll_up no"]}],
+            "fdb_broken": [{"switch": "st1", "ns": "asic0", "mac": "00:11:22:33:44:55", "vlan": "100", "port": "Ethernet8",
+                            "source": "APPL_DB FDB_TABLE - added at runtime"}]}))
+        replies.append("### Root cause\nThe test entry [E5] breaks show mac [E9]. Reboot the switch.")
+        code, body = call(base, "/api/ai/ask", {"path": "link-check/lab/scan-20261024-000000", "link": "st1 Ethernet8"})
+        a = json.loads(body)
+        assert code == 200 and a["model"] == "stand-in" and a["unsafe"].lower().startswith("reboot")
+        user = seen[-1]["messages"][1]["content"]
+        assert "[E1]" in user and "00:11:22:33:44:55" in user and "no IFCP session" in user
+        assert "E9" in a["unknown_citations"] or "E9" in a["cited"]
+        replies.append("Do not reboot it; check `show mac` [E1].")
+        a = json.loads(call(base, "/api/ai/ask", {"path": "link-check/lab/scan-20261024-000000"})[1])
+        assert a["unsafe"] is None and a["subject"] == "this check of the rack"
+        assert call(base, "/api/ai/ask", {"path": "../etc"})[0] == 400
+        monkeypatch.setenv("HELIOS_AI_URL", "off")
+        assert "turned off" in json.loads(call(base, "/api/ai/ask", {"path": "link-check/lab/scan-20261024-000000"})[1])["error"]
+    finally:
+        m.shutdown()

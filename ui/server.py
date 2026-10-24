@@ -486,6 +486,28 @@ def afm_switch_ids(state: State, rack: str | None) -> dict[str, int]:
     return {}
 
 
+def ai_ask(state: State, req: dict) -> dict:
+    """Ask the AI about a check (path = link-check/<rack>/scan-...), one link of it (+ link = 'st6 Ethernet170') or a
+    Diagnose result (path = link-check/<rack>/link-...). The evidence is built from the saved result, not the rack."""
+    from heliosdbg import ai
+    rel = str(req.get("path") or "").strip("/")
+    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", rel):
+        raise BadRequest("path: link-check/<rack>/scan-... or link-...")
+    q, hist = str(req.get("question") or "")[:2000], req.get("history") or []
+    if not isinstance(hist, list):
+        raise BadRequest("history: a list of {q, a}")
+    try:
+        if "/link-" in rel:
+            ev, subject = ai.diagnose_context(json.loads(_result_file(state, f"{rel}/link.json").read_text()))
+        else:
+            scan = scan_view(state, rel)
+            link = str(req.get("link") or "").strip()
+            ev, subject = ai.link_context(scan, link) if link else ai.check_context(scan)
+        return ai.ask(ev, subject, q, hist)
+    except ai.AIError as e:
+        raise BadRequest(str(e)) from None
+
+
 def node_config(state: State, req: dict) -> dict:
     """The read-only configuration of one switch / compute tray (Config tab): SONiC CONFIG_DB per ASIC, or afmctl's
     GPU and port configuration. Read live, over the same transport as the checks."""
@@ -772,6 +794,9 @@ class Handler(BaseHTTPRequestHandler):
                 r = s.read(int((q.get("since") or ["0"])[0] or 0), wait=15.0)
                 return self._json(200, {"data": base64.b64encode(r["data"]).decode(), "next": r["next"],
                                         "closed": r["closed"], "dropped": r["dropped"]})
+            if u.path == "/api/ai/status":
+                from heliosdbg import ai
+                return self._json(200, ai.status())
             if u.path == "/api/term/list":
                 return self._json(200, {"terminals": st.terms.list()})
             if u.path.startswith("/static/vendor/"):          # the bundled terminal emulator (xterm.js), nothing else
@@ -893,6 +918,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, discover_rack(dict(req, afm_password=pw)))
             if u.path == "/api/inventory/save":
                 return self._json(200, save_inventory(self.state, req))
+            if u.path == "/api/ai/ask":
+                return self._json(200, ai_ask(self.state, req))
             if u.path == "/api/config":
                 return self._json(200, node_config(self.state, req))
             if u.path == "/api/term/open":
