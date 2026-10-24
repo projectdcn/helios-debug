@@ -32,6 +32,10 @@ SYSTEM = (
     "port has one cable to one switch port; AFM programs a static forwarding entry per GPU port and one VLAN per GPU "
     "port number on each chip; IFCP is the link-level control protocol between a GPU port and its switch port (its "
     "peer names the switch port at the other end of the real cable); `show mac` is SONiC's forwarding-table command.\n"
+    "The checker's verdict comes first: if the evidence says the verdict is ok, start with 'The link works' and only "
+    "note what is worth watching - do not turn an ok link into a fault. Transceiver presence 'Not present' is normal "
+    "on these switch trays (the platform reports no transceivers / optics) and is not a finding by itself; a "
+    "'flap count 0' line or a log line about programming a forwarding entry is routine, not an error.\n"
     "How to reason: when many links of one switch chip (or one tray / GPU) share a fault, the cause is what they share "
     "(that chip, its switch agent or AFM's programming of it), not each link; a single bad link points at its cable, "
     "connector or one end.\n"
@@ -142,6 +146,7 @@ def unsafe_text(text: str) -> str | None:
 class Evidence:
     def __init__(self):
         self.items: list[dict] = []
+        self.verdict: str | None = None     # the checker's verdict of the one link asked about (None: a whole check)
 
     def add(self, text, source: str = "") -> None:
         t = re.sub(r"\s+", " ", str(text or "")).strip()
@@ -165,6 +170,7 @@ def _link_facts(ev: Evidence, ln: dict, names: dict, source: str) -> None:
     ev.add(f"Link {sw} {ln.get('asic') or ''} {ln.get('sw_port')} <-> {_nm(tray, names) if tray else 'tray not read'} "
            f"GPU {ln.get('bdf') or '?'} port {ln.get('gpu_port') if ln.get('gpu_port') is not None else '?'}; "
            f"switch {(_nm(sw, names))}; described as '{ln.get('desc') or ''}'", source)
+    ev.verdict = ln.get("state") or None
     ev.add(f"Verdict: {ln.get('state') or '?'}" + (f", kind {ln['kind']}" if ln.get("kind") else "") +
            (f": {ln['cause']}" if ln.get("cause") else "") + (f" (owner: {ln['owner']})" if ln.get("owner") else ""), source)
     if ln.get("action"):
@@ -255,10 +261,21 @@ def diagnose_context(detail: dict) -> tuple[Evidence, str]:
                f"reaches {g.get('vpod_accelerators')} accelerators in its vPOD", "diagnose")
     for x in detail.get("gpu_state") or []:
         ev.add(f"GPU state: {x.get('state')} {x.get('kind')}: {x.get('cause')}", "diagnose")
-    for c in (detail.get("hand_commands") or [])[:6]:
-        ev.add(f"Command the checker suggests for this link: {c}", "diagnose")
-    for t in (detail.get("timeline") or [])[-8:]:
-        ev.add(f"Timeline: {t.get('time') or t.get('t') or ''} {t.get('what') or t.get('text') or t}", "diagnose")
+    for c in (detail.get("hand_commands") or [])[:6]:     # [[node, command], ...]
+        node, cmd = (c[0], c[1]) if isinstance(c, (list, tuple)) and len(c) == 2 else ("", c)
+        ev.add(f"Read-only command for this link: on {node}: {cmd}" if node else f"Read-only command for this link: {cmd}", "diagnose")
+    for c in detail.get("around") or []:                 # what is around the link: agents, node agent, ...
+        if isinstance(c, dict):
+            ev.add(f"Around the link: {c.get('check')}: {'ok' if c.get('ok') else 'NOT OK'} - {c.get('detail')}", "diagnose")
+    tl = detail.get("timeline") or {}
+    events = tl.get("events") if isinstance(tl, dict) else tl if isinstance(tl, list) else []
+    if isinstance(tl, dict) and tl.get("hours"):
+        ev.add(f"Timeline: the last {tl.get('hours')} h of switch / tray logs for this link, {len(events or [])} events", "diagnose")
+    for t in (events or [])[-10:]:
+        if isinstance(t, dict):
+            ev.add(f"Timeline {t.get('t') or ''} {t.get('side') or ''} {t.get('kind') or ''}: {t.get('text') or ''}", "diagnose")
+    for k, v in ((tl.get("errors") or {}).items() if isinstance(tl, dict) else []):
+        ev.add(f"Timeline could not read {k}: {v}", "diagnose")
     return ev, f"diagnosed link {ln.get('switch')} {ln.get('sw_port')}"
 
 
@@ -348,7 +365,12 @@ def wrong_device(text: str) -> list[str]:
 
 def ask(ev: Evidence, subject: str, question: str = "", history: list | None = None, env=None) -> dict:
     """{answer, model, evidence, unsafe, cited, unknown_citations, seconds}."""
-    q = (question or "").strip() or (f"What is the root cause of {subject}, how do I confirm it, and how is it fixed?")
+    q = (question or "").strip()
+    if not q and ev.verdict == "ok":     # a small model otherwise turns a working link into a fault
+        q = (f"The checker found {subject} WORKING (verdict ok). Say so first. Is anything in the evidence worth "
+             f"watching, and how would I keep an eye on it (read-only)? Do not invent a fault.")
+    elif not q:
+        q = f"What is the root cause of {subject}, how do I confirm it, and how is it fixed?"
     turns = [m for h in (history or [])[-6:] if isinstance(h, dict) and h.get("q") and h.get("a")
              for m in ({"role": "user", "content": str(h["q"])[:2000]}, {"role": "assistant", "content": str(h["a"])[:4000]})]
     system = SYSTEM + ("\n" + CHECK_MODE if subject == "this check of the rack" and not turns else "")

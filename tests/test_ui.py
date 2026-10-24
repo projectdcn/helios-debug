@@ -466,3 +466,18 @@ def test_review_fixes_cable_unknown_device_truncated_raw_and_latest_full(ui, tmp
     v = server.latest_full("r", sorted(r.glob("scan-*/link_check.json"), reverse=True), computes=18)
     assert v["latest_full"].endswith("scan-20261018-000000")            # the one-tray old scan is partial
     assert v["newer_partial"]["not_checked"][0]["role"] == "tray"
+
+
+def test_ai_diagnose_context_reads_a_real_shaped_result():
+    """link.json as tools/link_check.py link writes it (timeline is {since, hours, events, errors}; hand_commands are
+    [node, command] pairs; around is a list of checks)."""
+    from heliosdbg import ai
+    ev, subject = ai.diagnose_context({"rack": "mr2", "time_utc": "x", "target": "st1 Ethernet1",
+        "link": {"switch": "st1", "sw_port": "Ethernet1", "state": "degraded", "evidence": ["e1"]},
+        "hand_commands": [["st1", "show interfaces status -n asic0 Ethernet1"]],
+        "around": [{"check": "node agent of slot 0", "ok": False, "detail": "not running"}],
+        "timeline": {"since": "s", "hours": 24, "events": [{"t": "t1", "side": "switch", "kind": "flap", "text": "flap count 3"}],
+                     "errors": {"c1": "unreachable"}}})
+    txt = ev.block()
+    assert "on st1: show interfaces status -n asic0 Ethernet1" in txt and "node agent of slot 0: NOT OK" in txt
+    assert "flap count 3" in txt and "could not read c1" in txt and subject == "diagnosed link st1 Ethernet1"
