@@ -59,6 +59,77 @@ def ns_flag(ns) -> str:
     return f" -n {ns}" if ns else ""
 
 
+class FdbBrokenEntries(RuntimeError):
+    """The switch's forwarding table holds entries without a switch port: SONiC's own `show mac` then fails
+    (KeyError 'SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID') and no link of that switch can be matched. g02-g17 st1 23 Oct:
+    static Vlan100 entries for test MACs 00:11:22:33:44:55 / ...3D:54 written at runtime to APPL_DB FDB_TABLE for
+    ports the hardware had no bridge port for. Reported as a problem on the switch, not worked around."""
+
+    def __init__(self, switch: str, ns, entries: list[dict]):
+        self.switch, self.ns, self.entries = switch, ns, entries
+        shown = "; ".join(f"Vlan{e.get('vlan') or '?'} {e['mac']} -> {e.get('port') or 'no port'} ({e.get('type') or '?'}, "
+                          f"{e.get('source')})" for e in entries[:6])
+        super().__init__(f"forwarding table has {len(entries)} entr{'y' if len(entries) == 1 else 'ies'} without a switch "
+                         f"port on {switch}{' ' + ns if ns else ''} - SONiC `show mac` fails on them, so no link of this "
+                         f"switch could be matched: {shown}{' ...' if len(entries) > 6 else ''}")
+
+
+_BROKEN_FDB_SCRIPT = (                               # one command per ASIC: the ASIC_DB FDB entries without a bridge port
+    "sonic-db-cli{ns} ASIC_DB keys 'ASIC_STATE:SAI_OBJECT_TYPE_FDB_ENTRY:*' | while IFS= read -r k; do "
+    "sonic-db-cli{ns} ASIC_DB hgetall \"$k\" | grep -q SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID || echo \"$k\"; done")
+
+
+def broken_fdb_entries(sw, ns) -> list[dict]:
+    """[{mac, vlan, port, type, source}] of the forwarding entries the hardware holds without a switch port, with
+    what the switch agent asked for (APPL_DB FDB_TABLE: written at runtime) or the configuration (CONFIG_DB)."""
+    import shlex
+    out = sw.sh("bash -c " + shlex.quote(_BROKEN_FDB_SCRIPT.format(ns=ns_flag(ns))), sudo=True, timeout=300)
+    found = []
+    for ln in out.splitlines():
+        m = re.search(r'"mac":"([0-9A-Fa-f:]{17})"', ln)
+        if not m:
+            continue
+        mac = m.group(1).upper()
+        e = {"mac": mac, "vlan": None, "port": None, "type": None, "source": "hardware only"}
+        for db, src in (("APPL_DB", "APPL_DB FDB_TABLE - added at runtime"), ("CONFIG_DB", "CONFIG_DB FDB - configured")):
+            try:
+                keys = [k for k in sw.sh(f"sonic-db-cli{ns_flag(ns)} {db} keys {shlex.quote('FDB*' + mac)}", sudo=True).split()
+                        if k.upper().endswith(mac)]
+            except Exception:  # noqa: BLE001 - the entry is reported with what could be read
+                keys = []
+            if keys:
+                f = parse_db_kv(sw.sh(f"sonic-db-cli{ns_flag(ns)} {db} hgetall {shlex.quote(keys[0])}", sudo=True))
+                vm = re.search(r"Vlan(\d+)", keys[0])
+                e |= {"vlan": vm.group(1) if vm else None, "port": f.get("port"), "type": f.get("type"), "source": src}
+                break
+        found.append(e)
+    return found
+
+
+def parse_db_kv(text: str) -> dict:
+    """sonic-db-cli hgetall output ("{'port': 'Ethernet8', 'type': 'static'}") -> dict."""
+    import ast
+    try:
+        v = ast.literal_eval(text.strip() or "{}")
+        return v if isinstance(v, dict) else {}
+    except (ValueError, SyntaxError):
+        return {}
+
+
+def read_fdb(sw, ns) -> list[dict]:
+    """`show mac` of one ASIC; when SONiC's command fails on entries without a switch port, raise FdbBrokenEntries
+    naming them (instead of a bare KeyError line)."""
+    try:
+        return parse_table(sw.sh(f"show mac{ns_flag(ns)}", sudo=True, timeout=180))
+    except Exception as e:  # noqa: BLE001 - only this known failure is explained; anything else propagates
+        if "SAI_FDB_ENTRY_ATTR" not in str(e):
+            raise
+        entries = broken_fdb_entries(sw, ns)
+        if not entries:
+            raise
+        raise FdbBrokenEntries(sw.host.name, ns, entries) from e
+
+
 # ---------------------------------------------------------------------------------------------- collection
 
 def collect_switch(sw) -> dict:
@@ -69,12 +140,14 @@ def collect_switch(sw) -> dict:
             key = ns or ""
             status = {r.get("Interface"): r for r in parse_table(sw.sh(f"show interfaces status{ns_flag(ns)} -d all"))}
             desc = sw.port_descriptions(ns)
-            fdb = parse_table(sw.sh(f"show mac{ns_flag(ns)}", sudo=True, timeout=180))
+            fdb = read_fdb(sw, ns)
             cnt = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters{ns_flag(ns)} -d all", timeout=180))}
             fec = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters fec-stats{ns_flag(ns)}", timeout=180))}
             pres = {r.get("Port"): r.get("Presence", "") for r in
                     parse_table(sw.run(f"show interfaces transceiver presence{ns_flag(ns)}", sudo=True, timeout=180).stdout)}
             out["asics"][key] = {"status": status, "desc": desc, "fdb": fdb, "counters": cnt, "fec": fec, "presence": pres}
+    except FdbBrokenEntries as e:                   # a problem on the switch: named in full, entries kept
+        out["error"], out["fdb_broken"] = f"FdbBrokenEntries: {e}"[:900], [dict(x, ns=e.ns) for x in e.entries]
     except Exception as e:  # noqa: BLE001 - an unreachable switch is reported, not fatal
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     return out
@@ -86,7 +159,7 @@ def sample_counters(sw, asics: list[str]) -> dict:
         n = ns or None
         cnt = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters{ns_flag(n)} -d all", timeout=180))}
         fec = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters fec-stats{ns_flag(n)}", timeout=180))}
-        fdb = parse_table(sw.sh(f"show mac{ns_flag(n)}", sudo=True, timeout=180))
+        fdb = read_fdb(sw, n)
         out[ns] = {"counters": cnt, "fec": fec, "fdb": fdb}
     return out
 
@@ -583,7 +656,7 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
             sw = rack.switches[n]
             for ns in list(sw_res[n]["asics"]):
                 try:
-                    sw_res[n]["asics"][ns]["fdb"] = parse_table(sw.sh(f"show mac{ns_flag(ns or None)}", sudo=True, timeout=180))
+                    sw_res[n]["asics"][ns]["fdb"] = read_fdb(sw, ns or None)
                 except Exception:  # noqa: BLE001 - keep what we have
                     pass
     fdb_empty = {n for n, v in sw_res.items() if not v.get("error") and v["asics"]

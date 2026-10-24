@@ -55,3 +55,39 @@ def test_known_hosts_with_a_broken_line(tmp_path):
     load_known_hosts(c, str(kh))
     keys = c._system_host_keys                       # load_system_host_keys() fills these, not get_host_keys()
     assert "10.0.0.1" in keys and "10.0.0.2" not in keys
+
+
+def test_show_mac_failure_is_named_as_broken_forwarding_entries():
+    """g02-g17 st1 23 Oct: `show mac` fails with KeyError 'SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID'; the scan names the
+    entries without a switch port (and where they came from) instead of a bare KeyError."""
+    from types import SimpleNamespace
+    from heliosdbg import linkdiag
+
+    class Sw:
+        host = SimpleNamespace(name="st1")
+
+        def sh(self, cmd, **kw):
+            if cmd.startswith("show mac"):
+                raise RuntimeError("[st1] rc=1: show mac -n asic0\n'SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID'")
+            if cmd.startswith("bash -c"):
+                return 'ASIC_STATE:SAI_OBJECT_TYPE_FDB_ENTRY:{"bvid":"oid:0x26","mac":"00:11:22:33:44:55","switch_id":"oid:0x21"}\n'
+            if "APPL_DB keys" in cmd:
+                return "FDB_TABLE:Vlan100:00:11:22:33:44:55\n"
+            if "APPL_DB hgetall" in cmd:
+                return "{'port': 'Ethernet8', 'type': 'static'}"
+            return ""
+    try:
+        linkdiag.read_fdb(Sw(), "asic0")
+        raise AssertionError("expected FdbBrokenEntries")
+    except linkdiag.FdbBrokenEntries as e:
+        assert e.entries == [{"mac": "00:11:22:33:44:55", "vlan": "100", "port": "Ethernet8", "type": "static",
+                              "source": "APPL_DB FDB_TABLE - added at runtime"}]
+        assert "without a switch port on st1 asic0" in str(e) and "Vlan100 00:11:22:33:44:55 -> Ethernet8" in str(e)
+
+    class Other(Sw):
+        def sh(self, cmd, **kw):
+            raise RuntimeError("[st1] rc=255: connection refused")
+    try:
+        linkdiag.read_fdb(Other(), "asic0")
+    except RuntimeError as e:
+        assert not isinstance(e, linkdiag.FdbBrokenEntries)     # other failures are not relabelled

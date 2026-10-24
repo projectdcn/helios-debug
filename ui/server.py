@@ -292,7 +292,31 @@ def overview(state: State) -> list[dict]:
                         "links": len(d.get("links") or []), "gpus_not_right": len(d.get("gpus") or [])}
             except (OSError, ValueError) as e:
                 row["error"] = f"latest scan unreadable: {e}"
+            row |= latest_full(i["rack"], runs)
         out.append(row)
+    return out
+
+
+def latest_full(rack: str, runs: list) -> dict:
+    """The newest scan of the whole rack that checked links (the Topology picture is drawn from it) and, when newer
+    scans are partial (--switches / --trays) or checked no link, the newest of those with what it reported."""
+    out, newer = {}, None
+    for f in runs[:60]:
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        sc = d.get("scope") or {}
+        if not sc.get("switches") and not sc.get("trays") and d.get("links"):
+            out["latest_full"] = f"link-check/{rack}/{f.parent.name}"
+            break
+        if newer is None:
+            newer = {"path": f"link-check/{rack}/{f.parent.name}", "time_utc": d.get("time_utc"),
+                     "only": ", ".join(x for x in (sc.get("switches"), sc.get("trays")) if x),
+                     "links": len(d.get("links") or []), "fdb_broken": d.get("fdb_broken") or [],
+                     "not_checked": [{"node": x.get("node"), "error": str(x.get("error"))[:300]} for x in d.get("not_checked") or []][:6]}
+    if newer and out.get("latest_full"):
+        out["newer_partial"] = newer
     return out
 
 
@@ -480,6 +504,7 @@ def scan_view(state: State, rel: str) -> dict:
     return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
             "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
+            "scope": d.get("scope") or {}, "fdb_broken": d.get("fdb_broken") or [],
             "slots": slots, "switch_ids": sw_ids, "afm_names": afm_names(state, d.get("rack"), slots, sw_ids), "cabling": cabling,
             "gpu_map": (d.get("learned") or {}).get("gpu_map") or {}, "gpu_acc": acc,
             "ifcp_in_use": (d.get("learned") or {}).get("ifcp_in_use", True)}

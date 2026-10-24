@@ -1220,10 +1220,12 @@ function placeDetail(where){var d=$("map-detail");if(where==="topo"){var wr=$("t
   else{var m=$("map");if(d.previousElementSibling!==m)m.insertAdjacentElement("afterend",d);var w2=$("topo-wrap");if(w2)w2.classList.remove("split")}}
 function ensureMap(file){
   var i=invs.filter(function(x){return x.file===file})[0];
-  if(mapData&&i&&mapData.rack===i.rack)return Promise.resolve(mapData);
+  var sc=(mapData&&mapData.scope)||{};      /* reuse only a full check that checked links (the map may show a partial one) */
+  if(mapData&&i&&mapData.rack===i.rack&&mapData.links.length&&!sc.switches&&!sc.trays)return Promise.resolve(mapData);
   return api("/api/overview").then(function(r){var ov=(r.racks||[]).filter(function(x){return x.file===file})[0];
     if(!ov||!ov.latest)throw new Error("no check of g02-g17 yet - run one first (Check all links)");
-    return api("/api/scan?path="+encodeURIComponent(ov.latest)).then(function(d){mapData=d;mapPrev=null;return d})});
+    topoNewer=ov.newer_partial||null;     /* the picture: the newest check of the whole rack, not a one-switch / empty one */
+    return api("/api/scan?path="+encodeURIComponent(ov.latest_full||ov.latest)).then(function(d){mapData=d;mapPrev=null;return d})});
 }
 function topoDrill(x){
   var g=invs.filter(function(i){return i.rack==="g02-g17"})[0];
@@ -1256,7 +1258,7 @@ $("topo-frame").addEventListener("load",function(){
 });
 
 // ---------------------------------------------------------------- topology picture drawn from the check (any rack)
-var topoSel=null,topoMode="link";
+var topoSel=null,topoMode="link",topoNewer=null;
 try{if(localStorage.getItem("hdbg-topo-mode")==="ifcp")topoMode="ifcp"}catch(e){}
 document.querySelectorAll('input[name="topo-mode"]').forEach(function(x){x.checked=x.value===topoMode;
   x.addEventListener("change",function(){if(!x.checked)return;topoMode=x.value;try{localStorage.setItem("hdbg-topo-mode",topoMode)}catch(e){}
@@ -1354,7 +1356,17 @@ function topoHint(){
       :"From the check of "+esc(stampLocal(mapData.time_utc))+(age>=1?' <span class="err">('+Math.floor(age)+" day"+(Math.floor(age)>1?"s":"")+" old - Check all links, or turn Live on in Rack map, for today's state)</span>":""))+
     " ("+mapData.links.length+" links)."+(c?" Cables: "+c.confirmed+" confirmed by IFCP"+(c.miscabled?', <b class="err">'+c.miscabled+" miscabled</b>":", 0 miscabled")+".":"")+
     (topoMode==="ifcp"?" <b>IFCP view</b>: each link by its IFCP control-plane session; miscabled = the GPU port's IFCP peer is another switch port.":"")+
-    " Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture.";
+    " Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture."+topoNewerHtml();
+}
+/* a newer check that was partial or checked no link: say so, and name a problem it found on a switch */
+function topoNewerHtml(){
+  var n=topoNewer;if(!n)return "";
+  var fb=n.fdb_broken||[],nc=n.not_checked||[];
+  return '<div class="verdict '+(fb.length?"down":"degraded")+'" style="margin-top:8px"><b>Newer check '+esc(stampLocal(n.time_utc))+(n.only?" (only "+esc(n.only)+")":"")+": "+n.links+" link"+(n.links===1?"":"s")+" checked</b> - the picture stays on the last full check."+
+    (fb.length?"<br><b>Problem on "+esc(fb[0].switch)+"</b>: "+fb.length+" forwarding entr"+(fb.length===1?"y":"ies")+" without a switch port - SONiC <code>show mac</code> fails on them, so that switch's links could not be checked: "+
+      fb.slice(0,6).map(function(x){return esc((x.ns?x.ns+" ":"")+"Vlan"+(x.vlan||"?")+" "+x.mac+" -> "+(x.port||"no port")+" ("+(x.type||"?")+", "+x.source+")")}).join("; ")+
+      ". Find who added them (they were written at runtime) and have them removed, then check again."
+     :nc.length?"<br>Not read: "+nc.map(function(x){return esc(x.node+": "+x.error)}).join("; "):"")+"</div>";
 }
 /* the colour legend above the picture, with the rack's count per colour, for the view shown */
 function drawTopoInto(){

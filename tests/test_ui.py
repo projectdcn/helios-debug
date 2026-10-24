@@ -338,3 +338,20 @@ def test_live_start_duration_choices(ui, monkeypatch):
     assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 24})[0] == 200
     assert seen["max_s"] == 24 * 3600 and seen["idle_s"] == 1800
     assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 999})[0] == 400
+
+
+def test_topology_uses_the_latest_full_check(tmp_path):
+    """A newer one-switch / empty check does not replace the picture; it is reported with its switch problem."""
+    import json as _j
+    base = tmp_path / "link-check" / "r"
+    for name, body in (("scan-20261019-000000", {"time_utc": "20261019-000000", "links": [{"switch": "st1"}], "scope": {}}),
+                       ("scan-20261024-055727", {"time_utc": "20261024-055727", "links": [], "scope": {"switches": "st1"},
+                                                 "fdb_broken": [{"switch": "st1", "mac": "00:11:22:33:44:55"}]})):
+        (base / name).mkdir(parents=True)
+        (base / name / "link_check.json").write_text(_j.dumps(body))
+    runs = sorted(base.glob("scan-*/link_check.json"), reverse=True)
+    v = server.latest_full("r", runs)
+    assert v["latest_full"] == "link-check/r/scan-20261019-000000"
+    assert v["newer_partial"]["only"] == "st1" and v["newer_partial"]["links"] == 0
+    assert v["newer_partial"]["fdb_broken"][0]["mac"] == "00:11:22:33:44:55"
+    assert "newer_partial" not in server.latest_full("r", runs[1:])     # the full one is the newest: nothing to say

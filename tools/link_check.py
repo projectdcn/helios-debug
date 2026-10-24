@@ -330,6 +330,11 @@ def _not_checked(res) -> list[tuple[str, str, str, str]]:
         if any(w in e for w in ("timed out", "timeout", "no route", "unreachable", "refused", "unable to connect",
                                 "novalidconnections")):
             return "not reachable: check the address in the inventory, the network / VPN, or transport.jump"
+        if "without a switch port" in e:
+            return ("a problem on the switch, not an access problem: its forwarding table holds the entries named - they "
+                    "were added at runtime by the switch agent or a tool (APPL_DB) for ports the hardware has no bridge "
+                    "port for, and SONiC's own `show mac` fails on them. Find who added them (a test? the AIOps work?), "
+                    "have them removed, then check again; until then none of this switch's links can be checked")
         if "sudo" in e:
             return "needs sudo without a password prompt for the inventory user"
         return "see the error"
@@ -714,12 +719,24 @@ def scan_cmd(a) -> int:
         lines.append(f"{'':11}next: {g['action']}")
     nc = _not_checked(res)
     sw_missing = [n for n, r, _e, _h in nc if r == "switch"]
-    if nc:
+    fdb_bad = [(n, sw["fdb_broken"]) for n, sw in res["switches"].items() if sw.get("fdb_broken")]
+    if fdb_bad:                                   # a problem on the switch itself, before the access problems
+        lines.append("")
+        lines.append("PROBLEM ON THE SWITCH - forwarding entries without a switch port (SONiC `show mac` fails on them, "
+                     "so this switch's links could not be checked):")
+        for n, ents in fdb_bad:
+            for x in ents:
+                lines.append(f"  {n} {x.get('ns') or ''} Vlan{x.get('vlan') or '?'} {x['mac']} -> {x.get('port') or 'no port'}"
+                             f" ({x.get('type') or '?'}; {x.get('source')})")
+        lines.append("      -> " + next(h for _n, _r, e, h in nc if "without a switch port" in e))
+    nc_other = [x for x in nc if "without a switch port" not in x[2]]
+    if nc_other:
         lines.append("")
         lines.append("NOT CHECKED - the scan could not read these, so their links are missing or incomplete:")
-        lines += [f"  {r} {n}: {e[:140]}\n      -> {h}" for n, r, e, h in nc]
+        lines += [f"  {r} {n}: {e[:140]}\n      -> {h}" for n, r, e, h in nc_other]
     if not links:
-        lines.append("\nNo link was checked." + (" Fix the access above and scan again." if nc else
+        lines.append("\nNo link was checked." + (" Fix the problem above and check again." if fdb_bad and not nc_other else
+                                                  " Fix the access above and scan again." if nc else
                                                   " No switch port is described as cabled to a compute tray."))
     elif not groups:
         lines.append("No problem found among the links checked." if sw_missing else "All links ok.")
@@ -745,6 +762,7 @@ def scan_cmd(a) -> int:
         "root_causes": [{k: v for k, v in g.items() if k != "links"} | {"links": [f"{x.switch} {x.sw_port}" for x in g["links"]]}
                         for g in groups],
         "not_checked": [{"node": n, "role": r, "error": e, "hint": h} for n, r, e, h in _not_checked(res)],
+        "fdb_broken": [dict(x, switch=n) for n, sw in res["switches"].items() for x in sw.get("fdb_broken") or []],
         "scope": {"switches": getattr(a, "switches", None), "trays": getattr(a, "trays", None)}}, indent=1, default=str))
     write_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), res, groups,
                cmdlog, a.log_keep)
