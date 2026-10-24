@@ -138,6 +138,7 @@ nav button.exp{border-style:dashed}
     <div role="radiogroup" aria-label="what the lines show" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:0 0 6px"><span class="mut">Show</span>
       <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="link" checked style="width:auto;margin:0">Links (physical state)</label>
       <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="ifcp" style="width:auto;margin:0">IFCP (control-plane sessions)</label></div>
+    <div class="legend" id="topo-legend" style="margin:0 0 6px" aria-label="colour legend"></div>
     <p class="mut" id="topo-hint">Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture (below it on a narrow screen).</p>
     <div class="topo-wrap" id="topo-wrap">
       <div id="topo-left">
@@ -1347,21 +1348,28 @@ function wireTopoSvg(root){
 /* what the picture shows: Live, or the check (and how old it is), plus the IFCP cable check */
 function topoHint(){
   if(!mapData||!$("topo-hint"))return;
+  topoLegend();
   var lv=liveMine()&&live.rack===mapData.rack,age=(Date.now()-Date.parse(String(mapData.time_utc||"").replace(/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/,"$1-$2-$3T$4:$5:$6Z")))/864e5,c=mapData.cabling;
   $("topo-hint").innerHTML=(lv?"<b>Live</b>: link states as they are now (from the logs, re-read every "+Math.round(live.reconcile_s/60)+" min); trays and cabling from the check of "+esc(stampLocal(mapData.time_utc))
       :"From the check of "+esc(stampLocal(mapData.time_utc))+(age>=1?' <span class="err">('+Math.floor(age)+" day"+(Math.floor(age)>1?"s":"")+" old - Check all links, or turn Live on in Rack map, for today's state)</span>":""))+
     " ("+mapData.links.length+" links)."+(c?" Cables: "+c.confirmed+" confirmed by IFCP"+(c.miscabled?', <b class="err">'+c.miscabled+" miscabled</b>":", 0 miscabled")+".":"")+
-    (topoMode==="ifcp"?" <b>IFCP view</b>: green = IFCP session up, orange = link up but no IFCP session, red = IFCP error or "+
-      "miscabled (the GPU port's IFCP peer is another switch port), grey = no physical link. "+ifcpSum():"")+
+    (topoMode==="ifcp"?" <b>IFCP view</b>: each link by its IFCP control-plane session; miscabled = the GPU port's IFCP peer is another switch port.":"")+
     " Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture.";
 }
-function ifcpSum(){var c={ok:0,degraded:0,down:0,unknown:0};mapData.links.forEach(function(l){c[ifcpState(l)]++});
-  return "IFCP: "+c.ok+" up, "+c.degraded+" no session, "+c.down+" error / miscabled, "+c.unknown+" no link."}
+/* the colour legend above the picture, with the rack's count per colour, for the view shown */
 function drawTopoInto(){
   var box=$("topo-dyn");if(!box||!mapData)return;
   box.innerHTML=topoSvg(mapData,topoMode==="ifcp").replace('<svg class="topo" width="','<svg class="topo" data-big="1" width="');
   var sv=box.querySelector("svg.topo"),vb=sv.getAttribute("viewBox").split(" ");sv.setAttribute("width",Math.round(+vb[2]*1.1));   /* bigger here than in the map */
   wireTopoSvg(box);
+}
+function topoLegend(){
+  var el=$("topo-legend");if(!el||!mapData)return;var ifcp=topoMode==="ifcp",S=ifcp?ifcpState:mEff,c={ok:0,degraded:0,down:0,unknown:0};
+  mapData.links.forEach(function(l){c[S(l)]=(c[S(l)]||0)+1});
+  var items=ifcp?[["ok","IFCP session up"],["degraded","link up, no IFCP session"],["down","IFCP error / miscabled"],["unknown","no physical link"]]
+                :[["ok","link ok"],["degraded","degraded"],["down","down"],["unknown","not known"]];
+  el.innerHTML=items.map(function(x){return '<span title="'+esc(x[1])+'"><i style="background:'+stColor(x[0])+(x[0]==="ok"?";opacity:.55":"")+'"></i>'+esc(x[1])+' <b>'+c[x[0]]+"</b></span>"}).join("")+
+    '<span class="mut">worst link wins for a line, chip or GPU; problem lines are drawn thicker</span>';
 }
 function loadTopology(){
   var i=inv();if(!i){$("topo-dyn").innerHTML='<p class="mut">Pick a rack at the top right.</p>';return}
