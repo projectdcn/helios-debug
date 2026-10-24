@@ -287,3 +287,27 @@ def test_quarantined_tray_named_on_the_map():
     name_unread_trays(links, slots)
     assert [x["tray"] for x in links] == ["ct05", "ct02", "ct01", None]
     assert slots["ct05"] == 4
+
+
+def test_afm_names_and_ifcp_cabling(tmp_path):
+    """Trays named as AFM shows them (inventory afm_name wins, else pod-<n>-<id>-<kind>); a cable is confirmed when
+    the GPU port's IFCP peer is the link's switch port, miscabled when it is another one."""
+    (tmp_path / "r.yaml").write_text("rack: r\nswitches:\n  - {name: st1, host: a}\n  - {name: st2, host: b}\n"
+                                     "computes:\n  - {name: ct01, host: c, afm_name: pod-2-0-ComputeTray}\n"
+                                     "  - {name: ct02, host: d}\n")
+    st = server.State(tmp_path, tmp_path)
+    ids = server.afm_switch_ids(st, "r")
+    assert server.afm_names(st, "r", {"ct01": 0, "ct02": 1}, ids) == {
+        "st1": "pod-2-0-SwitchTray", "st2": "pod-2-1-SwitchTray", "ct01": "pod-2-0-ComputeTray", "ct02": "pod-2-1-ComputeTray"}
+    trays = {"ct01": {"gpus": [{"bdf": "0004:01:00.1", "ports": [
+        {"port": 31, "ifcp": {"peer_device_id": "1", "peer_port_id": "164"}},
+        {"port": 33, "ifcp": {"peer_device_id": "2", "peer_port_id": "8"}},
+        {"port": 35, "ifcp": {}}]}]}}
+    links = [{"switch": "st1", "sw_port": "Ethernet164", "tray": "ct01", "bdf": "0004:01:00.1", "gpu_port": 31},
+             {"switch": "st1", "sw_port": "Ethernet172", "tray": "ct01", "bdf": "0004:01:00.1", "gpu_port": 33},
+             {"switch": "st1", "sw_port": "Ethernet180", "tray": "ct01", "bdf": "0004:01:00.1", "gpu_port": 35}]
+    n = server.ifcp_cabling(links, trays, {"device": {"st1": "1", "st2": "2"}, "port_is_ethernet": True})
+    assert (n["confirmed"], n["miscabled"], n["unconfirmed"]) == (1, 1, 1)
+    assert links[0]["cable"] == "confirmed" and links[1]["cable"] == "miscabled: the cable reaches st2 Ethernet8"
+    assert "cable" not in links[2]
+    assert server.ifcp_cabling(links[:1], trays, {})["unconfirmed"] == 1     # IFCP naming not learned: no verdict

@@ -558,7 +558,9 @@ function stampShort(st){var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(st
   return (d.getMonth()+1)+"/"+d.getDate()+" "+("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2)}
 function stampLocal(st){var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(st||"");if(!m)return st||"";
   return new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])).toLocaleString()}
-function trayName(t,slots){return t?(t+(slots&&slots[t]!=null?" (AFM slot "+slots[t]+")":"")):"?"}
+/* names as AFM shows them first (pod-1-0-ComputeTray), the rack's own name beside it (ct01) */
+function afmNames(slots){return mapData&&mapData.slots===slots?mapData.afm_names:pickScan&&pickScan.slots===slots?pickScan.afm_names:null}
+function trayName(t,slots){if(!t)return "?";var a=(afmNames(slots)||{})[t];return a?a+" ("+t+")":t+(slots&&slots[t]!=null?" (AFM slot "+slots[t]+")":"")}
 /* AFM numbers trays from 0 (pod-1-0-SwitchTray, slot 0), the rack names from 1 (st1, ct01): show both */
 /* a GPU's number as the switch port descriptions / AFM count it (GPU0-3), from the check's learned gpu_map - not
    from the PCI address: on g02-g17 GPU0 is 0004:01:00.1 and GPU3 is 0001:01:00.1 */
@@ -569,7 +571,11 @@ function gAcc(t,g){var a=((mapData||{}).gpu_acc||{})[t+":"+g];return a!=null?" a
 function gName(t,g){var n=gpuNum(t,g,(mapData||{}).gpu_map);return n!=null?"GPU"+n+gAcc(t,g)+" ("+g+")":g+gAcc(t,g)}
 function gShort(t,g){var n=gpuNum(t,g,(mapData||{}).gpu_map);return n!=null?"GPU"+n:g}
 function gOrder(t){return function(a,b){var na=gpuNum(t,a,(mapData||{}).gpu_map),nb=gpuNum(t,b,(mapData||{}).gpu_map);return na!=null&&nb!=null?na-nb:(a<b?-1:1)}}
-function swName(sw,ids){return sw+(ids&&ids[sw]!=null?" (AFM "+ids[sw]+")":"")}
+/* the physical cable check: each GPU port's IFCP session names the switch port at the other end of its real cable */
+function cableSum(d){var c=d.cabling;if(!c)return "";var t="the GPU port's IFCP peer is the switch port the description and forwarding table say - the cable really lands there";
+  return '<span title="'+esc(t)+'">Cables: <b>'+c.confirmed+"</b> confirmed by IFCP"+(c.miscabled?' · <b class="err">'+c.miscabled+" miscabled</b>":" · 0 miscabled")+(c.unconfirmed?" · "+c.unconfirmed+" not confirmable (link down / tray not read)":"")+"</span>"+
+    (c.examples&&c.examples.length?'<span class="err">'+esc(c.examples.slice(0,4).join("; "))+"</span>":"")}
+function swName(sw,ids){var a=((mapData||{}).afm_names||{})[sw];return a?a+" ("+sw+")":sw+(ids&&ids[sw]!=null?" (AFM "+ids[sw]+")":"")}
 function verdictHtml(state,kind,detail,owner,extraSteps){
   var h=kindHelp(state==="ok"?"ok":kind),steps=(h.s||[]).concat(extraSteps||[]);
   return '<div class="verdict '+esc(state)+'"><h3>'+esc(h.t)+" "+badge(state)+"</h3>"+(h.m?"<div>"+esc(h.m)+"</div>":"")+
@@ -967,7 +973,7 @@ function drawMap(){
   var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
     (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+" not known (GPU end not readable - see Access to the rack)</span>":"")+"</span>"+
-    (q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
+    cableSum(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
   document.querySelectorAll("#map a.dd").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();
     if(a.dataset.dt)drillTray(a.dataset.dt);else if(a.dataset.dg){var x=a.dataset.dg.split("|");drillGpu(x[0],x[1])}
@@ -1247,7 +1253,7 @@ function topoSvg(d){
   ls.forEach(function(l){var a=l.switch+"|"+(l.asic||"");(sws[l.switch]=sws[l.switch]||{})[l.asic||""]=1;
     var t=l.tray||"(no tray)";(trays[t]=trays[t]||{})[mGpu(l)]=1;var k=t+"#"+a;(pairs[k]=pairs[k]||[]).push(l)});
   var swN=Object.keys(sws).sort(),trN=Object.keys(trays).sort(function(a,b){var sa=(d.slots||{})[a],sb=(d.slots||{})[b];return (sa==null?999:sa)-(sb==null?999:sb)||(a<b?-1:1)});
-  var SWW=Math.max(150,Object.keys(sws[swN[0]]||{}).length*76+12),SWG=12,TW=112,TG=8,perRow=Math.min(9,Math.max(1,trN.length)),rows=Math.ceil(trN.length/perRow);
+  var SWW=Math.max(150,Object.keys(sws[swN[0]]||{}).length*76+12),SWG=12,TW=(d.afm_names?150:112),TG=8,perRow=Math.min(9,Math.max(1,trN.length)),rows=Math.ceil(trN.length/perRow);
   var W=Math.max(swN.length*(SWW+SWG)+20,perRow*(TW+TG)+20),SY=20,ASY=126,TY0=200,TH=90,H=TY0+rows*(TH+22)+6;
   var asicPos={},trayPos={},gpuPos={},o=[];
   o.push('<svg class="topo" width="'+Math.round(W*0.85)+'" viewBox="0 0 '+W+" "+H+'" role="img" aria-label="Cabling picture of '+esc(d.rack)+'">');
@@ -1255,8 +1261,9 @@ function topoSvg(d){
   // switch trays + ASICs
   swN.forEach(function(sw,i){var x=10+i*(SWW+SWG)+(W-20-swN.length*(SWW+SWG)+SWG)/2,asics=Object.keys(sws[sw]).sort(),all=ls.filter(function(l){return l.switch===sw}),c=mCount(all);
     o.push('<rect class="box" x="'+x+'" y="'+SY+'" width="'+SWW+'" height="118" rx="8"/>');
-    o.push('<text class="clk" data-tsw="'+esc(sw)+'" x="'+(x+10)+'" y="'+(SY+18)+'" font-size="14" font-weight="600">'+esc(sw)+"</text>");
-    o.push('<text class="m" x="'+(x+SWW-10)+'" y="'+(SY+18)+'" font-size="11" text-anchor="end">'+((d.switch_ids||{})[sw]!=null?"AFM "+d.switch_ids[sw]+(c.down?" · "+c.down+" down":""):all.length+" links"+(c.down?" · "+c.down+" down":""))+"</text>");
+    o.push('<text class="clk" data-tsw="'+esc(sw)+'" x="'+(x+10)+'" y="'+(SY+18)+'" font-size="'+((d.afm_names||{})[sw]?12:14)+'" font-weight="600">'+esc((d.afm_names||{})[sw]||sw)+"</text>");
+    o.push('<text class="m" x="'+(x+SWW-10)+'" y="'+(SY+18)+'" font-size="11" text-anchor="end">'+((d.afm_names||{})[sw]?"":(d.switch_ids||{})[sw]!=null?"AFM "+d.switch_ids[sw]+(c.down?" · "+c.down+" down":""):all.length+" links"+(c.down?" · "+c.down+" down":""))+"</text>");
+    if((d.afm_names||{})[sw])o.push('<text class="m" x="'+(x+10)+'" y="'+(SY+114)+'" font-size="10">'+esc(sw)+" · "+all.length+" links"+(c.down?" · "+c.down+" down":"")+"</text>");
     var aw=(SWW-12-(asics.length-1)*6)/Math.max(1,asics.length);
     asics.forEach(function(a,j){var ax=x+6+j*(aw+6),al=all.filter(function(l){return (l.asic||"")===a}),ca=mCount(al),wst=worst(al);
       asicPos[sw+"|"+a]={x:ax+aw/2,y:ASY};
@@ -1273,15 +1280,16 @@ function topoSvg(d){
       gp=Object.keys(trays[t]).sort(function(a,b){var na=gpuNum(t,a,d.gpu_map),nb=gpuNum(t,b,d.gpu_map);return na!=null&&nb!=null?na-nb:(a<b?-1:1)}),tl=ls.filter(function(l){return (l.tray||"(no tray)")===t}),c=mCount(tl),w=worst(tl);
     trayPos[t]={x:x+TW/2,y:y};
     o.push('<rect class="box" x="'+x+'" y="'+y+'" width="'+TW+'" height="'+TH+'" rx="8" stroke="'+(w==="ok"?"var(--rule)":stColor(w))+'"/>');
-    o.push('<text class="clk" data-ttr="'+esc(t)+'" x="'+(x+8)+'" y="'+(y+17)+'" font-size="13" font-weight="600">'+esc(t)+"</text>");
-    o.push('<text class="m" x="'+(x+TW-8)+'" y="'+(y+17)+'" font-size="10" text-anchor="end">'+((d.slots||{})[t]!=null?"AFM slot "+d.slots[t]:"")+"</text>");
+    var an=(d.afm_names||{})[t];
+    o.push('<text class="clk" data-ttr="'+esc(t)+'" x="'+(x+8)+'" y="'+(y+17)+'" font-size="'+(an?11:13)+'" font-weight="600">'+esc(an||t)+"</text>");
+    o.push('<text class="m" x="'+(x+TW-8)+'" y="'+(y+17)+'" font-size="10" text-anchor="end">'+(an?"":(d.slots||{})[t]!=null?"AFM slot "+d.slots[t]:"")+"</text>");
     var gw=Math.min(22,(TW-16)/Math.max(1,gp.length)-4);
     gp.forEach(function(g,j){var gx=x+8+j*((TW-16)/gp.length)+((TW-16)/gp.length-gw)/2,gy=y+28,gl=tl.filter(function(l){return mGpu(l)===g}),gs=worst(gl),sel=topoSel===t+"|"+g;
       gpuPos[t+"|"+g]={x:gx+gw/2,y:gy};
       o.push('<g class="clk" data-tgp="'+esc(t+"|"+g)+'"><title>'+esc(t+" GPU"+(gpuNum(t,g,d.gpu_map)!=null?gpuNum(t,g,d.gpu_map)+" ("+g+")":" "+g)+": "+gl.length+" links, "+worst(gl))+'</title><rect x="'+gx+'" y="'+gy+'" width="'+gw+'" height="'+gw+'" rx="3" fill="'+stColor(gs)+'" fill-opacity="'+(gs==="ok"?.35:.9)+'" stroke="'+(sel?"var(--acc)":"none")+'" stroke-width="2.5"/>'+
         '<text class="m" x="'+(gx+gw/2)+'" y="'+(gy+gw+12)+'" font-size="9.5" text-anchor="middle">'+esc(g.indexOf(":")>0?(gpuNum(t,g,d.gpu_map)!=null?"G"+gpuNum(t,g,d.gpu_map):g.slice(0,4)):g.replace(" (described)","*").replace("GPU","G"))+"</text></g>");
     });
-    o.push('<text class="m" x="'+(x+8)+'" y="'+(y+TH-10)+'" font-size="10">'+tl.length+" links"+(c.down?" · "+c.down+" down":"")+(c.degraded?" · "+c.degraded+" deg":"")+(c.unknown?" · "+c.unknown+" ?":"")+"</text>");
+    o.push('<text class="m" x="'+(x+8)+'" y="'+(y+TH-10)+'" font-size="10">'+(an?esc(t)+" · ":"")+tl.length+" links"+(c.down?" · "+c.down+" down":"")+(c.degraded?" · "+c.degraded+" deg":"")+(c.unknown?" · "+c.unknown+" ?":"")+"</text>");
   });
   o.push("</svg>");
   topoSvg._geo={asicPos:asicPos,trayPos:trayPos,gpuPos:gpuPos,pairs:pairs,ls:ls};
@@ -1329,9 +1337,10 @@ function mapDetail(k){
   var tgt=l.switch+" "+l.sw_port;
   $("map-detail").classList.remove("hide");
   $("map-detail").innerHTML=crumbs([["Rack",function(){drillRack()}],[trayName(l.tray,mapData.slots),function(){drillTray(l.tray||"(no tray)")}],
-      [gShort(l.tray,mGpu(l)),function(){drillGpu(l.tray||"(no tray)",mGpu(l))}],["port "+mGpuPort(l)]],[[l.switch,function(){drillSwitch(l.switch)}],[(l.asic||""),function(){drillAsic(l.switch,l.asic||"")}],[l.sw_port]])+
+      [gShort(l.tray,mGpu(l)),function(){drillGpu(l.tray||"(no tray)",mGpu(l))}],["port "+mGpuPort(l)]],[[swName(l.switch,mapData.switch_ids),function(){drillSwitch(l.switch)}],[(l.asic||""),function(){drillAsic(l.switch,l.asic||"")}],[l.sw_port]])+
     "<h2>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" \u2194 "+trayName(l.tray,mapData.slots)+" "+gName(l.tray,mGpu(l))+" port "+mGpuPort(l))+" "+badge(mEff(l))+"</h2>"+
     '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
+    '<p class="'+(l.cable&&l.cable!=="confirmed"?"err":"mut")+'">Cable: '+esc(l.cable==="confirmed"?"confirmed by IFCP - the GPU port's peer is "+l.switch+" "+l.sw_port:l.cable||"not confirmed (no IFCP peer: link down, or the tray was not read)")+"</p>"+
     verdictHtml(mEff(l)==="ok"?"ok":l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+
     (live&&liveMine()&&live.links[k]&&mEff(l)!==l.state?'<p class="mut">Live: now <b>'+esc(mEff(l))+"</b> (was "+esc(l.state)+" at the check).</p>":"")+
     '<div id="dd-port"><p class="mut">reading what the check saved about both ends ...</p></div>'+

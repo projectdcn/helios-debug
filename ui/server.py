@@ -379,16 +379,65 @@ AFM_NAME_ID_RX = re.compile(r"^pod-\d+-(\d+)-")
 TRAY_NUM_RX = re.compile(r"^[a-z]+0*(\d+)$", re.I)
 
 
-def afm_switch_ids(state: State, rack: str | None) -> dict[str, int]:
-    """{switch name: AFM SwitchTray id} for the rack's inventory. AFM numbers from 0 (pod-1-0-SwitchTray), the rack
-    names from 1 (st1): the inventory's slot: or afm_name wins, else st<n> = n-1, else the order in the inventory."""
+def _rack_inventory(state: State, rack: str | None):
     for f in sorted(state.inventory_dir.glob("*.yaml")):
         try:
             inv = load_inventory(f)
         except Exception:  # noqa: BLE001 - a broken inventory is listed with its error elsewhere
             continue
-        if (inv.rack or f.stem) != rack:
+        if (inv.rack or f.stem) == rack:
+            return inv
+    return None
+
+
+AFM_POD_RX = re.compile(r"^(pod-\d+)-\d+-")
+
+
+def afm_names(state: State, rack: str | None, slots: dict, switch_ids: dict) -> dict[str, str]:
+    """{tray name: AFM node name} - what AFM shows: pod-1-0-SwitchTray, pod-1-0-ComputeTray. The inventory's
+    afm_name wins; else pod-<n>-<AFM id>-<kind> with the pod taken from any afm_name in the inventory (pod-1 if none)."""
+    inv = _rack_inventory(state, rack)
+    hosts = (inv.all_switches + inv.computes + [h for h in inv.quarantined if h.role == "compute"]) if inv else []
+    given = {h.name: str(h.extra["afm_name"]) for h in hosts if h.extra.get("afm_name")}
+    pod = next((m.group(1) for m in map(AFM_POD_RX.match, given.values()) if m), "pod-1")
+    out = {n: f"{pod}-{i}-SwitchTray" for n, i in switch_ids.items()}
+    out |= {n: f"{pod}-{sl}-ComputeTray" for n, sl in slots.items() if sl is not None}
+    return out | given
+
+
+def ifcp_cabling(links: list, trays: dict, ifcp: dict) -> dict:
+    """Is each cable where AFM says? A GPU port's IFCP session names the switch device / port at the other end of
+    its real cable (peer_device_id / peer_port_id); compared with the switch port of the link (description +
+    forwarding entry). Sets link['cable'] = confirmed / miscabled; returns the counts."""
+    dev = {str(v): k for k, v in ((ifcp or {}).get("device") or {}).items()}
+    by_port = {(tn, g.get("bdf"), p.get("port")): (p.get("ifcp") or {}) for tn, t in (trays or {}).items()
+               for g in (t or {}).get("gpus") or [] for p in g.get("ports") or []}
+    n = {"confirmed": 0, "miscabled": 0, "unconfirmed": 0, "examples": []}
+    if not dev or not (ifcp or {}).get("port_is_ethernet"):
+        n["unconfirmed"] = len(links)
+        return n
+    for ln in links:
+        i = by_port.get((ln.get("tray"), ln.get("bdf"), ln.get("gpu_port"))) or {}
+        if i.get("peer_device_id") in (None, "") or not ln.get("bdf"):
+            n["unconfirmed"] += 1
             continue
+        peer = (dev.get(str(i["peer_device_id"])) or f"device {i['peer_device_id']}", f"Ethernet{i.get('peer_port_id')}")
+        if peer == (ln.get("switch"), ln.get("sw_port")):
+            ln["cable"] = "confirmed"
+            n["confirmed"] += 1
+        else:
+            ln["cable"] = "miscabled: the cable reaches " + " ".join(peer)
+            n["miscabled"] += 1
+            if len(n["examples"]) < 20:
+                n["examples"].append(f"{ln.get('switch')} {ln.get('sw_port')}: reaches {' '.join(peer)}")
+    return n
+
+
+def afm_switch_ids(state: State, rack: str | None) -> dict[str, int]:
+    """{switch name: AFM SwitchTray id} for the rack's inventory. AFM numbers from 0 (pod-1-0-SwitchTray), the rack
+    names from 1 (st1): the inventory's slot: or afm_name wins, else st<n> = n-1, else the order in the inventory."""
+    inv = _rack_inventory(state, rack)
+    if inv:
         out = {}
         for i, h in enumerate(inv.all_switches):
             m, n = AFM_NAME_ID_RX.match(str(h.extra.get("afm_name") or "")), TRAY_NUM_RX.match(h.name)
@@ -409,21 +458,24 @@ def scan_view(state: State, rel: str) -> dict:
     links = [{k: ln.get(k) for k in LINK_KEYS} | {"evidence": (ln.get("evidence") or [])[:8]} for ln in d.get("links") or []]
     slots = dict((d.get("learned") or {}).get("slots") or {})
     name_unread_trays(links, slots)
-    acc = {}                                          # {tray:bdf: accelerator id} as the trays reported it (= AFM acc-id)
+    acc, trays = {}, {}                               # {tray:bdf: accelerator id} as the trays reported it (= AFM acc-id)
     raw = f.parent / "raw" / "trays.json.gz"
     if raw.is_file():
         import gzip
         try:
-            for tn, t in json.load(gzip.open(raw, "rt")).items():
+            trays = json.load(gzip.open(raw, "rt"))
+            for tn, t in trays.items():
                 for g in (t or {}).get("gpus") or []:
                     if g.get("bdf") and str(g.get("accelerator", "")).isdigit():
                         acc[f"{tn}:{g['bdf']}"] = int(g["accelerator"])
         except (OSError, ValueError):
-            acc = {}
+            acc, trays = {}, {}
+    cabling = ifcp_cabling(links, trays, (d.get("learned") or {}).get("ifcp"))
+    sw_ids = afm_switch_ids(state, d.get("rack"))
     return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
             "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
-            "slots": slots, "switch_ids": afm_switch_ids(state, d.get("rack")),
+            "slots": slots, "switch_ids": sw_ids, "afm_names": afm_names(state, d.get("rack"), slots, sw_ids), "cabling": cabling,
             "gpu_map": (d.get("learned") or {}).get("gpu_map") or {}, "gpu_acc": acc,
             "ifcp_in_use": (d.get("learned") or {}).get("ifcp_in_use", True)}
 
