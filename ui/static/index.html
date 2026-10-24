@@ -1307,6 +1307,7 @@ function topoSvg(d,mode){
   var ls=mode==="vlan"&&topoVlan!=="all"?d.links.filter(function(l){return (l.vlans||[]).some(function(v){return v[0]===topoVlan})}):d.links,sws={},trays={},pairs={};
   ls.forEach(function(l){var a=l.switch+"|"+(l.asic||"");(sws[l.switch]=sws[l.switch]||{})[l.asic||""]=1;
     var t=l.tray||"(no tray)";(trays[t]=trays[t]||{})[mGpu(l)]=1;var k=t+"#"+a;(pairs[k]=pairs[k]||[]).push(l)});
+  var unread={};(d.not_checked||[]).forEach(function(x){if(x.role==="switch"){unread[x.node]=x;sws[x.node]=sws[x.node]||{}}});
   var swN=Object.keys(sws).sort(),trN=Object.keys(trays).sort(function(a,b){var sa=(d.slots||{})[a],sb=(d.slots||{})[b];return (sa==null?999:sa)-(sb==null?999:sb)||(a<b?-1:1)});
   var SWW=Math.max(150,Object.keys(sws[swN[0]]||{}).length*76+12),SWG=12,TW=(d.afm_names?150:112),TG=8,perRow=Math.min(9,Math.max(1,trN.length)),rows=Math.ceil(trN.length/perRow);
   var W=Math.max(swN.length*(SWW+SWG)+20,perRow*(TW+TG)+20),SY=20,ASY=126,TY0=200,TH=90,H=TY0+rows*(TH+22)+6;
@@ -1315,6 +1316,16 @@ function topoSvg(d,mode){
   o.push('<g class="tp-lines"></g>');
   // switch trays + ASICs
   swN.forEach(function(sw,i){var x=10+i*(SWW+SWG)+(W-20-swN.length*(SWW+SWG)+SWG)/2,asics=Object.keys(sws[sw]).sort(),all=ls.filter(function(l){return l.switch===sw}),c=TC(all);
+    if(unread[sw]&&!all.length){                     /* not checked: say why in the box, no chips to draw */
+      var nb=(d.fdb_broken||[]).filter(function(f){return f.switch===sw}).length,why=nb?nb+" forwarding entr"+(nb===1?"y":"ies")+" without a switch port":String(unread[sw].error||"").split(":")[0];
+      o.push('<g class="clk" data-tsw="'+esc(sw)+'"><title>'+esc(sw+" not checked: "+(unread[sw].error||""))+'</title><rect class="box" x="'+x+'" y="'+SY+'" width="'+SWW+'" height="118" rx="8" stroke="var(--down)" stroke-width="2" stroke-dasharray="5 3"/>'+
+        '<text x="'+(x+10)+'" y="'+(SY+18)+'" font-size="'+((d.afm_names||{})[sw]?12:14)+'" font-weight="600">'+esc((d.afm_names||{})[sw]||sw)+"</text>"+
+        '<text x="'+(x+SWW/2)+'" y="'+(SY+52)+'" font-size="12" font-weight="600" text-anchor="middle" fill="var(--down)">not checked</text>'+
+        '<text x="'+(x+SWW/2)+'" y="'+(SY+70)+'" font-size="10" text-anchor="middle" fill="var(--down)">'+esc(why.length>34?why.slice(0,33)+"…":why)+"</text>"+
+        (nb?'<text x="'+(x+SWW/2)+'" y="'+(SY+84)+'" font-size="10" text-anchor="middle" fill="var(--down)">(show mac fails on them)</text>':"")+
+        '<text class="m" x="'+(x+10)+'" y="'+(SY+114)+'" font-size="10">'+esc(sw)+"</text></g>");
+      return;
+    }
     o.push('<rect class="box" x="'+x+'" y="'+SY+'" width="'+SWW+'" height="118" rx="8"/>');
     o.push('<text class="clk" data-tsw="'+esc(sw)+'" x="'+(x+10)+'" y="'+(SY+18)+'" font-size="'+((d.afm_names||{})[sw]?12:14)+'" font-weight="600">'+esc((d.afm_names||{})[sw]||sw)+"</text>");
     o.push('<text class="m" x="'+(x+SWW-10)+'" y="'+(SY+18)+'" font-size="11" text-anchor="end">'+((d.afm_names||{})[sw]?"":(d.switch_ids||{})[sw]!=null?"AFM "+d.switch_ids[sw]+(c.down?" · "+c.down+" down":""):all.length+" links"+(c.down?" · "+c.down+" down":""))+"</text>");
@@ -1392,13 +1403,25 @@ function vlanSum(){
 }
 /* a newer check that was partial or checked no link: say so, and name a problem it found on a switch */
 function topoNewerHtml(){
-  var n=topoNewer;if(!n)return "";
-  var fb=n.fdb_broken||[],nc=n.not_checked||[];
-  return '<div class="verdict '+(fb.length?"down":"degraded")+'" style="margin-top:8px"><b>Newer check '+esc(stampLocal(n.time_utc))+(n.only?" (only "+esc(n.only)+")":"")+": "+n.links+" link"+(n.links===1?"":"s")+" checked</b> - the picture stays on the last full check."+
-    (fb.length?"<br><b>Problem on "+esc(fb[0].switch)+"</b>: "+fb.length+" forwarding entr"+(fb.length===1?"y":"ies")+" without a switch port - SONiC <code>show mac</code> fails on them, so that switch's links could not be checked: "+
-      fb.slice(0,6).map(function(x){return esc((x.ns?x.ns+" ":"")+"Vlan"+(x.vlan||"?")+" "+x.mac+" -> "+(x.port||"no port")+" ("+(x.type||"?")+", "+x.source+")")}).join("; ")+
-      ". Find who added them (they were written at runtime) and have them removed, then check again."
-     :nc.length?"<br>Not read: "+nc.map(function(x){return esc(x.node+": "+x.error)}).join("; "):"")+"</div>";
+  var n=topoNewer,h="";
+  if(mapData)h+=switchProblemsHtml(mapData.fdb_broken||[],(mapData.not_checked||[]).filter(function(x){return x.role==="switch"}),
+    "<b>In this check</b>: ");
+  if(!n)return h;
+  return h+switchProblemsHtml(n.fdb_broken||[],n.not_checked||[],"<b>Newer check "+esc(stampLocal(n.time_utc))+(n.only?" (only "+esc(n.only)+")":"")+": "+n.links+" link"+(n.links===1?"":"s")+
+    " checked</b> - the picture stays on the last full check. ",true);
+}
+/* switches a check could not judge: forwarding entries without a switch port per switch (where they came from), other errors */
+function switchProblemsHtml(fb,nc,head,always){
+  var by={};fb.forEach(function(x){(by[x.switch]=by[x.switch]||[]).push(x)});
+  var other=nc.filter(function(x){return !by[x.node]&&String(x.error||"").indexOf("without a switch port")<0});
+  if(!fb.length&&!other.length&&!always)return "";
+  var rows=Object.keys(by).sort().map(function(sw){var e=by[sw],src={};e.forEach(function(x){var k=x.source.indexOf("APPL")===0?"added at runtime (APPL_DB)":x.source.indexOf("CONFIG")===0?"configured":"in the hardware only";src[k]=(src[k]||0)+1});
+    return "<li><b>"+esc(swName(sw,mapData.switch_ids))+"</b>: "+e.length+" forwarding entr"+(e.length===1?"y":"ies")+" without a switch port ("+esc(Object.keys(src).map(function(k){return src[k]+" "+k}).join(", "))+"): "+
+      esc(e.slice(0,4).map(function(x){return (x.ns?x.ns+" ":"")+"Vlan"+(x.vlan||"?")+" "+x.mac+" -> "+(x.port||"no port")}).join("; ")+(e.length>4?" …":""))+"</li>"}).join("")+
+    other.map(function(x){return "<li><b>"+esc(x.node)+"</b> not read: "+esc(String(x.error).slice(0,160))+"</li>"}).join("");
+  return '<div class="verdict '+(fb.length?"down":"degraded")+'" style="margin-top:8px">'+head+(fb.length?"SONiC <code>show mac</code> fails on these switches, so their links could not be checked (drawn dashed):":"")+
+    (rows?"<ul style=\"margin:4px 0 0 18px;padding:0\">"+rows+"</ul>":"")+
+    (fb.length?'<div class="who">Find who added them (APPL_DB = written at runtime by the switch agent or a tool; hardware only = left in the ASIC with no request behind it) and have them removed, then check again.</div>':"")+"</div>";
 }
 /* a chip's VLANs: members, GPU port numbers, tagging, trays, and the VLAN problems on it */
 function vlanTable(ls,where){
