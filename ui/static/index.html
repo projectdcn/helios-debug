@@ -778,7 +778,9 @@ function liveBar(){
     b.innerHTML='<span class="dot"></span><b>Live</b><span>on since '+esc(new Date(live.started*1000).toLocaleTimeString())+" ("+mm2(Date.now()/1000-live.started)+")"+
       " · "+(live.jump_limited?"re-reads only (jump host)":conn+" of "+streams.length+" log streams connected")+
       " · re-read every "+Math.round(live.reconcile_s/60)+" min ("+live.reconciles+" done)"+
-      " · last change "+(live.last_event?esc(new Date(live.last_event).toLocaleTimeString()):"-")+"</span>"+
+      " · last change "+(live.last_event?esc(new Date(live.last_event).toLocaleTimeString()):"-")+
+      " · "+(live.max_s?"stops by itself at "+esc(new Date((live.started+live.max_s)*1000).toLocaleString([],{weekday:"short",hour:"2-digit",minute:"2-digit"})):"runs until turned off")+
+      (live.idle_s?" or "+Math.round(live.idle_s/60)+" min after no page is open":"")+"</span>"+
       (bad.length?'<span class="err">'+esc(bad.length+" not connected: ")+bad.map(function(n){return esc(n)+" ("+friendly(f[n].error)+")"}).join("; ")+"</span>":"")+
       '<button class="sec" id="live-off">Turn live off</button>';
     $("live-off").addEventListener("click",function(){api("/api/live/stop",{}).then(livePoll)});
@@ -787,11 +789,13 @@ function liveBar(){
     var why=live&&!live.running&&live.stop_reason&&live.inventory===(i&&i.file)?' <span class="mut">Last live session: '+esc(live.stop_reason)+".</span>":"";
     b.className="live-bar";
     b.innerHTML='<span class="dot"></span><b>Live: off</b> <span class="mut">The map shows the last check. Live mode follows the switch and tray logs and re-reads every few minutes, '+
-      'so the map changes as links change. It keeps a connection open to every tray - turn it off when done (it stops by itself after 8 h, or 30 min after nobody looks).</span>'+
+      'so the map changes as links change. It keeps a connection open to every tray - turn it off when done.</span>'+
       '<label class="checks" style="margin:0">re-read every <select id="live-rec" style="width:auto;margin-left:4px"><option value="60">1 min</option><option value="300" selected>5 min</option><option value="900">15 min</option></select></label>'+
+      '<label class="checks" style="margin:0">stop after <select id="live-max" style="width:auto;margin-left:4px"><option value="8" selected>8 h</option><option value="24">24 h</option><option value="72">3 days</option><option value="0">until turned off</option></select></label>'+
+      '<label class="checks" style="margin:0" title="otherwise it stops 30 min after the last page showing this UI was closed"><input type="checkbox" id="live-keep">keep on when no page is open</label>'+
       '<button class="go" id="live-on">Turn live on</button>'+other+why;
     $("live-on").addEventListener("click",function(){$("live-on").disabled=true;$("live-on").textContent="starting ...";
-      api("/api/live/start",{inventory:i.file,reconcile_s:+$("live-rec").value}).then(function(){liveSeq=0;liveChanges=[];livePoll()})
+      api("/api/live/start",{inventory:i.file,reconcile_s:+$("live-rec").value,max_h:+$("live-max").value,keep_unwatched:$("live-keep").checked}).then(function(){liveSeq=0;liveChanges=[];livePoll()})
       .catch(function(e){b.insertAdjacentHTML("beforeend",'<span class="err">'+friendly(e.message)+"</span>");$("live-on").disabled=false;$("live-on").textContent="Turn live on"})});
   }
 }

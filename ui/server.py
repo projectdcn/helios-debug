@@ -580,6 +580,8 @@ def live_start(state: State, req: dict) -> dict:
         state.live = LiveRack(Rack(inv), links, rack_name=inv.rack or f.stem,
                               ifcp_in_use=bool((d.get("learned") or {}).get("ifcp_in_use", False)),
                               reconcile_s=float(_int(req, "reconcile_s", 60, 3600, 300)), afm=afm,
+                              max_s=None if _int(req, "max_h", 0, 168, 8) == 0 else _int(req, "max_h", 0, 168, 8) * 3600.0,
+                              idle_s=None if req.get("keep_unwatched") is True else 1800.0,
                               log_dir=state.results_dir / "live", last_view=lambda: state.live_view,
                               jump_limited=jump.get("via") == "exec")
         state.live_inventory = name

@@ -143,3 +143,20 @@ def test_gpu_end_never_read_is_unknown_not_ok():
     assert live.link_state({"sw_oper": "up", "scan_state": "down", "scan_kind": "tray_unreachable"}, False) == "unknown"
     assert live.link_state({"sw_oper": "down", "scan_kind": "tray_unreachable"}, False) == "down"
     assert live.link_state({"sw_oper": "up", "scan_kind": "tray_not_programmed"}, False) == "degraded"
+
+
+
+def test_until_turned_off_and_with_no_page_open(tmp_path, monkeypatch):
+    """max_s None = no time limit, idle_s None = keeps running with no page open; the status says so."""
+    monkeypatch.setattr(live, "Afmctl", FakeAfmctl)
+    rack = SimpleNamespace(switches={"st1": Sw()}, computes={"c1": Ct("c1"), "c2": Ct("c2")}, close=lambda: None)
+    r = live.LiveRack(rack, LINKS, rack_name="lab", max_s=None, idle_s=None, last_view=lambda: time.time() - 10 ** 6,
+                      stream_cls=Q, jump_limited=True)
+    r.start()
+    try:
+        time.sleep(1.5)
+        st = r.status()
+        assert st["running"] and st["max_s"] is None and st["idle_s"] is None
+    finally:
+        r.stop()
+    assert r.status()["stop_reason"] == "turned off"

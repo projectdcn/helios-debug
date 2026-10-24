@@ -9,7 +9,7 @@
   * AFM (password given): its events polled every 30 s and listed with the changes
   * a rack reached through a jump host that allows few sessions (transport.jump.via: exec) gets no streams - the
     re-reads only - and says so
-Stops by itself after max_s (8 h) or when nobody has looked for idle_s (30 min). Changes are kept in memory (last
+Stops by itself after max_s (8 h; None = until turned off) or when nobody has looked for idle_s (30 min; None = never). Changes are kept in memory (last
 2000) and appended to results/live/<rack>-<UTC date>.jsonl.
 """
 from __future__ import annotations
@@ -40,6 +40,9 @@ PHYSICAL = ("phys_never_up", "phys_went_down", "phys_no_optic", "one_sided", "sw
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+STREAM_MAX_S = 24 * 3600          # one log stream's remote timeout; after it ends it is reopened
 
 
 def wrap(cmd: str, max_s: float) -> str:
@@ -207,7 +210,7 @@ class LiveRack:
         while not self.stop_ev.is_set():
             st = None
             try:
-                st = self.stream_cls(node, cmd, self.max_s)
+                st = self.stream_cls(node, cmd, min(self.max_s or STREAM_MAX_S, STREAM_MAX_S))   # a stream ends, is reopened
                 with self.lock:
                     self.streams.append(st)
                 f.update(ok=True, error=None, connected=_now())
@@ -258,10 +261,10 @@ class LiveRack:
         next_rec, next_afm, afm_since = 0.0, 0.0, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         while not self.stop_ev.is_set():
             now = time.monotonic()
-            if time.time() - self.started > self.max_s:
+            if self.max_s is not None and time.time() - self.started > self.max_s:
                 self.stop(f"stopped by itself after {self.max_s / 3600:.0f} h")
                 break
-            if time.time() - self.last_view() > self.idle_s:
+            if self.idle_s is not None and time.time() - self.last_view() > self.idle_s:
                 self.stop(f"stopped by itself: nobody looked for {self.idle_s / 60:.0f} min")
                 break
             if now >= next_rec:
@@ -327,6 +330,7 @@ class LiveRack:
             return {"rack": self.rack_name, "running": not self.stop_ev.is_set(), "started": self.started,
                     "stopped": self.stopped, "stop_reason": self.stop_reason, "last_event": self.last_event,
                     "reconcile_s": self.reconcile_s, "reconciles": self.reconciles, "jump_limited": self.jump_limited,
+                    "max_s": self.max_s, "idle_s": self.idle_s,
                     "followers": {k: dict(v) for k, v in self.followers.items()}, "counts": counts,
                     "links": {k: {"state": v["state"], "since": v["since"], "sw_oper": v["sw_oper"], "sw_admin": v["sw_admin"],
                                   "gpu_link": v["gpu_link"], "ll_up": v["ll_up"]} for k, v in self.links.items()},

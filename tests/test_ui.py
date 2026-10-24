@@ -311,3 +311,29 @@ def test_afm_names_and_ifcp_cabling(tmp_path):
     assert links[0]["cable"] == "confirmed" and links[1]["cable"] == "miscabled: the cable reaches st2 Ethernet8"
     assert "cable" not in links[2]
     assert server.ifcp_cabling(links[:1], trays, {})["unconfirmed"] == 1     # IFCP naming not learned: no verdict
+
+
+def test_live_start_duration_choices(ui, monkeypatch):
+    """max_h 0 = until turned off, keep_unwatched = no idle stop; out-of-range refused."""
+    base, tmp = ui
+    seen = {}
+
+    class FakeLive:
+        def __init__(self, *a, **k):
+            seen.update(k)
+
+        def start(self):
+            pass
+
+        def stop(self, reason=""):
+            pass
+    import heliosdbg.live
+    monkeypatch.setattr(heliosdbg.live, "LiveRack", FakeLive)
+    d = tmp / "results" / "link-check" / "lab" / "scan-20261019-000000"
+    d.mkdir(parents=True)
+    (d / "link_check.json").write_text(json.dumps({"links": [{"switch": "st1", "sw_port": "Ethernet0"}]}))
+    assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 0, "keep_unwatched": True})[0] == 200
+    assert seen["max_s"] is None and seen["idle_s"] is None
+    assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 24})[0] == 200
+    assert seen["max_s"] == 24 * 3600 and seen["idle_s"] == 1800
+    assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 999})[0] == 400
