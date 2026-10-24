@@ -135,21 +135,28 @@ def read_fdb(sw, ns) -> list[dict]:
 def collect_switch(sw) -> dict:
     """Per ASIC namespace: port state, descriptions, FDB, counters, FEC; whether the platform reports optics."""
     out = {"name": sw.host.name, "asics": {}, "error": None}
+    broken = []                                      # FdbBrokenEntries of every ASIC (all are reported, not the first)
     try:
         for ns in sw.namespaces():
             key = ns or ""
             status = {r.get("Interface"): r for r in parse_table(sw.sh(f"show interfaces status{ns_flag(ns)} -d all"))}
             desc = sw.port_descriptions(ns)
-            fdb = read_fdb(sw, ns)
+            try:
+                fdb = read_fdb(sw, ns)
+            except FdbBrokenEntries as e:
+                broken.append(e)
+                continue
             cnt = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters{ns_flag(ns)} -d all", timeout=180))}
             fec = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters fec-stats{ns_flag(ns)}", timeout=180))}
             pres = {r.get("Port"): r.get("Presence", "") for r in
                     parse_table(sw.run(f"show interfaces transceiver presence{ns_flag(ns)}", sudo=True, timeout=180).stdout)}
             out["asics"][key] = {"status": status, "desc": desc, "fdb": fdb, "counters": cnt, "fec": fec, "presence": pres}
-    except FdbBrokenEntries as e:                   # a problem on the switch: named in full, entries kept
-        out["error"], out["fdb_broken"] = f"FdbBrokenEntries: {e}"[:900], [dict(x, ns=e.ns) for x in e.entries]
     except Exception as e:  # noqa: BLE001 - an unreachable switch is reported, not fatal
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    if broken:                                       # a problem on the switch: named in full, entries kept
+        out["fdb_broken"] = [dict(x, ns=e.ns) for e in broken for x in e.entries]
+        out["error"] = ("FdbBrokenEntries: " + " | ".join(str(e) for e in broken))[:1500]
+        out["asics"] = {}                            # no link of this switch is judged from a partial read
     return out
 
 
