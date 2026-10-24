@@ -355,3 +355,34 @@ def test_topology_uses_the_latest_full_check(tmp_path):
     assert v["newer_partial"]["only"] == "st1" and v["newer_partial"]["links"] == 0
     assert v["newer_partial"]["fdb_broken"][0]["mac"] == "00:11:22:33:44:55"
     assert "newer_partial" not in server.latest_full("r", runs[1:])     # the full one is the newest: nothing to say
+
+
+def test_terminal_local_shell_and_config_route(ui, monkeypatch):
+    """A terminal on a node marked local runs a shell under a pseudo-terminal: what is written comes back, resize
+    works, close ends it; unknown nodes / sessions are refused. The vendored terminal emulator is served."""
+    import base64
+    base, tmp = ui
+    (tmp / "inv" / "loc.local.yaml").write_text("rack: loc\nswitches:\n  - {name: st1, host: 127.0.0.1, local: true}\n"
+                                               "computes:\n  - {name: c1, host: 10.0.0.9}\n")
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    code, body = call(base, "/api/term/open", {"inventory": "loc.local.yaml", "node": "st1", "cols": 80, "rows": 24})
+    assert code == 200, body
+    sid = json.loads(body)["id"]
+    assert call(base, "/api/term/write", {"id": sid, "data": "echo hd-$((40+2))\n"})[0] == 200
+    out, nxt = b"", 0
+    for _ in range(10):
+        r = json.loads(call(base, f"/api/term/read?id={sid}&since={nxt}")[1])
+        out += base64.b64decode(r["data"])
+        nxt = r["next"]
+        if b"hd-42" in out:
+            break
+    assert b"hd-42" in out
+    assert call(base, "/api/term/resize", {"id": sid, "cols": 100, "rows": 30})[0] == 200
+    assert call(base, "/api/term/close", {"id": sid})[0] == 200
+    assert call(base, f"/api/term/read?id={sid}&since=0")[0] == 400
+    assert call(base, "/api/term/open", {"inventory": "loc.local.yaml", "node": "nope"})[0] == 400
+    assert call(base, "/api/term/write", {"id": sid}, headers={"X-Helios-Debug": "0"})[0] == 403
+    log = (tmp / "results" / "term" / "sessions.log").read_text()
+    assert "open st1" in log and "close" in log and "hd-" not in log          # what is typed is never logged
+    assert call(base, "/static/vendor/xterm/xterm.js")[0] == 200
+    assert call(base, "/static/vendor/../server.py")[0] == 404

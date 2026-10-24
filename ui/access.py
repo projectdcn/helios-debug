@@ -54,11 +54,18 @@ def hosts(inv) -> list:
     return [*inv.switches, *inv.computes]
 
 
+def _via_exec(inv) -> bool:
+    return ((inv.transport or {}).get("jump") or {}).get("via") == "exec"
+
+
 def describe(inv) -> dict:
     out, keys = [], {}
+    via = _via_exec(inv)
     for h in hosts(inv):
         local = is_local(h)
-        path, src = (None, "this machine (read directly)") if local else node_key(h)
+        path, src = ((None, "this machine (read directly)") if local else
+                     (None, "the jump host's own SSH setup (transport.jump via: exec) - no key needed on this machine")
+                     if via else node_key(h))
         if path and path not in keys:
             try:
                 keys[path] = {"path": path, "public": public_key(path)}
@@ -67,7 +74,9 @@ def describe(inv) -> dict:
         out.append({"name": h.name, "role": h.role, "user": h.user, "host": h.host, "local": local, "key": path,
                     "key_from": src, "password_env": bool(h.password)})
     return {"hosts": out, "keys": list(keys.values()),
-            "can_create": any(not x["local"] and not x["key"] for x in out) and not os.path.isfile(os.path.expanduser(NEW_KEY))}
+            "can_create": not via and any(not x["local"] and not x["key"] for x in out)
+                          and not os.path.isfile(os.path.expanduser(NEW_KEY)),
+            "via_jump_exec": via}
 
 
 def _transport(inv, h, password: str | None):
@@ -107,6 +116,9 @@ def install(inv, name: str, password: str) -> dict:
         raise AccessError(f"{name} is this machine - nothing to install")
     if not password:
         raise AccessError("type the node's password to install the key")
+    if _via_exec(inv):
+        raise AccessError(f"{name} is reached through the jump host's own SSH setup (transport.jump via: exec): install "
+                          "the key there (on the jump host: ssh-copy-id <user>@<node>), not from this machine")
     path, src = node_key(h)
     if not path:
         raise AccessError(src)

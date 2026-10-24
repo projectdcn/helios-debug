@@ -14,9 +14,13 @@ body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"
 header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px max(16px,3vw);
 border-bottom:1px solid var(--rule);background:var(--card)}
 h1{font-size:1.15rem;margin:0}.mut{color:var(--mut)}
-main{padding:16px max(16px,3vw);max-width:1200px;margin:0 auto}
-nav{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px}
-nav button{border:1px solid var(--rule);background:var(--card);color:var(--fg);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+main{padding:16px max(16px,2vw);max-width:1560px;margin:0 auto;display:grid;grid-template-columns:200px minmax(0,1fr);column-gap:18px;align-items:start}
+main>*{grid-column:2;min-width:0}
+/* the views as a vertical menu on the left, always in reach */
+nav{grid-column:1;grid-row:1 / span 60;display:flex;flex-direction:column;gap:4px;position:sticky;top:12px;max-height:calc(100vh - 24px);overflow-y:auto;margin:0}
+nav button{border:1px solid var(--rule);background:var(--card);color:var(--fg);padding:7px 12px;border-radius:6px;cursor:pointer;font:inherit;text-align:left;width:100%}
+nav .navsep{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin:10px 4px 2px}
+@media (max-width:820px){main{display:block}nav{position:static;flex-direction:row;flex-wrap:wrap;max-height:none;margin-bottom:14px}nav button{width:auto}nav .navsep{display:none}}
 nav button[aria-selected=true]{border-color:var(--acc);color:var(--acc);font-weight:600}
 .card{background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:14px 16px;margin-bottom:14px}
 .card h2{font-size:1rem;margin:0 0 6px}.card p{margin:4px 0 10px}
@@ -91,6 +95,9 @@ nav button.exp{border-style:dashed}
 .cell.fresh{animation:pulse 1s 6}
 #live-changes div{font:12px ui-monospace,Menlo,Consolas,monospace;padding:2px 0;border-bottom:1px solid var(--rule)}
 </style>
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+<script src="/static/vendor/xterm/xterm.js"></script>
+<script src="/static/vendor/xterm/addon-fit.js"></script>
 </head>
 <body>
 <header>
@@ -111,9 +118,11 @@ nav button.exp{border-style:dashed}
     <button role="tab" data-t="link">Diagnose a link</button>
     <button role="tab" data-t="history">Earlier results</button>
     <button role="tab" data-t="access">Access to the rack</button>
+    <button role="tab" data-t="config">Config</button>
     <button role="tab" data-t="newrack">Add a rack</button>
     <button role="tab" data-t="topology">Topology</button>
     <button role="tab" data-t="guide">Debug guide</button>
+    <div class="navsep exp" data-x>Expert</div>
     <button role="tab" data-t="overview" class="exp" data-x>All racks</button>
     <button role="tab" data-t="watch" class="exp" data-x>Watch links</button>
     <button role="tab" data-t="cabling" class="exp" data-x>Cabling plan</button>
@@ -345,6 +354,29 @@ nav button.exp{border-style:dashed}
     <div class="row" style="margin-top:0"><button class="go" id="acc-check">Check all</button><button class="sec hide" id="acc-keygen">Create an SSH key on this machine</button><span id="acc-msg" class="mut"></span></div>
     <div id="acc-keys"></div>
     <div class="wrap" style="margin-top:10px"><table><thead><tr><th>Node</th><th>Login</th><th>Key used</th><th>Status</th><th>Install the key (node password)</th></tr></thead><tbody id="acc"></tbody></table></div>
+
+    <h2 style="margin-top:22px">Terminal</h2>
+    <p class="mut">A shell on a switch tray or compute tray, the way the checks log in (the inventory user and key; through the
+      jump host when the inventory says so). <b>Not read-only</b>: what you type runs on the rack. Only open / close is logged,
+      never what you type; a terminal nobody looks at for 30 min is closed.</p>
+    <div class="row" style="margin-top:0;align-items:end">
+      <div><label for="term-node">Node</label><select id="term-node" style="min-width:260px"></select></div>
+      <button class="go" id="term-open">Connect</button><button class="sec" id="term-close" disabled>Disconnect</button>
+      <span id="term-msg" class="mut"></span>
+    </div>
+    <div id="term-tabs" class="row" style="margin:6px 0 0"></div>
+    <div id="term-box" class="hide" style="margin-top:6px;height:min(62vh,640px);background:#111;border-radius:8px;padding:6px"></div>
+  </section>
+
+  <section class="card hide" data-p="config">
+    <h2>Config</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>The configuration of one switch tray (SONiC's configuration database of the host and each switch chip: ports, VLANs, VLAN members, QoS / PFC, buffers, static forwarding entries, ...) or one compute tray (each GPU and its ports as afmctl reports them, the OS).</dd>
+      <dt>When</dt><dd>To see how something is set up, compare one switch or chip with another, or keep a copy (Download).</dd><dt>How long</dt><dd>A few seconds per node.</dd><dt>Safe?</dt><dd>Yes - read only.</dd></dl></details>
+    <div class="row" style="margin-top:0;align-items:end">
+      <div><label for="cfg-node">Node</label><select id="cfg-node" style="min-width:260px"></select></div>
+      <button class="go" id="cfg-read">Read config</button><span id="cfg-msg" class="mut"></span>
+    </div>
+    <div id="cfg-out"></div>
   </section>
 
   <section class="card hide" data-p="newrack">
@@ -414,6 +446,7 @@ function checks(id,names){$(id).innerHTML=names.map(function(n){return '<label><
 function picked(id){return Array.prototype.map.call($(id).querySelectorAll("input:checked"),function(x){return x.value})}
 function fillInv(){
   var i=inv();if(!i)return;
+  fillNodePick("term-node");fillNodePick("cfg-node");
   $("inverr").classList.toggle("hide",!i.error);$("inverr").textContent=i.error?("Inventory "+i.file+": "+i.error):"";
   if(i.error)return;
   ["scan-sw","bcm-sw","pm-sw"].forEach(function(id){checks(id,i.switches)});
@@ -439,6 +472,8 @@ function tab(t){
   document.querySelectorAll("section[data-p]").forEach(function(s){s.classList.toggle("hide",s.dataset.p!==t)});
   if(t==="history")loadHistory();
   if(t==="map"){placeDetail("map");loadMap();liveBar();liveList();livePoll()}
+  if(t==="access"){fillNodePick("term-node");termFit()}
+  if(t==="config")fillNodePick("cfg-node");
   if(t==="overview")loadOverview();
   if(t==="home")renderHome();
   if(t==="link")loadPickers();
@@ -635,7 +670,7 @@ function wireGoto(root){root.querySelectorAll("[data-goto]").forEach(function(b)
 var expert=false;try{expert=localStorage.getItem("hdbg-mode")==="expert"}catch(e){}
 function setMode(x){expert=x;try{localStorage.setItem("hdbg-mode",x?"expert":"simple")}catch(e){}
   $("m-simple").setAttribute("aria-pressed",!x);$("m-expert").setAttribute("aria-pressed",x);
-  document.querySelectorAll("nav button[data-x]").forEach(function(b){b.classList.toggle("hide",!x)});
+  document.querySelectorAll("nav [data-x]").forEach(function(b){b.classList.toggle("hide",!x)});
   var cur=document.querySelector("nav button[aria-selected=true]");if(cur&&cur.hasAttribute("data-x")&&!x)tab("home");}
 $("m-simple").addEventListener("click",function(){setMode(false)});
 $("m-expert").addEventListener("click",function(){setMode(true)});
@@ -848,12 +883,131 @@ function drawAccess(d){
   $("acc").innerHTML=d.hosts.map(function(h){
     var r=accState[h.name],need=!h.local&&h.key&&r&&r.login!=="ok";   /* only after a failed check */
     return "<tr><td><b>"+esc(h.name)+'</b><div class="mut">'+esc(h.role)+"</div></td><td>"+esc(h.user+"@"+h.host)+"</td><td>"+
-      (h.local?'<span class="mut">read directly</span>':h.key?esc(h.key)+'<div class="mut">'+esc(h.key_from)+"</div>":'<span class="err">'+esc(h.key_from)+"</span>")+
+      (h.local?'<span class="mut">read directly</span>':h.key?esc(h.key)+'<div class="mut">'+esc(h.key_from)+"</div>":d.via_jump_exec?'<span class="mut">'+esc(h.key_from)+"</span>":'<span class="err">'+esc(h.key_from)+"</span>")+
       '</td><td id="acc-st-'+esc(h.name)+'">'+accStatus(r)+"</td><td>"+(need?'<div style="display:flex;gap:6px"><input type="password" autocomplete="off" aria-label="Password for '+esc(h.name)+'" data-pw="'+esc(h.name)+'" style="min-width:120px"><button class="sec" data-inst="'+esc(h.name)+'">Install key</button></div>':"")+"</td></tr>";
   }).join("");
   document.querySelectorAll("button[data-inst]").forEach(function(b){b.addEventListener("click",function(){install(b.dataset.inst)})});
 }
 var accData=null;
+/* ---------------------------------------------------------------- node pickers (terminal, config) */
+function nodeLabel(n){var a=((mapData&&mapData.afm_names)||{})[n];return a?a+" ("+n+")":n}
+function fillNodePick(id){
+  var i=inv(),sel=$(id);if(!i||!sel)return;var cur=sel.value;
+  sel.innerHTML='<optgroup label="Switch trays">'+(i.switches||[]).map(function(n){return '<option value="'+esc(n)+'">'+esc(nodeLabel(n))+"</option>"}).join("")+"</optgroup>"+
+    '<optgroup label="Compute trays">'+(i.computes||[]).map(function(n){return '<option value="'+esc(n)+'">'+esc(nodeLabel(n))+"</option>"}).join("")+"</optgroup>";
+  if(cur)sel.value=cur;
+}
+
+/* ---------------------------------------------------------------- terminal: xterm.js on top of /api/term/* (long poll) */
+var terms={},termCur=null;
+function termMsg(t,err){$("term-msg").innerHTML=err?'<span class="err">'+esc(t)+"</span>":esc(t)}
+function termFit(){var t=terms[termCur];if(t&&t.fit){try{t.fit.fit()}catch(e){}}}
+function termTabs(){
+  $("term-tabs").innerHTML=Object.keys(terms).map(function(id){var t=terms[id];return '<button class="'+(id===termCur?"go":"sec")+'" data-term="'+esc(id)+'">'+esc(nodeLabel(t.node))+(t.closed?" (closed)":"")+"</button>"}).join("");
+  $("term-tabs").querySelectorAll("[data-term]").forEach(function(b){b.addEventListener("click",function(){termShow(b.dataset.term)})});
+  $("term-close").disabled=!termCur||!terms[termCur]||!!terms[termCur].closed;
+  $("term-box").classList.toggle("hide",!termCur);
+}
+function termShow(id){
+  termCur=id;Object.keys(terms).forEach(function(k){terms[k].el.style.display=k===id?"block":"none"});termTabs();termFit();
+  if(terms[id]&&terms[id].x)terms[id].x.focus();
+}
+function termOpen(){
+  if(typeof Terminal==="undefined"){termMsg("the terminal emulator did not load (static/vendor/xterm)",true);return}
+  var node=$("term-node").value,i=inv();if(!node||!i)return;
+  var el=document.createElement("div");el.style.cssText="height:100%;width:100%";$("term-box").classList.remove("hide");$("term-box").appendChild(el);
+  var x=new Terminal({cursorBlink:true,fontSize:13,fontFamily:'ui-monospace,Menlo,Consolas,monospace',scrollback:5000,convertEol:false}),fit=new FitAddon.FitAddon();
+  x.loadAddon(fit);x.open(el);try{fit.fit()}catch(e){}
+  termMsg("connecting to "+nodeLabel(node)+" ...");$("term-open").disabled=true;
+  api("/api/term/open",{inventory:i.file,node:node,cols:x.cols,rows:x.rows}).then(function(r){
+    var t={id:r.id,node:node,x:x,fit:fit,el:el,next:0,closed:null,q:"",sending:false};terms[r.id]=t;
+    termMsg(nodeLabel(node)+" - "+r.address+" ("+r.how+")");termShow(r.id);
+    x.onData(function(d){t.q+=d;termSend(t)});
+    x.onResize(function(sz){if(!t.closed)api("/api/term/resize",{id:t.id,cols:sz.cols,rows:sz.rows}).catch(function(){})});
+    termRead(t);
+  }).catch(function(e){el.remove();x.dispose();termMsg(e.message,true);if(!termCur)$("term-box").classList.add("hide")})
+  .then(function(){$("term-open").disabled=false});
+}
+function termSend(t){                                  /* keystrokes in order, batched while one request is out */
+  if(t.sending||!t.q||t.closed)return;var d=t.q;t.q="";t.sending=true;
+  api("/api/term/write",{id:t.id,data:d}).catch(function(e){t.x.write("\r\n\x1b[31m["+e.message+"]\x1b[0m\r\n")}).then(function(){t.sending=false;termSend(t)});
+}
+function termRead(t){
+  fetch("/api/term/read?id="+encodeURIComponent(t.id)+"&since="+t.next).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})})
+  .then(function(j){
+    if(j.data){var b=atob(j.data),u=new Uint8Array(b.length);for(var k=0;k<b.length;k++)u[k]=b.charCodeAt(k);t.x.write(u)}
+    t.next=j.next;
+    if(j.closed){t.closed=j.closed;t.x.write("\r\n\x1b[33m["+j.closed+"]\x1b[0m\r\n");termTabs();return}
+    termRead(t);
+  }).catch(function(e){t.closed=e.message;t.x.write("\r\n\x1b[31m["+e.message+"]\x1b[0m\r\n");termTabs()});
+}
+function termClose(){
+  var t=terms[termCur];if(!t)return;
+  if(!t.closed)api("/api/term/close",{id:t.id}).catch(function(){});
+  t.x.dispose();t.el.remove();delete terms[t.id];termCur=Object.keys(terms)[0]||null;if(termCur)termShow(termCur);else termTabs();termMsg("");
+}
+$("term-open").addEventListener("click",termOpen);
+$("term-close").addEventListener("click",termClose);
+window.addEventListener("resize",termFit);
+
+/* ---------------------------------------------------------------- config view */
+var cfgData=null;
+function cfgRead(){
+  var node=$("cfg-node").value,i=inv();if(!node||!i)return;
+  $("cfg-read").disabled=true;$("cfg-msg").textContent="reading "+nodeLabel(node)+" ...";$("cfg-out").innerHTML="";
+  api("/api/config",{inventory:i.file,node:node}).then(function(d){cfgData=d;$("cfg-msg").textContent="read "+new Date(d.time_utc).toLocaleTimeString()+" in "+d.read_s+" s";cfgDraw()})
+  .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"}).then(function(){$("cfg-read").disabled=false});
+}
+var cfgSec=null,cfgTable=null;
+function cfgDraw(){
+  var d=cfgData;if(!d)return;var secs=Object.keys(d.sections);if(cfgSec==null||!d.sections[cfgSec])cfgSec=secs[0];
+  var sec=d.sections[cfgSec],h='<div class="row" style="margin:10px 0 6px">'+secs.map(function(k){var x=d.sections[k];return '<button class="'+(k===cfgSec?"go":"sec")+'" data-sec="'+esc(k)+'">'+esc(k)+(x.error?" (!)":"")+"</button>"}).join("")+
+    '<span class="spacer" style="flex:1"></span><button class="sec" id="cfg-dl">Download JSON</button></div>';
+  if(sec.error){h+='<p class="err">'+esc(sec.title+": "+sec.error)+"</p>"}
+  else if(typeof sec.data==="string"){h+="<pre>"+esc(sec.data)+"</pre>"}
+  else if(d.kind==="switch"){h+=cfgTables(sec.data)}
+  else{h+=cfgCompute(cfgSec,sec.data)}
+  $("cfg-out").innerHTML=h;
+  $("cfg-out").querySelectorAll("[data-sec]").forEach(function(b){b.addEventListener("click",function(){cfgSec=b.dataset.sec;cfgTable=null;cfgDraw()})});
+  $("cfg-dl").addEventListener("click",function(){var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(d,null,1)],{type:"application/json"}));
+    a.download=d.node+"-config-"+d.time_utc.replace(/[:]/g,"")+".json";a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},2000)});
+  $("cfg-out").querySelectorAll("[data-tbl]").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();cfgTable=b.dataset.tbl;cfgDraw()})});
+  var f=$("cfg-filter");if(f){f.addEventListener("input",function(){cfgFilter(f.value)});f.focus()}
+}
+/* a SONiC CONFIG_DB: the tables on the left (row counts), the picked table as rows x fields, a filter */
+function cfgTables(db){
+  var names=Object.keys(db||{}).sort();if(!names.length)return '<p class="mut">empty</p>';
+  if(!cfgTable||!db[cfgTable])cfgTable=names.indexOf("PORT")>=0?"PORT":names[0];
+  var t=db[cfgTable],keys=Object.keys(t||{}),fields={};keys.forEach(function(k){var v=t[k];if(v&&typeof v==="object")Object.keys(v).forEach(function(f){fields[f]=1})});
+  var fl=Object.keys(fields).sort();
+  return '<div style="display:grid;grid-template-columns:220px minmax(0,1fr);gap:12px;align-items:start">'+
+    '<div style="max-height:70vh;overflow-y:auto;border:1px solid var(--rule);border-radius:6px;padding:4px">'+names.map(function(n){return '<a href="#" data-tbl="'+esc(n)+'" style="display:flex;justify-content:space-between;padding:2px 6px;border-radius:4px;text-decoration:none;color:var(--fg)'+(n===cfgTable?";background:var(--code);font-weight:600":"")+'"><span>'+esc(n)+'</span><span class="mut">'+Object.keys(db[n]||{}).length+"</span></a>"}).join("")+"</div>"+
+    '<div><div class="row" style="margin:0 0 6px"><b>'+esc(cfgTable)+'</b><span class="mut">'+keys.length+" entr"+(keys.length===1?"y":"ies")+'</span><input id="cfg-filter" placeholder="filter rows (e.g. Ethernet8, Vlan100)" style="flex:1;min-width:200px"></div>'+
+    '<div class="wrap" style="max-height:66vh;overflow:auto"><table class="cfg-tbl"><thead><tr><th>Key</th>'+(fl.length?fl.map(function(f){return "<th>"+esc(f)+"</th>"}).join(""):"<th>Value</th>")+"</tr></thead><tbody>"+
+    keys.sort(cfgKeySort).map(function(k){var v=t[k];return "<tr><td><code>"+esc(k)+"</code></td>"+(fl.length?fl.map(function(f){var x=v&&typeof v==="object"?v[f]:"";return "<td>"+esc(Array.isArray(x)?x.join(", "):x==null?"":String(x))+"</td>"}).join(""):"<td>"+esc(JSON.stringify(v))+"</td>")+"</tr>"}).join("")+
+    "</tbody></table></div></div></div>";
+}
+function cfgKeySort(a,b){var na=+(a.match(/(\d+)(?!.*\d)/)||[0,NaN])[1],nb=+(b.match(/(\d+)(?!.*\d)/)||[0,NaN])[1],pa=a.replace(/\d+(?!.*\d)/,""),pb=b.replace(/\d+(?!.*\d)/,"");
+  return pa<pb?-1:pa>pb?1:(isNaN(na)||isNaN(nb)?(a<b?-1:1):na-nb)}
+function cfgFilter(q){q=(q||"").toLowerCase();document.querySelectorAll(".cfg-tbl tbody tr").forEach(function(tr){tr.style.display=!q||tr.textContent.toLowerCase().indexOf(q)>=0?"":"none"})}
+/* a compute tray: each GPU's device record and its ports (spec / status flattened) */
+function cfgCompute(sec,data){
+  if(sec==="devices"){var ds=Array.isArray(data)?data:(data&&(data.device||data.devices))||[];
+    return cfgObjTable(ds.map(function(x){return cfgFlat(x,"",{port:1})}),"bdf")}
+  if(sec==="ports"){return '<div class="row" style="margin:0 0 6px"><input id="cfg-filter" placeholder="filter ports (e.g. down, rs, 33)" style="flex:1;min-width:200px"></div>'+Object.keys(data||{}).sort().map(function(b){var doc=data[b],ds=Array.isArray(doc)?doc:(doc&&(doc.device||doc.devices))||[],
+      ports=(ds.filter(function(x){return String(x.bdf)===b})[0]||ds[0]||{}).port||[];
+    return "<h3>GPU "+esc(b)+" - "+ports.length+" ports</h3>"+cfgObjTable(ports.map(function(x){return cfgFlat(x,"",{})}),"id",true)}).join("")}
+  return "<pre>"+esc(JSON.stringify(data,null,1))+"</pre>";
+}
+function cfgFlat(o,pre,skip){var out={};Object.keys(o||{}).forEach(function(k){if(!pre&&skip[k])return;var v=o[k],n=pre?pre+"."+k:k;
+  if(v&&typeof v==="object"&&!Array.isArray(v))Object.assign(out,cfgFlat(v,n,skip));else out[n]=Array.isArray(v)?v.join(", "):v});return out}
+function cfgObjTable(rows,first,noFilter){
+  var cols={};rows.forEach(function(r){Object.keys(r).forEach(function(k){cols[k]=1})});var cl=Object.keys(cols).sort(function(a,b){return a===first?-1:b===first?1:a<b?-1:1});
+  return (noFilter?"":'<div class="row" style="margin:0 0 6px"><input id="cfg-filter" placeholder="filter rows" style="flex:1;min-width:200px"></div>')+'<div class="wrap" style="max-height:66vh;overflow:auto"><table class="cfg-tbl"><thead><tr>'+cl.map(function(c){return "<th>"+esc(c)+"</th>"}).join("")+"</tr></thead><tbody>"+
+    rows.map(function(r){return "<tr>"+cl.map(function(c){return "<td>"+esc(r[c]==null?"":String(r[c]))+"</td>"}).join("")+"</tr>"}).join("")+"</tbody></table></div>";
+}
+$("cfg-read").addEventListener("click",cfgRead);
+
 function loadAccess(){
   $("acc-msg").textContent="";
   api("/api/access?inventory="+encodeURIComponent($("inv").value)).then(function(d){accData=d;drawAccess(d)}).catch(function(e){$("acc-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});

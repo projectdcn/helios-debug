@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 from heliosdbg.inventory import load_inventory  # noqa: E402
 from heliosdbg.transport import is_local  # noqa: E402
+from heliosdbg.term import TermError  # noqa: E402
 from ui import access  # noqa: E402
 
 TOOL = ROOT / "tools" / "link_check.py"
@@ -39,6 +40,9 @@ STATIC = Path(__file__).resolve().parent / "static"
 # The page is read once, when the server starts: page and server code always match. (19 Oct: a server started before
 # the Diagnose tab served the new page from disk and refused its 'link' runs - restart to get a newer UI.)
 PAGE = (STATIC / "index.html").read_bytes()
+VENDOR = {n: (t, (STATIC / "vendor" / n).read_bytes()) for n, t in (            # served as-is, a fixed list
+    ("xterm/xterm.js", "text/javascript; charset=utf-8"), ("xterm/addon-fit.js", "text/javascript; charset=utf-8"),
+    ("xterm/xterm.css", "text/css; charset=utf-8")) if (STATIC / "vendor" / n).is_file()}
 TOOLS = ("scan", "link", "watch", "cabling", "isolate", "bcm", "path", "pingmap")
 TARGET_RX = re.compile(r"^[A-Za-z0-9 _./:\[\],()-]{1,200}$")
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -65,6 +69,8 @@ class State:
         self.live_inventory = None
         self.live_view = 0.0                           # last time a page asked for the live state
         self.current: str | None = None
+        from heliosdbg.term import Terminals
+        self.terms = Terminals(results_dir / "term")      # browser terminals (Access to the rack)
 
     def inventories(self) -> list[dict]:
         out = []
@@ -480,6 +486,33 @@ def afm_switch_ids(state: State, rack: str | None) -> dict[str, int]:
     return {}
 
 
+def node_config(state: State, req: dict) -> dict:
+    """The read-only configuration of one switch / compute tray (Config tab): SONiC CONFIG_DB per ASIC, or afmctl's
+    GPU and port configuration. Read live, over the same transport as the checks."""
+    from heliosdbg import config_view
+    from heliosdbg.compute import ComputeTray
+    from heliosdbg.sonic import SonicSwitch
+    from heliosdbg.transport import make_transport
+    _f, inv = state.inventory(req.get("inventory", ""))
+    name = str(req.get("node", ""))
+    sw = next((h for h in inv.all_switches if h.name == name), None)
+    ct = next((h for h in inv.all_computes if h.name == name), None)
+    if not (sw or ct):
+        raise BadRequest(f"no switch or compute tray {name!r} in {req.get('inventory')}")
+    h = sw or ct
+    t = make_transport(h, inv.transport or {})
+    t0 = time.time()
+    try:
+        out = config_view.switch_config(SonicSwitch(h, t)) if sw else config_view.compute_config(ComputeTray(h, t))
+    finally:
+        try:
+            t.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return out | {"node": name, "address": h.host, "read_s": round(time.time() - t0, 1),
+                  "time_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
 def scan_view(state: State, rel: str) -> dict:
     """A scan's links, compact, for the rack map (rel: link-check/<rack>/scan-...)."""
     f = _result_file(state, f"{rel}/link_check.json")
@@ -733,6 +766,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, PAGE, "text/html; charset=utf-8",
                                   {"Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; "
                                                               "script-src 'self' 'unsafe-inline'; frame-ancestors 'none'"})
+            if u.path == "/api/term/read":                   # long poll: new output of one terminal
+                import base64
+                s = st.terms.get((q.get("id") or [""])[0])
+                r = s.read(int((q.get("since") or ["0"])[0] or 0), wait=15.0)
+                return self._json(200, {"data": base64.b64encode(r["data"]).decode(), "next": r["next"],
+                                        "closed": r["closed"], "dropped": r["dropped"]})
+            if u.path == "/api/term/list":
+                return self._json(200, {"terminals": st.terms.list()})
+            if u.path.startswith("/static/vendor/"):          # the bundled terminal emulator (xterm.js), nothing else
+                name = u.path[len("/static/vendor/"):]
+                f = VENDOR.get(name)
+                if not f:
+                    return self._json(404, {"error": "not found"})
+                return self._send(200, f[1], f[0])
             if u.path == "/api/state":
                 with st.lock:
                     cur = public(st.jobs[st.current]) if st.current else None
@@ -801,7 +848,7 @@ class Handler(BaseHTTPRequestHandler):
                                                     "'unsafe-inline'; img-src data:; frame-ancestors 'none'"}
                 return self._send(200, p.read_bytes(), ctype, extra)
             return self._json(404, {"error": "not found"})
-        except BadRequest as e:
+        except (BadRequest, TermError) as e:
             return self._json(400, {"error": str(e)})
         except Exception as e:  # noqa: BLE001
             return self._json(500, {"error": f"{type(e).__name__}: {str(e)[:300]}"})
@@ -846,13 +893,36 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, discover_rack(dict(req, afm_password=pw)))
             if u.path == "/api/inventory/save":
                 return self._json(200, save_inventory(self.state, req))
+            if u.path == "/api/config":
+                return self._json(200, node_config(self.state, req))
+            if u.path == "/api/term/open":
+                _f, inv = self.state.inventory(req.get("inventory", ""))
+                name = str(req.get("node", ""))
+                host = next((h for h in inv.all_switches + inv.all_computes if h.name == name), None)
+                if host is None:
+                    raise BadRequest(f"no switch or compute tray {name!r} in {req.get('inventory')}")
+                t = self.state.terms.open(host, inv.transport or {}, _int(req, "cols", 20, 500, 120), _int(req, "rows", 5, 200, 32))
+                return self._json(200, {"id": t.id, "node": t.node, "how": t.how,
+                                        "address": f"{host.user + '@' if host.user else ''}{host.host}"})
+            if u.path == "/api/term/write":
+                data = req.get("data")
+                if not isinstance(data, str) or len(data) > 32_000:
+                    raise BadRequest("data: text, at most 32 000 characters")
+                self.state.terms.get(str(req.get("id", ""))).write(data.encode("utf-8", "surrogateescape"))
+                return self._json(200, {"ok": True})
+            if u.path == "/api/term/resize":
+                self.state.terms.get(str(req.get("id", ""))).resize(_int(req, "cols", 20, 500, 120), _int(req, "rows", 5, 200, 32))
+                return self._json(200, {"ok": True})
+            if u.path == "/api/term/close":
+                self.state.terms.close(str(req.get("id", "")))
+                return self._json(200, {"ok": True})
             if u.path == "/api/access/keygen":
                 return self._json(200, access.create_key())
             m = re.fullmatch(r"/api/job/([0-9a-f]{12})/stop", u.path)
             if m:
                 return self._json(200, stop_job(self.state, m.group(1)))
             return self._json(404, {"error": "not found"})
-        except (BadRequest, access.AccessError) as e:
+        except (BadRequest, access.AccessError, TermError) as e:
             return self._json(400, {"error": str(e)})
         except json.JSONDecodeError:
             return self._json(400, {"error": "bad JSON"})
