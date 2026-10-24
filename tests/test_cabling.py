@@ -121,3 +121,14 @@ def test_vlans_read_and_checked():
     assert ("fdb_off_vlan", "st1", "Ethernet1") in kinds and ("vlan_set", "st1", None) in kinds
     assert not any(x["port"] in ("Ethernet1", "Ethernet2") and x["kind"] == "vlan_mismatch" for x in f)
     assert not any(x["port"] == "Ethernet5" for x in f)               # VLANs not read: no verdict
+
+
+def test_expired_quarantine_stays_but_says_so():
+    """An inventory quarantine whose 'until' has passed still applies (as in helios-tests), and the reason says it ended."""
+    from types import SimpleNamespace
+    from heliosdbg import linkdiag
+    h = lambda until: SimpleNamespace(role="compute", name="ct05", extra={"slot": 4},
+                                      quarantine={"reason": "Down", "until": until})
+    old = linkdiag.quarantined_slots(SimpleNamespace(quarantined=[h("2026-10-19")]))
+    assert old[4][0] == "ct05" and "quarantine ended 2026-10-19" in old[4][1]
+    assert linkdiag.quarantined_slots(SimpleNamespace(quarantined=[h("2999-01-01")]))[4] == ("ct05", "Down")

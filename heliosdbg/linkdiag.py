@@ -416,7 +416,9 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
         name, reason = ln._quarantined
         return set_("down" if not up(ln.sw_oper) else "degraded", "tray_quarantined",
                     f"compute tray {name} is quarantined in the inventory ({reason})", OPERATOR,
-                    f"Expected while {name} is out of service; lift the quarantine when it is back and scan again.")
+                    (f"The quarantine's end date has passed: if {name} is still out of service, set a new 'until:' in the "
+                     f"inventory; if it is back, remove the quarantine and scan again." if "quarantine ended" in reason else
+                     f"Expected while {name} is out of service; lift the quarantine when it is back and scan again."))
     unread = sorted(n for n, x in (trays or {}).items() if x.get("error"))
     if not ln.tray and unread:          # MR3 19 Oct from the switch: trays in the inventory, but not reachable from there
         cab = parse_port_description(ln.desc or "")
@@ -546,7 +548,11 @@ def quarantined_slots(inv) -> dict:
     for h in getattr(inv, "quarantined", []) or []:
         slot = (h.extra or {}).get("slot")
         if h.role == "compute" and str(slot).lstrip("-").isdigit():
-            out[int(slot)] = (h.name, (h.quarantine or {}).get("reason") or "out of service")
+            q = h.quarantine or {}
+            reason = q.get("reason") or "out of service"
+            if q.get("until") and str(q["until"])[:10] < __import__("datetime").date.today().isoformat():
+                reason += f"; the quarantine ended {str(q['until'])[:10]} - still in force until the inventory changes"
+            out[int(slot)] = (h.name, reason)
     return out
 
 

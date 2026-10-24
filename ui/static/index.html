@@ -525,7 +525,7 @@ var OWNER={"operator":"the people running this rack (you)","site (cabling)":"the
 var KIND_HELP={
   ok:{t:"Working",m:"The link is up on every layer checked."},
   tray_unreachable:{t:"Compute tray could not be read",m:"This machine could not log in to the tray, so its links could not be checked.",s:["If the message says 'login refused': open Access to the rack and install the key with the tray's password.","Otherwise check the tray is powered on and on the network."]},
-  tray_quarantined:{t:"Compute tray is out of service",m:"The rack description marks this tray as quarantined - its links are expected to be down.",s:["Nothing to do until the tray is back; then remove the quarantine and check again."]},
+  tray_quarantined:{t:"Compute tray is out of service",m:"The rack description marks this tray as quarantined - its links are expected to be down. If the detail says the quarantine ended, its end date has passed: set a new 'until' or remove it.",s:["Nothing to do until the tray is back; then remove the quarantine and check again."]},
   tray_missing:{t:"No compute tray known for these switch ports",m:"Switch ports are cabled to a tray slot that is not in the rack description.",s:["Add the tray in Add a rack (or the inventory file), then check again."]},
   sw_admin_down:{t:"Switch port is switched off",m:"Someone or something set the switch port administratively down.",s:["Diagnose the link: its timeline shows who switched it off and when.","Switch it on again (config interface startup) if nobody needs it off."]},
   gpu_admin:{t:"GPU port is switched off",m:"The GPU port is administratively disabled on the compute tray.",s:["Enable it with the command shown in the details, then check again."]},
@@ -710,7 +710,10 @@ function renderResult(j){
   var base="/results/"+j.out+"/";
   if(j.tool==="link"){fetch(base+"link.json").then(function(r){return r.ok?r.json():null}).then(function(d){if(!d){box.innerHTML='<div class="verdict down"><h3>The link could not be found</h3>'+esc(($("log").textContent.match(/no link matches[^\n]*/)||[""])[0])+"</div>";return}
     var l=d.link,around=(d.around||[]).filter(function(c){return c.ok===false});
-    box.innerHTML='<p><b>'+esc(l.switch+" "+l.sw_port)+"</b> &harr; <b>"+esc(l.tray||"?")+" GPU "+esc(l.bdf||"?")+" port "+esc(l.gpu_port)+"</b></p>"+
+    var dm=/Slot(\d+)\/GPU(\d+)(?:\[\d+\])?\/Port(\d+)/i.exec(l.desc||""),
+        gpuEndTxt=l.tray?l.tray+" GPU "+(l.bdf||"?")+" port "+(l.gpu_port!=null?l.gpu_port:"?")
+          :dm?"compute tray in slot "+dm[1]+" GPU"+dm[2]+" port "+dm[3]+" (as the switch port description says; the tray was not read)":"? GPU ? port";
+    box.innerHTML='<p><b>'+esc(l.switch+" "+l.sw_port)+"</b> &harr; <b>"+esc(gpuEndTxt)+"</b></p>"+
       verdictHtml(l.state,l.kind,l.cause,l.owner)+(around.length?'<div class="verdict degraded"><h3>Also around this link</h3><ul>'+around.map(function(c){return "<li>"+esc(c.check+": "+c.detail)+"</li>"}).join("")+"</ul></div>":"")+
       '<p><a href="'+esc(base+"report.html")+'" target="_blank" rel="noopener">Open the full report</a> (both ends, switch signal, 24-hour timeline)</p>'})}
   else if(j.tool==="path"){fetch(base+"report.txt").then(function(r){return r.ok?r.text():""}).then(function(t){
@@ -1299,6 +1302,13 @@ function chipVlans(al,cx,SY,ca){
   if(ca.down||ca.degraded)h+='<text x="'+cx+'" y="'+(SY+102)+'" font-size="9.5" text-anchor="middle" fill="'+stColor(ca.down?"down":"degraded")+'">'+(ca.down?ca.down+" no VLAN ":"")+(ca.degraded?ca.degraded+" differs":"")+"</text>";
   return h;
 }
+/* a chip box's counts, one per line (ok first, then the problems), so long labels ("200 no session") fit the box */
+function chipCounts(ca,lb,cx,SY){
+  var rows=[["ok",ca.ok]].concat([["down",ca.down],["degraded",ca.degraded],["unknown",ca.unknown]].filter(function(x){return x[1]}));
+  if(rows.length>3)rows=[rows[0],rows[1],["more",rows.slice(2).reduce(function(t,x){return t+x[1]},0)]];
+  return rows.map(function(x,i){return '<text x="'+cx+'" y="'+(SY+76+i*12.5)+'" font-size="'+(rows.length>2?9.5:10.5)+'" text-anchor="middle" fill="'+(x[0]==="ok"?"var(--ok)":x[0]==="more"?"var(--mut)":stColor(x[0]))+'">'+
+    x[1]+" "+(x[0]==="more"?"other":lb[x[0]])+"</text>"}).join("");
+}
 function TC(ls){var S=topoSvg._S||mEff,c={ok:0,degraded:0,down:0,unknown:0};ls.forEach(function(l){var x=S(l);c[x]=(c[x]||0)+1});return c}
 function TW_(ls){var S=topoSvg._S||mEff,o={down:4,degraded:3,unknown:2,ok:1},w="ok";ls.forEach(function(l){var x=S(l);if((o[x]||0)>(o[w]||0))w=x});return w}
 function topoSvg(d,mode){
@@ -1337,9 +1347,7 @@ function topoSvg(d,mode){
         '<text x="'+(ax+aw/2)+'" y="'+(SY+46)+'" font-size="12" text-anchor="middle">'+esc(a||"asic")+"</text>"+
         (mode==="vlan"?chipVlans(al,ax+aw/2,SY,ca):
         '<text class="m" x="'+(ax+aw/2)+'" y="'+(SY+62)+'" font-size="10.5" text-anchor="middle">'+al.length+" links</text>"+
-        '<text x="'+(ax+aw/2)+'" y="'+(SY+78)+'" font-size="10.5" text-anchor="middle" fill="var(--ok)">'+ca.ok+" "+LB(ifcp).ok+"</text>"+
-        ((ca.down||ca.degraded||ca.unknown)?'<text x="'+(ax+aw/2)+'" y="'+(SY+94)+'" font-size="10.5" text-anchor="middle" fill="'+stColor(ca.down?"down":ca.degraded?"degraded":"unknown")+'">'+
-          (ca.down?ca.down+" "+LB(ifcp).down+" ":"")+(ca.degraded?ca.degraded+" "+LB(ifcp).degraded+" ":"")+(ca.unknown?ca.unknown+" "+LB(ifcp).unknown:"")+"</text>":""))+"</g>");
+        chipCounts(ca,LB(ifcp),ax+aw/2,SY))+"</g>");
     });
   });
   // compute trays + GPUs
