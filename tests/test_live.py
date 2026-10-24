@@ -160,3 +160,15 @@ def test_until_turned_off_and_with_no_page_open(tmp_path, monkeypatch):
     finally:
         r.stop()
     assert r.status()["stop_reason"] == "turned off"
+
+
+def test_change_log_pauses_on_a_nearly_full_disk(tmp_path, monkeypatch):
+    """Below LOG_MIN_FREE the change log stops writing (Live goes on in memory) and says so once."""
+    monkeypatch.setattr(live, "Afmctl", FakeAfmctl)
+    rack = SimpleNamespace(switches={"st1": Sw()}, computes={"c1": Ct("c1"), "c2": Ct("c2")}, close=lambda: None)
+    r = live.LiveRack(rack, LINKS, rack_name="lab", log_dir=tmp_path, stream_cls=Q, jump_limited=True)
+    monkeypatch.setattr(live.shutil, "disk_usage", lambda p: SimpleNamespace(free=10 << 20))
+    for i in range(3):
+        r.note(f"n{i}", "test")
+    assert r.log_paused and not r.log_path.exists()
+    assert [c["to"] for c in r.changes if "paused" in str(c["to"])] and len(r.changes) == 4   # 3 notes in memory + the pause note

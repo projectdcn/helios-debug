@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -42,6 +43,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+LOG_MIN_FREE = 200 << 20           # the change log stops writing below this much free space
 STREAM_MAX_S = 24 * 3600          # one log stream's remote timeout; after it ends it is reopened
 
 
@@ -141,6 +143,7 @@ class LiveRack:
         self.reconciles = 0
         self.pending_gpu: dict[tuple, float] = {}
         self.log_path = (log_dir / f"{rack_name}-{datetime.now(timezone.utc):%Y%m%d}.jsonl") if log_dir else None
+        self.log_paused = False
         if self.log_path:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -166,8 +169,16 @@ class LiveRack:
         ch = {"seq": self.seq, "t": _now(), **ch}
         self.changes.append(ch)
         self.last_event = ch["t"]
-        if self.log_path:
+        if self.log_path and not self.log_paused:
             try:
+                if self.seq % 50 == 1 and shutil.disk_usage(self.log_path.parent).free < LOG_MIN_FREE:
+                    # a shared, nearly full disk (g02-g17 jump host /home: 4.9 GB, full twice in Oct): the change log
+                    # stops, Live goes on in memory - a full disk breaks other users' files (known_hosts, 22 Oct)
+                    self.log_paused = True
+                    self.changes.append({"seq": self.seq, "t": ch["t"], "link": None, "what": "note", "from": None,
+                                         "to": "change log paused: less "
+                                         f"than {LOG_MIN_FREE >> 20} MB free on {self.log_path.parent}", "source": "live"})
+                    return
                 with self.log_path.open("a") as fh:
                     fh.write(json.dumps(ch) + "\n")
             except OSError:

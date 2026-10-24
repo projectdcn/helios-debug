@@ -765,7 +765,7 @@ $("pp-swap").addEventListener("click",function(){var st=$("pp-st").value,sg=$("p
 $("pp-same").addEventListener("click",function(){$("pp-dt").value=$("pp-st").value;ppRefreshDst()});
 
 // ---------------------------------------------------------------- live mode
-var live=null,liveSeq=0,liveChanges=[],liveTimer=null;
+var live=null,liveSeq=0,liveChanges=[],liveTimer=null,wasLive=false;
 function liveMine(){var i=inv();return live&&live.running&&i&&live.inventory===i.file}
 function mm2(x){x=Math.max(0,Math.round(x));return x>=3600?Math.floor(x/3600)+" h "+Math.floor(x%3600/60)+" min":Math.floor(x/60)+" min"}
 function liveBar(){
@@ -811,7 +811,8 @@ function livePoll(){
     if(live&&live.running)$("live-ind-t").textContent="Live: "+live.rack;
     var onMap=!document.querySelector('section[data-p="map"]').classList.contains("hide"),
         onTopo=!document.querySelector('section[data-p="topology"]').classList.contains("hide");
-    if(onTopo&&liveMine()&&mapData&&$("topo-dyn")&&$("topo-dyn").firstChild&&(d.changes||[]).length)drawTopoInto();   /* the picture follows Live too */
+    if(onTopo&&mapData&&$("topo-dyn")&&$("topo-dyn").firstChild&&((liveMine()&&(d.changes||[]).length)||wasLive!==liveMine())){drawTopoInto();topoHint()}   /* the picture follows Live too */
+    wasLive=liveMine();
     if(onMap){liveBar();if(mapData)drawMap();liveList();
       if(newDown.length&&liveMine()){$("map-banner").classList.remove("hide");$("map-banner").style.background="var(--downbg)";
         $("map-banner").innerHTML="<b>Link(s) went down just now:</b> "+esc(newDown.slice(0,8).join(", "))+(newDown.length>8?" ...":"")}}
@@ -1321,6 +1322,15 @@ function wireTopoSvg(root){
   root.querySelectorAll("[data-ttr]").forEach(function(e){e.addEventListener("click",function(){topoSel=null;drawTopoLines(root);go(function(){drillTray(e.dataset.ttr)})})});
   root.querySelectorAll("[data-tgp]").forEach(function(e){e.addEventListener("click",function(){topoSel=e.dataset.tgp;if(inTopo)drawTopoInto();else drawMap();var x=topoSel.split("|");go(function(){drillGpu(x[0],x[1])})})});
 }
+/* what the picture shows: Live, or the check (and how old it is), plus the IFCP cable check */
+function topoHint(){
+  if(!mapData||!$("topo-hint"))return;
+  var lv=liveMine()&&live.rack===mapData.rack,age=(Date.now()-Date.parse(String(mapData.time_utc||"").replace(/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/,"$1-$2-$3T$4:$5:$6Z")))/864e5,c=mapData.cabling;
+  $("topo-hint").innerHTML=(lv?"<b>Live</b>: link states as they are now (from the logs, re-read every "+Math.round(live.reconcile_s/60)+" min); trays and cabling from the check of "+esc(stampLocal(mapData.time_utc))
+      :"From the check of "+esc(stampLocal(mapData.time_utc))+(age>=1?' <span class="err">('+Math.floor(age)+" day"+(Math.floor(age)>1?"s":"")+" old - Check all links, or turn Live on in Rack map, for today's state)</span>":""))+
+    " ("+mapData.links.length+" links)."+(c?" Cables: "+c.confirmed+" confirmed by IFCP"+(c.miscabled?', <b class="err">'+c.miscabled+" miscabled</b>":", 0 miscabled")+".":"")+
+    " Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture.";
+}
 function drawTopoInto(){
   var box=$("topo-dyn");if(!box||!mapData)return;
   box.innerHTML=topoSvg(mapData).replace('<svg class="topo" width="','<svg class="topo" data-big="1" width="');
@@ -1333,8 +1343,7 @@ function loadTopology(){
   var big=i.rack==="g02-g17";$("topo-detailed").classList.toggle("hide",!big);
   if(!big){$("topo-show-detailed").checked=false;$("topo-frame").classList.add("hide")}
   $("topo-dyn").innerHTML='<p class="mut">drawing '+esc(i.rack)+" ...</p>";
-  ensureMap(i.file).then(function(){drawTopoInto();
-    $("topo-hint").textContent="From the check of "+stampLocal(mapData.time_utc)+" ("+mapData.links.length+" links). Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture.";})
+  ensureMap(i.file).then(function(){drawTopoInto();topoHint()})
   .catch(function(e){$("topo-dyn").innerHTML='<p class="mut">'+friendly(e.message)+"</p>"});
 }
 function mapDetail(k){
