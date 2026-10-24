@@ -7,12 +7,17 @@
 # and its PyYAML / paramiko (SONiC ships both), keeps the previous version as app.prev (rollback.sh), keeps the
 # inventories and results across upgrades. Creates an SSH key for reaching the compute trays (and other switches) if
 # none exists; you copy it to them once. The UI listens on 127.0.0.1 only - open it through an SSH tunnel.
+#
+# Elsewhere (e.g. a jump host): PYTHON=<python with PyYAML + paramiko> picks the interpreter, KEY=<existing key>
+# uses a key the trays already accept instead of creating one:
+#   PYTHON=~/helios/venv/bin/python KEY=~/.ssh/id_cluster helios-debug-ui-<version>/install.sh
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PREFIX=${PREFIX:-$HOME/helios-debug-ui}
 PORT=${PORT:-8780}
 KEY=${KEY:-$HOME/.ssh/id_ed25519_heliosdbg}
+PYTHON=${PYTHON:-python3}
 START=1
 for a in "$@"; do
   case "$a" in
@@ -22,8 +27,8 @@ for a in "$@"; do
   esac
 done
 
-echo "== checking python3"
-python3 - <<'PY'
+echo "== checking $PYTHON"
+"$PYTHON" - <<'PY'
 import sys
 if sys.version_info < (3, 10):
     sys.exit(f"python3 {sys.version.split()[0]} is too old (3.10+ needed)")
@@ -62,6 +67,7 @@ if [ ! -f "$PREFIX/ui.env" ]; then
   cat > "$PREFIX/ui.env" <<EOF
 # helios-debug UI settings (read by start.sh). No passwords here.
 HELIOS_SSH_KEY=$KEY
+HELIOS_DEBUG_PYTHON=$PYTHON
 HELIOS_DEBUG_AUTO_LOCAL=1
 HELIOS_DEBUG_UI_PORT=$PORT
 HELIOS_DEBUG_INVENTORY_DIR=$PREFIX/inventory
@@ -76,7 +82,7 @@ P=$(cd "$(dirname "$0")" && pwd)
 if [ -f "$P/ui.pid" ] && kill -0 "$(cat "$P/ui.pid")" 2>/dev/null; then echo "already running (pid $(cat "$P/ui.pid"))"; exit 0; fi
 set -a; . "$P/ui.env"; set +a
 cd "$P/app"
-nohup python3 -m ui >> "$P/ui.log" 2>&1 &
+nohup "${HELIOS_DEBUG_PYTHON:-python3}" -m ui >> "$P/ui.log" 2>&1 &
 echo $! > "$P/ui.pid"
 sleep 1
 if kill -0 "$(cat "$P/ui.pid")" 2>/dev/null; then

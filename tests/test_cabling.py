@@ -42,3 +42,16 @@ def test_export_round_trip():
     text = cabling.export(LINKS)
     plan = cabling.read_plan(text)
     assert len(plan) == 4 and cabling.check(plan, LINKS[:1], SLOTS, GMAP)["problems"][0]["kind"] == "not_found"
+
+
+def test_known_hosts_with_a_broken_line(tmp_path):
+    """A truncated known_hosts line (g02-g17 jump host, 22 Oct) is skipped, the good keys still load."""
+    import paramiko
+    from heliosdbg.transport import load_known_hosts
+    k = paramiko.RSAKey.generate(1024).get_base64()
+    kh = tmp_path / "known_hosts"
+    kh.write_text(f"10.0.0.1 ssh-rsa {k}\n10.0.0.2 ssh-rsa {k[:41]}\n")
+    c = paramiko.SSHClient()
+    load_known_hosts(c, str(kh))
+    keys = c._system_host_keys                       # load_system_host_keys() fills these, not get_host_keys()
+    assert "10.0.0.1" in keys and "10.0.0.2" not in keys
