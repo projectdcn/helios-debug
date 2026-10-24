@@ -180,6 +180,7 @@ def test_scan_view_for_the_rack_map(ui):
     assert code == 200 and v["links"][0]["state"] == "down" and len(v["links"][0]["evidence"]) == 8 and "gpu" not in v["links"][0]
     assert v["gpus"][0]["phase"] == "PROVIDER" and v["slots"] == {"c1": 0}
     assert v["switch_ids"] == {"st1": 0}             # AFM numbers switch trays from 0: st1 = pod-1-0-SwitchTray
+    assert v["gpu_map"] == {} and v["gpu_acc"] == {}  # no raw tray read in this scan
     assert call(base, "/api/scan?path=../../etc")[0] == 400
 
 

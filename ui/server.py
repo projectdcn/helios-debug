@@ -409,11 +409,22 @@ def scan_view(state: State, rel: str) -> dict:
     links = [{k: ln.get(k) for k in LINK_KEYS} | {"evidence": (ln.get("evidence") or [])[:8]} for ln in d.get("links") or []]
     slots = dict((d.get("learned") or {}).get("slots") or {})
     name_unread_trays(links, slots)
+    acc = {}                                          # {tray:bdf: accelerator id} as the trays reported it (= AFM acc-id)
+    raw = f.parent / "raw" / "trays.json.gz"
+    if raw.is_file():
+        import gzip
+        try:
+            for tn, t in json.load(gzip.open(raw, "rt")).items():
+                for g in (t or {}).get("gpus") or []:
+                    if g.get("bdf") and str(g.get("accelerator", "")).isdigit():
+                        acc[f"{tn}:{g['bdf']}"] = int(g["accelerator"])
+        except (OSError, ValueError):
+            acc = {}
     return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
             "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
             "slots": slots, "switch_ids": afm_switch_ids(state, d.get("rack")),
-            "gpu_map": (d.get("learned") or {}).get("gpu_map") or {},
+            "gpu_map": (d.get("learned") or {}).get("gpu_map") or {}, "gpu_acc": acc,
             "ifcp_in_use": (d.get("learned") or {}).get("ifcp_in_use", True)}
 
 

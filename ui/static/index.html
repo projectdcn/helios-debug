@@ -563,6 +563,12 @@ function trayName(t,slots){return t?(t+(slots&&slots[t]!=null?" (AFM slot "+slot
 /* a GPU's number as the switch port descriptions / AFM count it (GPU0-3), from the check's learned gpu_map - not
    from the PCI address: on g02-g17 GPU0 is 0004:01:00.1 and GPU3 is 0001:01:00.1 */
 function gpuNum(t,bdf,gm){for(var k in (gm||{}))if(gm[k]===bdf&&k.indexOf(t+":GPU")===0)return +k.slice(t.length+4);return null}
+/* how a GPU is shown: GPU0 (0004:01:00.1) - the key stays the PCI address; ordered GPU0..3 */
+function gAcc(t,g){var a=((mapData||{}).gpu_acc||{})[t+":"+g];return a!=null?" acc "+a:""}
+/* GPU<n> = AFM's gpu-info index = the switch port descriptions' GPU<n> (g02-g17: GPU0 = 0004:01:00.1, AFM acc-id 4 x slot + 3) */
+function gName(t,g){var n=gpuNum(t,g,(mapData||{}).gpu_map);return n!=null?"GPU"+n+gAcc(t,g)+" ("+g+")":g+gAcc(t,g)}
+function gShort(t,g){var n=gpuNum(t,g,(mapData||{}).gpu_map);return n!=null?"GPU"+n:g}
+function gOrder(t){return function(a,b){var na=gpuNum(t,a,(mapData||{}).gpu_map),nb=gpuNum(t,b,(mapData||{}).gpu_map);return na!=null&&nb!=null?na-nb:(a<b?-1:1)}}
 function swName(sw,ids){return sw+(ids&&ids[sw]!=null?" (AFM "+ids[sw]+")":"")}
 function verdictHtml(state,kind,detail,owner,extraSteps){
   var h=kindHelp(state==="ok"?"ok":kind),steps=(h.s||[]).concat(extraSteps||[]);
@@ -917,7 +923,7 @@ function drawMap(){
     var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
     if(mapPrev&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
-    return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf||"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
+    return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf?gName(l.tray,l.bdf):"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
   }
   var html="";
   function eff(l){return (lv&&lv[lkey(l)]&&lv[lkey(l)].state)||l.state}
@@ -933,9 +939,9 @@ function drawMap(){
     Object.keys(by).sort().forEach(function(t){
       var all=[];Object.keys(by[t]).forEach(function(g){all=all.concat(by[t][g])});
       html+='<div class="mblk"><h3><a href="#" class="dd" data-dt="'+esc(t)+'" title="drill down into this tray">'+esc(trayName(t==="(no tray)"?"":t,d.slots)||t)+"</a>"+counts(all)+"</h3>";
-      Object.keys(by[t]).sort().forEach(function(g){
+      Object.keys(by[t]).sort(gOrder(t)).forEach(function(g){
         var ls=by[t][g].sort(function(a,b){return gpuPort(a)-gpuPort(b)});
-        html+='<div class="mrow"><a href="#" class="lab dd" data-dg="'+esc(t+"|"+g)+'" title="drill down into this GPU">'+esc(g)+'</a><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
+        html+='<div class="mrow"><a href="#" class="lab dd" data-dg="'+esc(t+"|"+g)+'" title="'+esc(gName(t,g))+' - drill down into this GPU">'+esc(gShort(t,g)+gAcc(t,g))+'</a><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
       });html+="</div>";
     });
   }else{
@@ -996,7 +1002,7 @@ function problemTable(ls,first){
   if(!bad.length)return "";
   return '<h3 style="font-size:.95rem">Problem links ('+bad.length+')</h3><div class="wrap"><table class="dl"><tr><th>State</th><th>Switch port</th><th>GPU end</th><th>What</th></tr>'+
     bad.slice(0,first||60).map(function(l){return '<tr class="clk" data-lk="'+esc(lkey(l))+'"><td class="st-'+esc(mEff(l))+'">'+esc(mEff(l))+"</td><td>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port)+"</td><td>"+
-      esc(trayName(l.tray,mapData.slots)+" "+mGpu(l)+" port "+mGpuPort(l))+"</td><td>"+esc(kindHelp(l.kind).t)+"</td></tr>"}).join("")+"</table></div>"+(bad.length>(first||60)?'<p class="mut">... '+(bad.length-(first||60))+" more</p>":"");
+      esc(trayName(l.tray,mapData.slots)+" "+gName(l.tray,mGpu(l))+" port "+mGpuPort(l))+"</td><td>"+esc(kindHelp(l.kind).t)+"</td></tr>"}).join("")+"</table></div>"+(bad.length>(first||60)?'<p class="mut">... '+(bad.length-(first||60))+" more</p>":"");
 }
 function detailActions(ls,label){
   var bad=ls.filter(function(l){return mEff(l)!=="ok"});
@@ -1034,7 +1040,7 @@ function gpuDiagram(t,g,ls){
   ls.forEach(function(l){var k=l.switch+"|"+(l.asic||"");(byA[k]=byA[k]||[]).push(l)});
   Object.keys(byA).forEach(function(k){byA[k].sort(function(a,b){return pkNum(a.sw_port)-pkNum(b.sw_port)})});
   h+='<rect class="box" x="20" y="'+(GY-8)+'" width="'+(W-40)+'" height="62" rx="8"/>';
-  h+='<text x="28" y="'+(GY+48)+'" font-size="12" font-weight="600">'+esc(trayName(t==="(no tray)"?"":t,mapData.slots)+" "+(g.indexOf("GPU")===0?g:"GPU "+g))+"</text>";
+  h+='<text x="28" y="'+(GY+48)+'" font-size="12" font-weight="600">'+esc(trayName(t==="(no tray)"?"":t,mapData.slots)+" "+(g.indexOf("GPU")===0?g:gName(t,g)))+"</text>";
   ls.forEach(function(l,i){var px=30+i*step+step/2,py=GY,k=l.switch+"|"+(l.asic||""),a=top.pos[k],j=byA[k].indexOf(l),ax=a.x+8+(a.w-16)*(byA[k].length>1?j/(byA[k].length-1):.5),st=mEff(l);
     h+='<g class="clk" data-ddl="'+esc(lkey(l))+'"><title>'+esc("GPU port "+mGpuPort(l)+" → "+l.switch+" "+(l.asic||"")+" "+l.sw_port+": "+st+(st!=="ok"?" - "+kindHelp(l.kind).t:""))+"</title>"+
       '<path d="'+curve(px,py,ax,a.y+40)+'" fill="none" stroke="'+stColor(st)+'" stroke-width="'+(st==="ok"?1.2:2.4)+'" stroke-opacity="'+(st==="ok"?.55:.95)+'"/>'+
@@ -1061,7 +1067,7 @@ function linkDiagram(l,v){
   var swUp=String(st.Oper||"").toLowerCase()==="up",gUp=String(g.link||"")==="LINK_UP",fdb=(sw.fdb||[]).length>0,pres=sw.presence;
   function badgeT(x,y,ok,txt){return '<text x="'+x+'" y="'+y+'" font-size="10.5" fill="'+(ok===null?"var(--mut)":ok?"var(--ok)":"var(--down)")+'">'+(ok===null?"– ":ok?"✔ ":"✖ ")+esc(txt)+"</text>"}
   var h='<g class="clk" data-ddt="'+esc(l.tray||"(no tray)")+"|"+esc(mGpu(l))+'"><rect class="box" x="10" y="20" width="190" height="112" rx="8"/><text x="20" y="40" font-size="12" font-weight="600">'+esc(trayName(l.tray,mapData.slots))+"</text>"+
-    '<text x="20" y="56" font-size="11">'+esc((mGpu(l).indexOf("GPU")===0?"":"GPU ")+mGpu(l)+" port "+mGpuPort(l))+"</text></g>"+
+    '<text x="20" y="56" font-size="11">'+esc((mGpu(l).indexOf("GPU")===0?mGpu(l):gName(l.tray,mGpu(l)))+" port "+mGpuPort(l))+"</text></g>"+
     (v&&v.gpu?badgeT(20,76,gUp,"link "+(g.link||"?"))+badgeT(20,93,String(g.admin||"").indexOf("enable")===0,"switched on")+(mapData.ifcp_in_use===false?badgeT(20,110,null,"IFCP not used on this rack"):badgeT(20,110,i.ll_up==="yes"?true:(i.ll_up?false:null),"IFCP "+(i.ll_up||"?")))+badgeT(20,127,g.fault?g.fault==="no":null,"fault "+(g.fault||"?"))
       :'<text class="m" x="20" y="80" font-size="10.5">GPU end not read / matched</text>');
   h+='<path d="M200 76 L440 76" stroke="'+stColor(s)+'" stroke-width="5" stroke-dasharray="'+(s==="down"?"8 6":"none")+'"/>'+
@@ -1097,7 +1103,7 @@ function drillTray(t){
   $("map-detail").innerHTML=crumbs([["Rack",drillRack],[nm]])+"<h2>Compute tray "+esc(nm)+"</h2>"+
     bundleDiagram(Object.keys(gp).sort().map(function(g){return {key:t+"|"+g,label:(g.indexOf(":")>0?"GPU "+g.slice(0,4):g.replace(" (described)","*")),links:gp[g]}}),ls,"connectivity of "+nm,"Its GPUs (bottom) and the switch chips their links go to (top)","data-ddg")+
     '<div class="wrap"><table class="dl"><tr><th>GPU</th><th>Links</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
-    Object.keys(gp).sort().map(function(g){return '<tr class="clk" data-gpu="'+esc(t+"|"+g)+'"><td>'+esc(g)+"</td>"+cntCells(mCount(gp[g]),gp[g].length)+"</tr>"}).join("")+"</table></div>"+
+    Object.keys(gp).sort(gOrder(t)).map(function(g){return '<tr class="clk" data-gpu="'+esc(t+"|"+g)+'"><td>'+esc(gName(t,g))+"</td>"+cntCells(mCount(gp[g]),gp[g].length)+"</tr>"}).join("")+"</table></div>"+
     '<p class="mut" style="margin-top:8px">Its links go to: '+Object.keys(as).sort().map(function(k){var c=mCount(as[k]);return esc(k.replace("|"," "))+" ("+as[k].length+(c.down?", "+c.down+" down":"")+")"}).join(", ")+"</p>"+
     causesHtml(ls)+problemTable(ls)+detailActions(ls,t);
   wireDetail(ls,t==="(no tray)"?"":t);
@@ -1105,7 +1111,7 @@ function drillTray(t){
 function drillGpu(t,g){
   var ls=trayLinks(t).filter(function(l){return mGpu(l)===g}).sort(function(a,b){return (+mGpuPort(a))-(+mGpuPort(b))});
   var nm=trayName(t==="(no tray)"?"":t,mapData.slots)||t;
-  $("map-detail").innerHTML=crumbs([["Rack",drillRack],[nm,function(){drillTray(t)}],[g]])+"<h2>"+esc(nm+" "+(g.indexOf("GPU")===0?g:"GPU "+g))+"</h2>"+gpuDiagram(t,g,ls)+
+  $("map-detail").innerHTML=crumbs([["Rack",drillRack],[nm,function(){drillTray(t)}],[gShort(t,g)]])+"<h2>"+esc(nm+" "+(g.indexOf("GPU")===0?g:gName(t,g)))+"</h2>"+gpuDiagram(t,g,ls)+
     '<div class="wrap"><table class="dl"><tr><th>GPU port</th><th>State</th><th>Switch port</th><th>Switch chip</th><th>What</th></tr>'+
     ls.map(function(l){return '<tr class="clk" data-lk="'+esc(lkey(l))+'"><td>'+esc(mGpuPort(l))+'</td><td class="st-'+esc(mEff(l))+'">'+esc(mEff(l))+"</td><td>"+esc(l.switch+" "+l.sw_port)+"</td><td>"+esc(l.asic||"")+"</td><td>"+(mEff(l)==="ok"?"":esc(kindHelp(l.kind).t))+"</td></tr>"}).join("")+"</table></div>"+
     causesHtml(ls)+detailActions(ls,g.indexOf(":")>0?g:t)+
@@ -1137,10 +1143,10 @@ function drillAsic(sw,a){
     (Object.keys(gp).length>18?(function(){var tr={};ls.forEach(function(l){(tr[l.tray||"(no tray)"]=tr[l.tray||"(no tray)"]||[]).push(l)});
       return bundleDiagram(Object.keys(tr).sort().map(function(t){return {key:t,label:trayName(t==="(no tray)"?"":t,mapData.slots)||t,links:tr[t]}}),ls,"connectivity of "+sw+" "+a,
         "The compute trays whose GPUs land on this chip ("+Object.keys(gp).length+" GPUs - click a tray for its GPUs)","data-ddtr")})()
-     :bundleDiagram(Object.keys(gp).sort().map(function(k){var x=k.split("|");return {key:k,label:x[0]+" "+(x[1].indexOf(":")>0?x[1].slice(0,4):x[1].replace(" (described)","*")),links:gp[k]}}),ls,"connectivity of "+sw+" "+a,"The GPUs whose links land on this chip","data-ddg"))+
+     :bundleDiagram(Object.keys(gp).sort().map(function(k){var x=k.split("|");return {key:k,label:x[0]+" "+(x[1].indexOf(":")>0?gShort(x[0],x[1]):x[1].replace(" (described)","*")),links:gp[k]}}),ls,"connectivity of "+sw+" "+a,"The GPUs whose links land on this chip","data-ddg"))+
     (near>=3?'<div class="verdict degraded"><h3>Problems sit on neighbouring ports</h3>'+near+" pairs of problem ports are within 8 port numbers of each other - something shared by them (one connector / cage / cable bundle) is more likely than separate faults.</div>":"")+
     '<div class="wrap"><table class="dl"><tr><th>GPU (tray)</th><th>Links on this chip</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
-    Object.keys(gp).sort().map(function(k){var x=k.split("|");return '<tr class="clk" data-gpu="'+esc(k)+'"><td>'+esc(trayName(x[0]==="(no tray)"?"":x[0],mapData.slots)+" "+x[1])+"</td>"+cntCells(mCount(gp[k]),gp[k].length)+"</tr>"}).join("")+"</table></div>"+
+    Object.keys(gp).sort().map(function(k){var x=k.split("|");return '<tr class="clk" data-gpu="'+esc(k)+'"><td>'+esc(trayName(x[0]==="(no tray)"?"":x[0],mapData.slots)+" "+gName(x[0],x[1]))+"</td>"+cntCells(mCount(gp[k]),gp[k].length)+"</tr>"}).join("")+"</table></div>"+
     causesHtml(ls)+problemTable(ls)+detailActions(ls,sw+" "+a);
   wireDetail(ls,"");
 }
@@ -1163,7 +1169,7 @@ function portExtra(k){
         ["Drops in / out",(c.RX_DRP||"0")+" / "+(c.TX_DRP||"0")],["Packets in / out",(c.RX_OK||"-")+" / "+(c.TX_OK||"-")],
         ["FEC corrected",f.FEC_CORR],["FEC uncorrected",f.FEC_UNCORR,(+String(f.FEC_UNCORR||0).replace(/,/g,""))?"st-down":""],
         ["Totals since","switch start (growth is judged during a check, not here)"]]):'<p class="mut">Not saved with this check.</p>')+"</div>";
-    var gpCard='<div class="card"><h3 style="margin:0 0 6px;font-size:.95rem">GPU end: '+esc(trayName(l.tray,mapData.slots)+" "+mGpu(l)+" port "+mGpuPort(l))+"</h3>"+
+    var gpCard='<div class="card"><h3 style="margin:0 0 6px;font-size:.95rem">GPU end: '+esc(trayName(l.tray,mapData.slots)+" "+gName(l.tray,mGpu(l))+" port "+mGpuPort(l))+"</h3>"+
       (v.gpu?kvRows([["Link",g.link,glink==="LINK_UP"?"st-ok":"st-down"],["Switched on (admin)",g.admin,String(g.admin||"").indexOf("enable")===0?"":"st-down"],
         ["Fault",g.fault,g.fault&&g.fault!=="no"?"st-down":""],["Up since boot (total)",dur(g.up_ms)],["Down since boot (total)",dur(g.down_ms)],
         ["Station",g.station],["FEC mode",g.fec_mode],["Loopback",g.loopback],["Port MAC",g.mac],
@@ -1180,7 +1186,7 @@ function portExtra(k){
     if(gp!=="?"){var partner=(+gp)^1;mapData.links.forEach(function(x){if(lkey(x)!==mine&&x.tray===l.tray&&mGpu(x)===mGpu(l)&&+mGpuPort(x)===partner)rel.push(["same station (port "+partner+")",x])})}
     var n=pkNum(l.sw_port);mapData.links.filter(function(x){return x.switch===l.switch&&(x.asic||"")===(l.asic||"")&&lkey(x)!==mine&&Math.abs(pkNum(x.sw_port)-n)<=2})
       .sort(function(a,b){return pkNum(a.sw_port)-pkNum(b.sw_port)}).forEach(function(x){rel.push(["next to it on the switch",x])});
-    if(gp!=="?")mapData.links.filter(function(x){return x.tray===l.tray&&mGpu(x)!==mGpu(l)&&String(mGpuPort(x))===String(gp)}).forEach(function(x){rel.push(["port "+gp+" of "+mGpu(x),x])});
+    if(gp!=="?")mapData.links.filter(function(x){return x.tray===l.tray&&mGpu(x)!==mGpu(l)&&String(mGpuPort(x))===String(gp)}).forEach(function(x){rel.push(["port "+gp+" of "+gShort(x.tray,mGpu(x)),x])});
     var rh=rel.length?'<h3 style="font-size:.95rem;margin-top:12px">Related ports</h3><div class="rel">'+rel.map(function(r){var x=r[1];
       return '<a data-rel="'+esc(lkey(x))+'" class="'+esc(mEff(x))+'" title="'+esc(r[0]+": "+mEff(x))+'">'+esc(x.sw_port+" · "+r[0])+"</a>"}).join("")+
       '</div><p class="mut" style="margin:4px 0 0">If the related ports fail too, the cause is likely something they share (the GPU station, a switch connector, or one plane).</p>':"";
@@ -1323,8 +1329,8 @@ function mapDetail(k){
   var tgt=l.switch+" "+l.sw_port;
   $("map-detail").classList.remove("hide");
   $("map-detail").innerHTML=crumbs([["Rack",function(){drillRack()}],[trayName(l.tray,mapData.slots),function(){drillTray(l.tray||"(no tray)")}],
-      [mGpu(l),function(){drillGpu(l.tray||"(no tray)",mGpu(l))}],["port "+mGpuPort(l)]],[[l.switch,function(){drillSwitch(l.switch)}],[(l.asic||""),function(){drillAsic(l.switch,l.asic||"")}],[l.sw_port]])+
-    "<h2>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" \u2194 "+trayName(l.tray,mapData.slots)+" "+mGpu(l)+" port "+mGpuPort(l))+" "+badge(mEff(l))+"</h2>"+
+      [gShort(l.tray,mGpu(l)),function(){drillGpu(l.tray||"(no tray)",mGpu(l))}],["port "+mGpuPort(l)]],[[l.switch,function(){drillSwitch(l.switch)}],[(l.asic||""),function(){drillAsic(l.switch,l.asic||"")}],[l.sw_port]])+
+    "<h2>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" \u2194 "+trayName(l.tray,mapData.slots)+" "+gName(l.tray,mGpu(l))+" port "+mGpuPort(l))+" "+badge(mEff(l))+"</h2>"+
     '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
     verdictHtml(mEff(l)==="ok"?"ok":l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+
     (live&&liveMine()&&live.links[k]&&mEff(l)!==l.state?'<p class="mut">Live: now <b>'+esc(mEff(l))+"</b> (was "+esc(l.state)+" at the check).</p>":"")+
