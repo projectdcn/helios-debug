@@ -375,6 +375,33 @@ def name_unread_trays(links: list, slots: dict) -> None:
                 slots[name] = int(s.group(1))
 
 
+AFM_NAME_ID_RX = re.compile(r"^pod-\d+-(\d+)-")
+TRAY_NUM_RX = re.compile(r"^[a-z]+0*(\d+)$", re.I)
+
+
+def afm_switch_ids(state: State, rack: str | None) -> dict[str, int]:
+    """{switch name: AFM SwitchTray id} for the rack's inventory. AFM numbers from 0 (pod-1-0-SwitchTray), the rack
+    names from 1 (st1): the inventory's slot: or afm_name wins, else st<n> = n-1, else the order in the inventory."""
+    for f in sorted(state.inventory_dir.glob("*.yaml")):
+        try:
+            inv = load_inventory(f)
+        except Exception:  # noqa: BLE001 - a broken inventory is listed with its error elsewhere
+            continue
+        if (inv.rack or f.stem) != rack:
+            continue
+        out = {}
+        for i, h in enumerate(inv.all_switches):
+            m, n = AFM_NAME_ID_RX.match(str(h.extra.get("afm_name") or "")), TRAY_NUM_RX.match(h.name)
+            if str(h.extra.get("slot", "")).isdigit():
+                out[h.name] = int(h.extra["slot"])
+            elif m:
+                out[h.name] = int(m.group(1))
+            else:
+                out[h.name] = int(n.group(1)) - 1 if n and int(n.group(1)) > 0 else i
+        return out
+    return {}
+
+
 def scan_view(state: State, rel: str) -> dict:
     """A scan's links, compact, for the rack map (rel: link-check/<rack>/scan-...)."""
     f = _result_file(state, f"{rel}/link_check.json")
@@ -385,7 +412,8 @@ def scan_view(state: State, rel: str) -> dict:
     return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
             "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
-            "slots": slots,
+            "slots": slots, "switch_ids": afm_switch_ids(state, d.get("rack")),
+            "gpu_map": (d.get("learned") or {}).get("gpu_map") or {},
             "ifcp_in_use": (d.get("learned") or {}).get("ifcp_in_use", True)}
 
 

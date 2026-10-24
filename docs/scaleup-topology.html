@@ -165,7 +165,7 @@ function drawStatic() {
     const x = SWX(sw - 1), g = el('g', {});
     g.append(el('rect', { x, y: 26, width: SWW, height: 154, rx: 8, fill: 'var(--panel)', stroke: pairColor(sw), 'stroke-width': 1.5 }));
     g.append(el('text', { x: x + 10, y: 46, 'font-size': 14, 'font-weight': 600, fill: 'var(--ink)' }, `st${sw}`));
-    g.append(el('text', { x: x + 40, y: 46, 'font-size': 10.5, fill: 'var(--muted)' }, `10.255.4.${70 + sw}`));
+    g.append(el('text', { x: x + 40, y: 46, 'font-size': 10.5, fill: 'var(--muted)' }, `10.255.4.${70 + sw} · AFM ${sw - 1}`));
     const swLinks = LINKS.filter(l => l[0] === sw), gpus = new Set(swLinks.map(l => l[3] * 4 + l[4])).size;
     g.append(el('text', { x: x + 10, y: 64, 'font-size': 11.5, 'font-weight': 600, fill: 'var(--ink)' }, `${swLinks.length / gpus} links per GPU`));
     g.append(el('text', { x: x + 10, y: 79, 'font-size': 10.5, fill: 'var(--muted)' }, `${swLinks.length} GPU links total`));
@@ -185,7 +185,7 @@ function drawStatic() {
     const t = trayPos(s), down = DOWN_SLOTS.has(s), g = el('g', {});
     g.append(el('rect', { x: t.x, y: t.y, width: TW, height: 84, rx: 8, fill: 'var(--panel)', stroke: down ? 'var(--down)' : 'var(--rule)', 'stroke-dasharray': down ? '4 3' : 'none' }));
     g.append(el('text', { x: t.x + 10, y: t.y + 20, 'font-size': 13, 'font-weight': 600, fill: down ? 'var(--down)' : 'var(--ink)' }, `CT${String(s + 1).padStart(2, '0')}`));
-    g.append(el('text', { x: t.x + TW - 10, y: t.y + 20, 'font-size': 10.5, 'text-anchor': 'end', fill: 'var(--muted)' }, down ? 'down' : `slot ${s}`));
+    g.append(el('text', { x: t.x + TW - 10, y: t.y + 20, 'font-size': 10.5, 'text-anchor': 'end', fill: 'var(--muted)' }, down ? `down · AFM slot ${s}` : `AFM slot ${s}`));
     for (let gi = 0; gi < 4; gi++) {
       const c = gpuXY(s, gi), r = el('rect', { x: c.x - 9, y: c.y - 9, width: 18, height: 18, rx: 3, fill: 'var(--faint)', stroke: 'var(--rule)', 'data-s': s, 'data-g': gi, tabindex: 0, role: 'button', 'aria-label': `CT${s + 1} GPU${gi}`, style: 'cursor:pointer' });
       g.append(r);
@@ -207,7 +207,7 @@ function drawAll(on) {
   }
 }
 const trayS = document.getElementById('tray'), gpuS = document.getElementById('gpu');
-for (let s = 0; s < 18; s++) trayS.append(new Option(`CT${String(s + 1).padStart(2, '0')}  (slot ${s})${DOWN_SLOTS.has(s) ? ' - down' : ''}`, s));
+for (let s = 0; s < 18; s++) trayS.append(new Option(`CT${String(s + 1).padStart(2, '0')}  (AFM slot ${s})${DOWN_SLOTS.has(s) ? ' - down' : ''}`, s));
 function select(s, g, hlPort) {
   trayS.value = s; gpuS.value = g;
   const links = (byGpu.get(s * 4 + g) || []).slice().sort((p, q) => p[5] - q[5]);

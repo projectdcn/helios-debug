@@ -179,7 +179,18 @@ def test_scan_view_for_the_rack_map(ui):
     v = json.loads(body)
     assert code == 200 and v["links"][0]["state"] == "down" and len(v["links"][0]["evidence"]) == 8 and "gpu" not in v["links"][0]
     assert v["gpus"][0]["phase"] == "PROVIDER" and v["slots"] == {"c1": 0}
+    assert v["switch_ids"] == {"st1": 0}             # AFM numbers switch trays from 0: st1 = pod-1-0-SwitchTray
     assert call(base, "/api/scan?path=../../etc")[0] == 400
+
+
+def test_afm_switch_ids(tmp_path):
+    """st<n> = AFM n-1 unless the inventory says otherwise (slot: or afm_name: pod-1-<id>-SwitchTray)."""
+    (tmp_path / "r.yaml").write_text("rack: r\nswitches:\n  - {name: st1, host: a}\n  - {name: st2, host: b, slot: 5}\n"
+                                     "  - {name: sw-x, host: c, afm_name: pod-1-3-SwitchTray}\n  - {name: spare, host: d}\n"
+                                     "computes:\n  - {name: c1, host: e}\n")
+    st = server.State(tmp_path, tmp_path)
+    assert server.afm_switch_ids(st, "r") == {"st1": 0, "st2": 5, "sw-x": 3, "spare": 3}
+    assert server.afm_switch_ids(st, "nope") == {}
 
 
 def test_overview_counts_the_latest_scan(ui):
