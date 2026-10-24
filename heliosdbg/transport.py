@@ -77,9 +77,10 @@ def resolve_keys(key_file: str | None, who: str, host: str | None = None) -> tup
         path = os.path.expanduser(key_file)
         if not os.path.isfile(path):
             raise FileNotFoundError(
-                f"SSH key {path} (inventory key_file of {who}) does not exist on {_where()}: copy that key there "
-                f"(chmod 600), set {KEY_ENV} to a key this machine has, or remove key_file to use this machine's "
-                "own SSH setup")
+                f"SSH key {path} (inventory key_file of {who}) does not exist on {_where()}: if the rack is reached "
+                "through a jump host that holds this key, enable transport.jump (via: exec) in the inventory; else copy "
+                f"that key here (chmod 600), set {KEY_ENV} to a key this machine has, or remove key_file to use this "
+                "machine's own SSH setup")
         return [path], "inventory key_file"
     ids = ssh_config_identities(host) if host else []
     if ids:
