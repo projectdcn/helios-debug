@@ -729,6 +729,23 @@ def scan_cmd(a) -> int:
                 lines.append(f"  {n} {x.get('ns') or ''} Vlan{x.get('vlan') or '?'} {x['mac']} -> {x.get('port') or 'no port'}"
                              f" ({x.get('type') or '?'}; {x.get('source')})")
         lines.append("      -> " + next(h for _n, _r, e, h in nc if "without a switch port" in e))
+    vf = res.get("vlan_findings") or []
+    vl = (res.get("learned") or {}).get("vlans") or {}
+    if vl:
+        sets = {}
+        for chip, v in vl.items():
+            sets.setdefault(", ".join(v["vlans"]) if not v.get("error") else "not read: " + v["error"][:60], []).append(chip)
+        lines.append("")
+        lines.append("VLANs: " + "; ".join(f"{k} on {len(c)} ASIC(s)" + (f" ({', '.join(c)})" if len(sets) > 1 else "")
+                                       for k, c in sets.items()))
+        if vf:
+            lines.append(f"VLAN problems ({len(vf)}):")
+            lines += [f"  {x['kind']:<14}{x['switch']} {x['asic'] or ''}: {x['detail']}" for x in vf[:40]]
+            if len(vf) > 40:
+                lines.append(f"  ... {len(vf) - 40} more in link_check.json")
+        else:
+            lines.append("VLAN check: every GPU-facing port in a VLAN, the same VLAN per GPU port number on each ASIC, "
+                         "no static entry off its port's VLAN")
     nc_other = [x for x in nc if "without a switch port" not in x[2]]
     if nc_other:
         lines.append("")
@@ -763,6 +780,7 @@ def scan_cmd(a) -> int:
                         for g in groups],
         "not_checked": [{"node": n, "role": r, "error": e, "hint": h} for n, r, e, h in _not_checked(res)],
         "fdb_broken": [dict(x, switch=n) for n, sw in res["switches"].items() for x in sw.get("fdb_broken") or []],
+        "vlan_findings": res.get("vlan_findings") or [],
         "scope": {"switches": getattr(a, "switches", None), "trays": getattr(a, "trays", None)}}, indent=1, default=str))
     write_html(out / "report.html", inv.rack or "rack", time.strftime("%Y-%m-%d %H:%M", time.gmtime()), res, groups,
                cmdlog, a.log_keep)

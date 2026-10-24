@@ -116,6 +116,29 @@ def parse_db_kv(text: str) -> dict:
         return {}
 
 
+_VLAN_SCRIPT = (                                   # one command per ASIC: every VLAN, every member with its tagging mode
+    "for k in $(sonic-db-cli{ns} CONFIG_DB keys 'VLAN|*'); do echo \"V ${{k#VLAN|}}\"; done; "
+    "for k in $(sonic-db-cli{ns} CONFIG_DB keys 'VLAN_MEMBER|*'); do "
+    "echo \"M ${{k#VLAN_MEMBER|}} $(sonic-db-cli{ns} CONFIG_DB hget \"$k\" tagging_mode)\"; done")
+
+
+def read_vlans(sw, ns) -> dict:
+    """{'vlans': [Vlan100, ...], 'members': {EthernetN: [[Vlan100, tagging_mode], ...]}} of one ASIC (CONFIG_DB).
+    g02-g17 23 Oct: Vlan2 (no members) and Vlan100/200/300, 72 GPU ports each, one VLAN per GPU port number."""
+    import shlex
+    out = sw.sh("bash -c " + shlex.quote(_VLAN_SCRIPT.format(ns=ns_flag(ns))), sudo=True, timeout=300)
+    vlans, members = set(), {}
+    for ln in out.splitlines():
+        f = ln.split()
+        if len(f) >= 2 and f[0] == "V":
+            vlans.add(f[1])
+        elif len(f) >= 2 and f[0] == "M" and "|" in f[1]:
+            v, port = f[1].split("|", 1)
+            vlans.add(v)
+            members.setdefault(port, []).append([v, f[2] if len(f) > 2 else ""])
+    return {"vlans": sorted(vlans, key=lambda v: int(re.sub(r"\D", "", v) or 0)), "members": members}
+
+
 def read_fdb(sw, ns) -> list[dict]:
     """`show mac` of one ASIC; when SONiC's command fails on entries without a switch port, raise FdbBrokenEntries
     naming them (instead of a bare KeyError line)."""
@@ -150,7 +173,12 @@ def collect_switch(sw) -> dict:
             fec = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters fec-stats{ns_flag(ns)}", timeout=180))}
             pres = {r.get("Port"): r.get("Presence", "") for r in
                     parse_table(sw.run(f"show interfaces transceiver presence{ns_flag(ns)}", sudo=True, timeout=180).stdout)}
-            out["asics"][key] = {"status": status, "desc": desc, "fdb": fdb, "counters": cnt, "fec": fec, "presence": pres}
+            try:
+                vl = read_vlans(sw, ns)
+            except Exception as e:  # noqa: BLE001 - VLANs are extra: a failed read is noted, the links are still checked
+                vl = {"vlans": [], "members": {}, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+            out["asics"][key] = {"status": status, "desc": desc, "fdb": fdb, "counters": cnt, "fec": fec, "presence": pres,
+                                 "vlan": vl}
     except Exception as e:  # noqa: BLE001 - an unreachable switch is reported, not fatal
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     if broken:                                       # a problem on the switch: named in full, entries kept
@@ -229,6 +257,7 @@ class Link:
     owner: str = ""
     action: str = ""
     afm_port: str | None = None         # AFM gpu-info port oper-state (with the AFM view)
+    vlans: list | None = None           # [[Vlan100, tagging_mode], ...] of the switch port (None = VLANs not read)
 
 
 def join(switches: list[dict], trays: list[dict], quarantined: dict | None = None) -> tuple[list[Link], dict]:
@@ -253,6 +282,8 @@ def join(switches: list[dict], trays: list[dict], quarantined: dict | None = Non
                     continue
                 st = a["status"].get(port, {})
                 ln = Link(s["name"], ns, port, desc, st.get("Oper"), st.get("Admin"), presence=a["presence"].get(port, ""))
+                vl = a.get("vlan") or {}
+                ln.vlans = None if vl.get("error") or "members" not in vl else vl["members"].get(port, [])
                 ln.fdb_static = bool(static.get(port))
                 for mac in static.get(port, ()):
                     hit = by_mac.get(mac)
@@ -737,7 +768,11 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
     gpu_findings = check_gpus(tr_res, links, pairs)
     if bcm_view:
         add_bcm(rack, links, sw_res, log, bcm_max)
+    learned["vlans"] = {f"{s['name']} {ns}".strip(): {"vlans": (a.get("vlan") or {}).get("vlans") or [],
+                                                      "error": (a.get("vlan") or {}).get("error")}
+                        for s in sw_res.values() for ns, a in s["asics"].items()}
     return {"switches": sw_res, "trays": tr_res, "links": links, "learned": learned, "optics_reported": optics,
+            "vlan_findings": vlan_findings(list(sw_res.values()), links),
             "interval_s": span, "gpus": gpu_findings}
 
 
@@ -759,6 +794,69 @@ def group_causes(links: list[Link]) -> list[dict]:
             label = f"{label}: {tray}"
         out.append({"state": state, "kind": kind, "cause": label, "owner": owner, "count": len(v), "links": v})
     return sorted(out, key=lambda g: (g["state"] != "down", -g["count"]))
+
+
+def vlan_findings(switches: list[dict], links: list[Link]) -> list[dict]:
+    """VLAN problems, each {kind, switch, asic, port, vlan, detail}:
+    not_in_vlan     a GPU-facing switch port that is in no VLAN (its traffic has nowhere to go)
+    vlan_mismatch   a port whose VLAN / tagging differs from what the same ASIC uses for the same GPU port number on the
+                    other GPUs (g02-g17: one VLAN per GPU port number per ASIC, all priority_tagged)
+    fdb_off_vlan    a static forwarding entry on a VLAN its port is not a member of
+    vlan_set        an ASIC whose VLANs (with members) differ from the rack's other ASICs"""
+    out, sets = [], {}
+    by_chip: dict = {}
+    for ln in links:
+        if ln.vlans is None:
+            continue
+        if not ln.vlans:
+            out.append({"kind": "not_in_vlan", "switch": ln.switch, "asic": ln.asic, "port": ln.sw_port, "vlan": None,
+                        "detail": f"GPU-facing port ({ln.desc}) is in no VLAN"})
+        cab = getattr(ln, "_cab", None)
+        if cab and ln.vlans:
+            by_chip.setdefault((ln.switch, ln.asic, cab[3]), []).append(ln)
+    for (sw, asic, gport), ls in by_chip.items():
+        votes: dict = {}
+        for ln in ls:
+            k = tuple(map(tuple, sorted(ln.vlans)))
+            votes[k] = votes.get(k, 0) + 1
+        if len(votes) < 2:
+            continue
+        want = max(votes, key=votes.get)
+        for ln in ls:
+            if tuple(map(tuple, sorted(ln.vlans))) != want:
+                out.append({"kind": "vlan_mismatch", "switch": sw, "asic": asic, "port": ln.sw_port,
+                            "vlan": ",".join(v for v, _m in ln.vlans),
+                            "detail": f"{ln.sw_port} (GPU port {gport}) is in {_vl(ln.vlans)}; the other {votes[want]} GPUs' "
+                                      f"port {gport} on {sw} {asic} are in {_vl([list(x) for x in want])}"})
+    for s in switches:
+        for ns, a in s["asics"].items():
+            vl = a.get("vlan") or {}
+            if vl.get("error") or "members" not in vl:
+                continue
+            members = vl["members"]
+            used = frozenset(v for ms in members.values() for v, _m in ms)
+            sets[(s["name"], ns)] = used
+            for r in a.get("fdb") or []:
+                if str(r.get("Type", "")).lower() != "static":
+                    continue
+                v = f"Vlan{r.get('Vlan')}" if str(r.get("Vlan", "")).isdigit() else str(r.get("Vlan", ""))
+                port = r.get("Port")
+                if port in members and v not in [x for x, _m in members[port]]:
+                    out.append({"kind": "fdb_off_vlan", "switch": s["name"], "asic": ns, "port": port, "vlan": v,
+                                "detail": f"static entry {r.get('MacAddress')} on {v} -> {port}, but {port} is in "
+                                          f"{_vl(members[port])}"})
+    if len(set(sets.values())) > 1:
+        common = max(set(sets.values()), key=lambda x: sum(1 for v in sets.values() if v == x))
+        for (sw, ns), used in sets.items():
+            if used != common:
+                out.append({"kind": "vlan_set", "switch": sw, "asic": ns, "port": None, "vlan": ",".join(sorted(used)),
+                            "detail": f"{sw} {ns} uses VLANs {', '.join(sorted(used)) or 'none'}; the other ASICs "
+                                      f"use {', '.join(sorted(common))}"})
+    return out
+
+
+def _vl(ms) -> str:
+    return " + ".join(f"{v} ({m or 'untagged'})" for v, m in ms) or "no VLAN"
 
 
 def link_dict(ln: Link) -> dict:

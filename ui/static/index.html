@@ -137,7 +137,9 @@ nav button.exp{border-style:dashed}
     <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>How the compute trays' GPUs are cabled to the switch trays of the rack chosen at the top: switch chips on top, compute trays and their GPUs below, one line per tray-to-chip bundle coloured by its worst link (red: a link is down) - drawn from the rack's latest check, so it fits any rack (mini rack, full rack).</dd><dt>When</dt><dd>To see where problems sit and what they share, then click down: tray, GPU, link, switch chip.</dd><dt>How long</dt><dd>Instant (the latest check).</dd><dt>Safe?</dt><dd>Yes - nothing is read from the rack. Live mode (Rack map) colours it live.</dd></dl></details>
     <div role="radiogroup" aria-label="what the lines show" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:0 0 6px"><span class="mut">Show</span>
       <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="link" checked style="width:auto;margin:0">Links (physical state)</label>
-      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="ifcp" style="width:auto;margin:0">IFCP (control-plane sessions)</label></div>
+      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="ifcp" style="width:auto;margin:0">IFCP (control-plane sessions)</label>
+      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="vlan" style="width:auto;margin:0">VLAN</label>
+      <select id="topo-vlan" class="hide" style="width:auto" aria-label="VLAN to draw"><option value="all">all VLANs</option></select></div>
     <div class="legend" id="topo-legend" style="margin:0 0 6px" aria-label="colour legend"></div>
     <p class="mut" id="topo-hint">Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture (below it on a narrow screen).</p>
     <div class="topo-wrap" id="topo-wrap">
@@ -1164,7 +1166,7 @@ function drillAsic(sw,a){
     (near>=3?'<div class="verdict degraded"><h3>Problems sit on neighbouring ports</h3>'+near+" pairs of problem ports are within 8 port numbers of each other - something shared by them (one connector / cage / cable bundle) is more likely than separate faults.</div>":"")+
     '<div class="wrap"><table class="dl"><tr><th>GPU (tray)</th><th>Links on this chip</th><th>ok</th><th>degraded</th><th>down</th><th>not known</th></tr>'+
     Object.keys(gp).sort().map(function(k){var x=k.split("|");return '<tr class="clk" data-gpu="'+esc(k)+'"><td>'+esc(trayName(x[0]==="(no tray)"?"":x[0],mapData.slots)+" "+gName(x[0],x[1]))+"</td>"+cntCells(mCount(gp[k]),gp[k].length)+"</tr>"}).join("")+"</table></div>"+
-    causesHtml(ls)+problemTable(ls)+detailActions(ls,sw+" "+a);
+    vlanTable(ls,sw+" "+a)+causesHtml(ls)+problemTable(ls)+detailActions(ls,sw+" "+a);
   wireDetail(ls,"");
 }
 
@@ -1258,8 +1260,9 @@ $("topo-frame").addEventListener("load",function(){
 });
 
 // ---------------------------------------------------------------- topology picture drawn from the check (any rack)
-var topoSel=null,topoMode="link",topoNewer=null;
-try{if(localStorage.getItem("hdbg-topo-mode")==="ifcp")topoMode="ifcp"}catch(e){}
+var topoSel=null,topoMode="link",topoNewer=null,topoVlan="all";
+try{var tm=localStorage.getItem("hdbg-topo-mode");if(tm==="ifcp"||tm==="vlan")topoMode=tm}catch(e){}
+$("topo-vlan").addEventListener("change",function(){topoVlan=$("topo-vlan").value;topoSel=null;drawTopoInto();topoHint()});
 document.querySelectorAll('input[name="topo-mode"]').forEach(function(x){x.checked=x.value===topoMode;
   x.addEventListener("change",function(){if(!x.checked)return;topoMode=x.value;try{localStorage.setItem("hdbg-topo-mode",topoMode)}catch(e){}
     topoSel=null;drawTopoInto();topoHint()})});      /* selected GPU: "tray|gpu" */
@@ -1276,12 +1279,32 @@ function ifcpState(l){
   if(i.err)return "down";
   return ll==="yes"?"ok":ll==="no"?"degraded":"unknown";
 }
-function LB(ifcp){return ifcp?{ok:"IFCP up",degraded:"no session",down:"error",unknown:"no link"}:{ok:"ok",degraded:"deg",down:"down",unknown:"?"}}
+function LB(m){return m==="ifcp"||m===true?{ok:"IFCP up",degraded:"no session",down:"error",unknown:"no link"}
+  :m==="vlan"?{ok:"in VLAN",degraded:"VLAN differs",down:"no VLAN",unknown:"not read"}:{ok:"ok",degraded:"deg",down:"down",unknown:"?"}}
+/* VLAN view: ok = the port is in a VLAN, the same one the chip uses for that GPU port number; degraded = its VLAN /
+   tagging differs (vlan_mismatch); down = a GPU port in no VLAN, or a static entry off its port's VLAN; unknown = not read */
+function vlanStateFn(d){
+  var bad={};(d.vlan_findings||[]).forEach(function(f){if(f.port){var k=f.switch+" "+f.port,w=f.kind==="vlan_mismatch"?"degraded":"down";if(bad[k]!=="down")bad[k]=w}});
+  return function(l){if(l.vlans==null)return "unknown";if(!l.vlans.length)return "down";return bad[lkey(l)]||"ok"};
+}
+function linkVlans(l){return (l.vlans||[]).map(function(v){return v[0]})}
+/* a chip's VLANs in its box: "Vlan100 · port 31 · 72" (the GPU port number most of its members carry) */
+function chipVlans(al,cx,SY,ca){
+  var by={};al.forEach(function(l){linkVlans(l).forEach(function(v){var x=by[v]=by[v]||{n:0,p:{}};x.n++;var gp=mGpuPort(l);x.p[gp]=(x.p[gp]||0)+1})});
+  var names=Object.keys(by).sort(function(a,b){return (+a.replace(/\D/g,""))-(+b.replace(/\D/g,""))}),h="";
+  names.slice(0,3).forEach(function(v,i){var x=by[v],gp=Object.keys(x.p).sort(function(a,b){return x.p[b]-x.p[a]})[0];
+    h+='<text x="'+cx+'" y="'+(SY+60+i*14)+'" font-size="10" text-anchor="middle"'+(topoVlan===v?' font-weight="700"':'')+'>'+esc(v.replace("Vlan","V")+" · p"+gp+" · "+x.n)+"</text>"});
+  if(names.length>3)h+='<text class="m" x="'+cx+'" y="'+(SY+102)+'" font-size="9.5" text-anchor="middle">+'+(names.length-3)+" more</text>";
+  if(!names.length)h='<text class="m" x="'+cx+'" y="'+(SY+66)+'" font-size="10" text-anchor="middle">'+(al.length?"no VLAN read":"no link in "+esc(topoVlan))+"</text>";
+  if(ca.down||ca.degraded)h+='<text x="'+cx+'" y="'+(SY+102)+'" font-size="9.5" text-anchor="middle" fill="'+stColor(ca.down?"down":"degraded")+'">'+(ca.down?ca.down+" no VLAN ":"")+(ca.degraded?ca.degraded+" differs":"")+"</text>";
+  return h;
+}
 function TC(ls){var S=topoSvg._S||mEff,c={ok:0,degraded:0,down:0,unknown:0};ls.forEach(function(l){var x=S(l);c[x]=(c[x]||0)+1});return c}
 function TW_(ls){var S=topoSvg._S||mEff,o={down:4,degraded:3,unknown:2,ok:1},w="ok";ls.forEach(function(l){var x=S(l);if((o[x]||0)>(o[w]||0))w=x});return w}
-function topoSvg(d,ifcp){
-  var S=ifcp?ifcpState:mEff;topoSvg._S=S;
-  var ls=d.links,sws={},trays={},pairs={};
+function topoSvg(d,mode){
+  mode=mode===true?"ifcp":mode||"link";var ifcp=mode;
+  var S=mode==="ifcp"?ifcpState:mode==="vlan"?vlanStateFn(d):mEff;topoSvg._S=S;
+  var ls=mode==="vlan"&&topoVlan!=="all"?d.links.filter(function(l){return (l.vlans||[]).some(function(v){return v[0]===topoVlan})}):d.links,sws={},trays={},pairs={};
   ls.forEach(function(l){var a=l.switch+"|"+(l.asic||"");(sws[l.switch]=sws[l.switch]||{})[l.asic||""]=1;
     var t=l.tray||"(no tray)";(trays[t]=trays[t]||{})[mGpu(l)]=1;var k=t+"#"+a;(pairs[k]=pairs[k]||[]).push(l)});
   var swN=Object.keys(sws).sort(),trN=Object.keys(trays).sort(function(a,b){var sa=(d.slots||{})[a],sb=(d.slots||{})[b];return (sa==null?999:sa)-(sb==null?999:sb)||(a<b?-1:1)});
@@ -1301,10 +1324,11 @@ function topoSvg(d,ifcp){
       asicPos[sw+"|"+a]={x:ax+aw/2,y:ASY};
       o.push('<g class="clk" data-tas="'+esc(sw+"|"+a)+'"><rect x="'+ax+'" y="'+(SY+28)+'" width="'+aw+'" height="76" rx="6" fill="var(--code)" stroke="'+stColor(wst)+'" stroke-width="'+(wst==="ok"?1:2)+'"/>'+
         '<text x="'+(ax+aw/2)+'" y="'+(SY+46)+'" font-size="12" text-anchor="middle">'+esc(a||"asic")+"</text>"+
+        (mode==="vlan"?chipVlans(al,ax+aw/2,SY,ca):
         '<text class="m" x="'+(ax+aw/2)+'" y="'+(SY+62)+'" font-size="10.5" text-anchor="middle">'+al.length+" links</text>"+
         '<text x="'+(ax+aw/2)+'" y="'+(SY+78)+'" font-size="10.5" text-anchor="middle" fill="var(--ok)">'+ca.ok+" "+LB(ifcp).ok+"</text>"+
         ((ca.down||ca.degraded||ca.unknown)?'<text x="'+(ax+aw/2)+'" y="'+(SY+94)+'" font-size="10.5" text-anchor="middle" fill="'+stColor(ca.down?"down":ca.degraded?"degraded":"unknown")+'">'+
-          (ca.down?ca.down+" "+LB(ifcp).down+" ":"")+(ca.degraded?ca.degraded+" "+LB(ifcp).degraded+" ":"")+(ca.unknown?ca.unknown+" "+LB(ifcp).unknown:"")+"</text>":"")+"</g>");
+          (ca.down?ca.down+" "+LB(ifcp).down+" ":"")+(ca.degraded?ca.degraded+" "+LB(ifcp).degraded+" ":"")+(ca.unknown?ca.unknown+" "+LB(ifcp).unknown:"")+"</text>":""))+"</g>");
     });
   });
   // compute trays + GPUs
@@ -1325,7 +1349,7 @@ function topoSvg(d,ifcp){
   });
   o.push("</svg>");
   topoSvg._geo={asicPos:asicPos,trayPos:trayPos,gpuPos:gpuPos,pairs:pairs,ls:ls};
-  return '<p class="mut" style="margin:0 0 4px">Lines: compute tray to switch chip, coloured by the worst '+(ifcp?"IFCP state of the links they carry (orange: a link without an IFCP session, red: an IFCP error or a miscabled link, grey: no link).":"link they carry (red: a link is down).")+' Click a GPU to see its own lines; click a tray, GPU, chip or switch name for its drill down.'+
+  return '<p class="mut" style="margin:0 0 4px">Lines: compute tray to switch chip, coloured by the worst '+(mode==="vlan"?"VLAN state of the links they carry (orange: a port whose VLAN / tagging differs from the chip's other GPUs on that port number, red: a GPU port in no VLAN or a static entry off its port's VLAN, grey: VLANs not read)"+(topoVlan!=="all"?"; only "+esc(topoVlan)+"'s links are drawn":"")+".":ifcp==="ifcp"?"IFCP state of the links they carry (orange: a link without an IFCP session, red: an IFCP error or a miscabled link, grey: no link).":"link they carry (red: a link is down).")+' Click a GPU to see its own lines; click a tray, GPU, chip or switch name for its drill down.'+
     (Object.keys(trays).some(function(t){return Object.keys(trays[t]).some(function(g){return g.indexOf("described")>0})})?" G1* = GPU numbered as the switch port descriptions (GPU end not matched).":"")+"</p>"+o.join("");
 }
 function drawTopoLines(root){
@@ -1356,7 +1380,15 @@ function topoHint(){
       :"From the check of "+esc(stampLocal(mapData.time_utc))+(age>=1?' <span class="err">('+Math.floor(age)+" day"+(Math.floor(age)>1?"s":"")+" old - Check all links, or turn Live on in Rack map, for today's state)</span>":""))+
     " ("+mapData.links.length+" links)."+(c?" Cables: "+c.confirmed+" confirmed by IFCP"+(c.miscabled?', <b class="err">'+c.miscabled+" miscabled</b>":", 0 miscabled")+".":"")+
     (topoMode==="ifcp"?" <b>IFCP view</b>: each link by its IFCP control-plane session; miscabled = the GPU port's IFCP peer is another switch port.":"")+
+    (topoMode==="vlan"?" <b>VLAN view</b>: each switch port by its VLAN membership; the chip boxes list their VLANs (V100 · p31 · 72 = Vlan100 carries GPU port 31, 72 members). "+vlanSum():"")+
     " Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture."+topoNewerHtml();
+}
+function vlanSum(){
+  var f=mapData.vlan_findings||[],vl=mapData.vlans||{},chips=Object.keys(vl);
+  if(!chips.length)return '<span class="err">This check has no VLAN data (made before VLANs were read) - run Check all links again.</span>';
+  if(!f.length)return "No VLAN problem: every GPU port in a VLAN, one VLAN per GPU port number on each chip, no static entry off its VLAN.";
+  var k={};f.forEach(function(x){k[x.kind]=(k[x.kind]||0)+1});
+  return '<span class="err">VLAN problems: '+Object.keys(k).map(function(x){return k[x]+" "+x.replace(/_/g," ")}).join(", ")+"</span> - "+f.slice(0,4).map(function(x){return esc(x.switch+" "+(x.asic||"")+": "+x.detail)}).join("; ")+(f.length>4?" ...":"");
 }
 /* a newer check that was partial or checked no link: say so, and name a problem it found on a switch */
 function topoNewerHtml(){
@@ -1368,17 +1400,38 @@ function topoNewerHtml(){
       ". Find who added them (they were written at runtime) and have them removed, then check again."
      :nc.length?"<br>Not read: "+nc.map(function(x){return esc(x.node+": "+x.error)}).join("; "):"")+"</div>";
 }
+/* a chip's VLANs: members, GPU port numbers, tagging, trays, and the VLAN problems on it */
+function vlanTable(ls,where){
+  var by={};ls.forEach(function(l){(l.vlans||[]).forEach(function(v){var x=by[v[0]]=by[v[0]]||{n:0,p:{},t:{},tr:{}};x.n++;x.p[mGpuPort(l)]=1;x.t[v[1]||"untagged"]=(x.t[v[1]||"untagged"]||0)+1;if(l.tray)x.tr[l.tray]=1})});
+  var none=ls.filter(function(l){return l.vlans&&!l.vlans.length}),f=(mapData.vlan_findings||[]).filter(function(x){return (x.switch+" "+(x.asic||""))===where});
+  var names=Object.keys(by).sort(function(a,b){return (+a.replace(/\D/g,""))-(+b.replace(/\D/g,""))});
+  if(!names.length&&!none.length)return ls.some(function(l){return l.vlans!=null})?"":'<p class="mut">VLANs: not read in this check (run Check all links again).</p>';
+  return '<div class="wrap"><table class="dl"><tr><th>VLAN</th><th>Members</th><th>GPU port(s)</th><th>Tagging</th><th>Compute trays</th></tr>'+
+    names.map(function(v){var x=by[v];return "<tr><td>"+esc(v)+"</td><td>"+x.n+"</td><td>"+esc(Object.keys(x.p).sort(function(a,b){return a-b}).join(", "))+"</td><td>"+
+      esc(Object.keys(x.t).map(function(t){return t+(Object.keys(x.t).length>1?" ("+x.t[t]+")":"")}).join(", "))+"</td><td>"+Object.keys(x.tr).length+"</td></tr>"}).join("")+
+    (none.length?'<tr><td class="st-down">no VLAN</td><td>'+none.length+"</td><td colspan=3>"+esc(none.slice(0,8).map(lkey).join(", "))+"</td></tr>":"")+"</table></div>"+
+    (f.length?'<div class="verdict down"><h3>VLAN problems on '+esc(where)+"</h3>"+f.slice(0,12).map(function(x){return "<div>"+esc(x.kind.replace(/_/g," ")+": "+x.detail)+"</div>"}).join("")+"</div>":"");
+}
+/* the VLAN picker: the rack's VLANs that have members, shown in the VLAN view */
+function vlanPicker(){
+  var sel=$("topo-vlan");if(!sel||!mapData)return;var seen={};mapData.links.forEach(function(l){linkVlans(l).forEach(function(v){seen[v]=1})});
+  var names=Object.keys(seen).sort(function(a,b){return (+a.replace(/\D/g,""))-(+b.replace(/\D/g,""))});
+  if(topoVlan!=="all"&&!seen[topoVlan])topoVlan="all";
+  sel.innerHTML='<option value="all">all VLANs</option>'+names.map(function(v){return '<option value="'+esc(v)+'"'+(v===topoVlan?" selected":"")+">"+esc(v)+"</option>"}).join("");
+  sel.classList.toggle("hide",topoMode!=="vlan"||!names.length);
+}
 /* the colour legend above the picture, with the rack's count per colour, for the view shown */
 function drawTopoInto(){
   var box=$("topo-dyn");if(!box||!mapData)return;
-  box.innerHTML=topoSvg(mapData,topoMode==="ifcp").replace('<svg class="topo" width="','<svg class="topo" data-big="1" width="');
+  vlanPicker();
+  box.innerHTML=topoSvg(mapData,topoMode).replace('<svg class="topo" width="','<svg class="topo" data-big="1" width="');
   var sv=box.querySelector("svg.topo"),vb=sv.getAttribute("viewBox").split(" ");sv.setAttribute("width",Math.round(+vb[2]*1.1));   /* bigger here than in the map */
   wireTopoSvg(box);
 }
 function topoLegend(){
-  var el=$("topo-legend");if(!el||!mapData)return;var ifcp=topoMode==="ifcp",S=ifcp?ifcpState:mEff,c={ok:0,degraded:0,down:0,unknown:0};
+  var el=$("topo-legend");if(!el||!mapData)return;var ifcp=topoMode==="ifcp",vlan=topoMode==="vlan",S=ifcp?ifcpState:vlan?vlanStateFn(mapData):mEff,c={ok:0,degraded:0,down:0,unknown:0};
   mapData.links.forEach(function(l){c[S(l)]=(c[S(l)]||0)+1});
-  var items=ifcp?[["ok","IFCP session up"],["degraded","link up, no IFCP session"],["down","IFCP error / miscabled"],["unknown","no physical link"]]
+  var items=vlan?[["ok","in its VLAN"],["degraded","VLAN / tagging differs"],["down","no VLAN / entry off VLAN"],["unknown","VLANs not read"]]:ifcp?[["ok","IFCP session up"],["degraded","link up, no IFCP session"],["down","IFCP error / miscabled"],["unknown","no physical link"]]
                 :[["ok","link ok"],["degraded","degraded"],["down","down"],["unknown","not known"]];
   el.innerHTML=items.map(function(x){return '<span title="'+esc(x[1])+'"><i style="background:'+stColor(x[0])+(x[0]==="ok"?";opacity:.55":"")+'"></i>'+esc(x[1])+' <b>'+c[x[0]]+"</b></span>"}).join("")+
     '<span class="mut">worst link wins for a line, chip or GPU; problem lines are drawn thicker</span>';
@@ -1401,6 +1454,7 @@ function mapDetail(k){
       [gShort(l.tray,mGpu(l)),function(){drillGpu(l.tray||"(no tray)",mGpu(l))}],["port "+mGpuPort(l)]],[[swName(l.switch,mapData.switch_ids),function(){drillSwitch(l.switch)}],[(l.asic||""),function(){drillAsic(l.switch,l.asic||"")}],[l.sw_port]])+
     "<h2>"+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" \u2194 "+trayName(l.tray,mapData.slots)+" "+gName(l.tray,mGpu(l))+" port "+mGpuPort(l))+" "+badge(mEff(l))+"</h2>"+
     '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
+    '<p class="mut">VLAN: '+esc(l.vlans==null?"not read in this check":l.vlans.length?l.vlans.map(function(v){return v[0]+" ("+(v[1]||"untagged")+")"}).join(", "):"none - this GPU port is in no VLAN")+"</p>"+
     '<p class="'+(l.cable&&l.cable!=="confirmed"?"err":"mut")+'">Cable: '+esc(l.cable==="confirmed"?"confirmed by IFCP - the GPU port's peer is "+l.switch+" "+l.sw_port:l.cable||"not confirmed (no IFCP peer: link down, or the tray was not read)")+"</p>"+
     verdictHtml(mEff(l)==="ok"?"ok":l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+
     (live&&liveMine()&&live.links[k]&&mEff(l)!==l.state?'<p class="mut">Live: now <b>'+esc(mEff(l))+"</b> (was "+esc(l.state)+" at the check).</p>":"")+

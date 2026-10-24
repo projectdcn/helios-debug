@@ -91,3 +91,33 @@ def test_show_mac_failure_is_named_as_broken_forwarding_entries():
         linkdiag.read_fdb(Other(), "asic0")
     except RuntimeError as e:
         assert not isinstance(e, linkdiag.FdbBrokenEntries)     # other failures are not relabelled
+
+
+def test_vlans_read_and_checked():
+    """read_vlans parses the one-command dump; vlan_findings flags a GPU port in no VLAN, a port whose VLAN differs
+    from the chip's other GPUs on that port number, a static entry off its port's VLAN, and a chip with other VLANs."""
+    from types import SimpleNamespace
+    from heliosdbg import linkdiag
+    sw = SimpleNamespace(sh=lambda cmd, **kw: "V Vlan2\nV Vlan100\nM Vlan100|Ethernet8 priority_tagged\nM Vlan200|Ethernet9 \n")
+    v = linkdiag.read_vlans(sw, "asic0")
+    assert v == {"vlans": ["Vlan2", "Vlan100", "Vlan200"], "members": {"Ethernet8": [["Vlan100", "priority_tagged"]],
+                                                                    "Ethernet9": [["Vlan200", ""]]}}
+
+    def link(port, gport, vl):
+        ln = linkdiag.Link("st1", "asic0", port, f"To ComputeTray Slot0/GPU0[0]/Port{gport}", vlans=vl)
+        ln._cab = (0, 0, 0, gport)
+        return ln
+    pt = [["Vlan100", "priority_tagged"]]
+    links = [link("Ethernet1", 31, pt), link("Ethernet2", 31, pt), link("Ethernet3", 31, [["Vlan300", "priority_tagged"]]),
+             link("Ethernet4", 33, []), link("Ethernet5", 35, None)]
+    switches = [{"name": "st1", "asics": {"asic0": {"vlan": {"vlans": ["Vlan100", "Vlan300"], "members": {
+                    "Ethernet1": pt, "Ethernet2": pt, "Ethernet3": [["Vlan300", "priority_tagged"]]}},
+                    "fdb": [{"Vlan": "200", "MacAddress": "00:11:22:33:44:55", "Port": "Ethernet1", "Type": "Static"}]}}},
+                {"name": "st2", "asics": {"asic0": {"vlan": {"vlans": ["Vlan100"], "members": {"Ethernet1": pt}}, "fdb": []},
+                                          "asic1": {"vlan": {"vlans": ["Vlan100"], "members": {"Ethernet1": pt}}, "fdb": []}}}]
+    f = linkdiag.vlan_findings(switches, links)
+    kinds = sorted((x["kind"], x["switch"], x["port"]) for x in f)
+    assert ("not_in_vlan", "st1", "Ethernet4") in kinds and ("vlan_mismatch", "st1", "Ethernet3") in kinds
+    assert ("fdb_off_vlan", "st1", "Ethernet1") in kinds and ("vlan_set", "st1", None) in kinds
+    assert not any(x["port"] in ("Ethernet1", "Ethernet2") and x["kind"] == "vlan_mismatch" for x in f)
+    assert not any(x["port"] == "Ethernet5" for x in f)               # VLANs not read: no verdict

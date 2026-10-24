@@ -266,7 +266,7 @@ def _result_file(state: State, rel: str) -> Path:
 
 
 LINK_KEYS = ("switch", "asic", "sw_port", "desc", "sw_oper", "sw_admin", "tray", "bdf", "gpu_port", "state", "kind",
-             "cause", "owner", "action", "afm_port", "matched_by")
+             "cause", "owner", "action", "afm_port", "matched_by", "vlans")
 
 
 def overview(state: State) -> list[dict]:
@@ -505,6 +505,7 @@ def scan_view(state: State, rel: str) -> dict:
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
             "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
             "scope": d.get("scope") or {}, "fdb_broken": d.get("fdb_broken") or [],
+            "vlan_findings": d.get("vlan_findings") or [], "vlans": (d.get("learned") or {}).get("vlans") or {},
             "slots": slots, "switch_ids": sw_ids, "afm_names": afm_names(state, d.get("rack"), slots, sw_ids), "cabling": cabling,
             "gpu_map": (d.get("learned") or {}).get("gpu_map") or {}, "gpu_acc": acc,
             "ifcp_in_use": (d.get("learned") or {}).get("ifcp_in_use", True)}
