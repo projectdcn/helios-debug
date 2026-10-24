@@ -413,6 +413,11 @@ def ifcp_cabling(links: list, trays: dict, ifcp: dict) -> dict:
     by_port = {(tn, g.get("bdf"), p.get("port")): (p.get("ifcp") or {}) for tn, t in (trays or {}).items()
                for g in (t or {}).get("gpus") or [] for p in g.get("ports") or []}
     n = {"confirmed": 0, "miscabled": 0, "unconfirmed": 0, "examples": []}
+    for ln in links:                                  # the GPU port's IFCP state, for the Topology IFCP view
+        i = by_port.get((ln.get("tray"), ln.get("bdf"), ln.get("gpu_port")))
+        if i:
+            ln["ifcp"] = {"ll": i.get("ll_up"), "pe": i.get("peer_enabled"),
+                          "err": "yes" in (str(i.get("in_error")).lower(), str(i.get("peer_in_error")).lower())}
     if not dev or not (ifcp or {}).get("port_is_ethernet"):
         n["unconfirmed"] = len(links)
         return n

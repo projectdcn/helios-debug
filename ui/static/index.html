@@ -135,6 +135,9 @@ nav button.exp{border-style:dashed}
   <section class="card hide" data-p="topology">
     <h2 id="topo-title">Scale-up topology</h2>
     <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>How the compute trays' GPUs are cabled to the switch trays of the rack chosen at the top: switch chips on top, compute trays and their GPUs below, one line per tray-to-chip bundle coloured by its worst link (red: a link is down) - drawn from the rack's latest check, so it fits any rack (mini rack, full rack).</dd><dt>When</dt><dd>To see where problems sit and what they share, then click down: tray, GPU, link, switch chip.</dd><dt>How long</dt><dd>Instant (the latest check).</dd><dt>Safe?</dt><dd>Yes - nothing is read from the rack. Live mode (Rack map) colours it live.</dd></dl></details>
+    <div role="radiogroup" aria-label="what the lines show" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:0 0 6px"><span class="mut">Show</span>
+      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="link" checked style="width:auto;margin:0">Links (physical state)</label>
+      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="topo-mode" value="ifcp" style="width:auto;margin:0">IFCP (control-plane sessions)</label></div>
     <p class="mut" id="topo-hint">Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture (below it on a narrow screen).</p>
     <div class="topo-wrap" id="topo-wrap">
       <div id="topo-left">
@@ -1252,10 +1255,29 @@ $("topo-frame").addEventListener("load",function(){
 });
 
 // ---------------------------------------------------------------- topology picture drawn from the check (any rack)
-var topoSel=null;      /* selected GPU: "tray|gpu" */
+var topoSel=null,topoMode="link";
+try{if(localStorage.getItem("hdbg-topo-mode")==="ifcp")topoMode="ifcp"}catch(e){}
+document.querySelectorAll('input[name="topo-mode"]').forEach(function(x){x.checked=x.value===topoMode;
+  x.addEventListener("change",function(){if(!x.checked)return;topoMode=x.value;try{localStorage.setItem("hdbg-topo-mode",topoMode)}catch(e){}
+    topoSel=null;drawTopoInto();topoHint()})});      /* selected GPU: "tray|gpu" */
 function worst(ls){var o={down:4,degraded:3,unknown:2,ok:1},w="ok";ls.forEach(function(l){var x=mEff(l);if((o[x]||0)>(o[w]||0))w=x});return w}
 function stColor(st){return st==="down"?"var(--down)":st==="degraded"?"var(--deg)":st==="unknown"?"var(--mut)":"var(--ok)"}
-function topoSvg(d){
+/* Topology "IFCP" view: each link by its IFCP control-plane state instead of the physical link. Live's ll_up when
+   Live is on, else the check's tray read. ok = session up; degraded = link up, no IFCP session; down = IFCP error or a
+   cable the IFCP peer says is elsewhere (miscabled); unknown = no physical link / not read. */
+function ifcpState(l){
+  if(l.cable&&String(l.cable).indexOf("miscabled")===0)return "down";
+  var lv=liveMine()&&mapData&&live.rack===mapData.rack?live.links[lkey(l)]:null,i=l.ifcp||{},ll=lv&&lv.ll_up!=null?lv.ll_up:i.ll;
+  var phys=lv?(String(lv.gpu_link||"").toUpperCase()==="LINK_UP"&&String(lv.sw_oper||"")==="up"):(l.state!=="down"&&l.state!=="unknown");
+  if(!phys)return "unknown";
+  if(i.err)return "down";
+  return ll==="yes"?"ok":ll==="no"?"degraded":"unknown";
+}
+function LB(ifcp){return ifcp?{ok:"IFCP up",degraded:"no session",down:"error",unknown:"no link"}:{ok:"ok",degraded:"deg",down:"down",unknown:"?"}}
+function TC(ls){var S=topoSvg._S||mEff,c={ok:0,degraded:0,down:0,unknown:0};ls.forEach(function(l){var x=S(l);c[x]=(c[x]||0)+1});return c}
+function TW_(ls){var S=topoSvg._S||mEff,o={down:4,degraded:3,unknown:2,ok:1},w="ok";ls.forEach(function(l){var x=S(l);if((o[x]||0)>(o[w]||0))w=x});return w}
+function topoSvg(d,ifcp){
+  var S=ifcp?ifcpState:mEff;topoSvg._S=S;
   var ls=d.links,sws={},trays={},pairs={};
   ls.forEach(function(l){var a=l.switch+"|"+(l.asic||"");(sws[l.switch]=sws[l.switch]||{})[l.asic||""]=1;
     var t=l.tray||"(no tray)";(trays[t]=trays[t]||{})[mGpu(l)]=1;var k=t+"#"+a;(pairs[k]=pairs[k]||[]).push(l)});
@@ -1266,41 +1288,41 @@ function topoSvg(d){
   o.push('<svg class="topo" width="'+Math.round(W*0.85)+'" viewBox="0 0 '+W+" "+H+'" role="img" aria-label="Cabling picture of '+esc(d.rack)+'">');
   o.push('<g class="tp-lines"></g>');
   // switch trays + ASICs
-  swN.forEach(function(sw,i){var x=10+i*(SWW+SWG)+(W-20-swN.length*(SWW+SWG)+SWG)/2,asics=Object.keys(sws[sw]).sort(),all=ls.filter(function(l){return l.switch===sw}),c=mCount(all);
+  swN.forEach(function(sw,i){var x=10+i*(SWW+SWG)+(W-20-swN.length*(SWW+SWG)+SWG)/2,asics=Object.keys(sws[sw]).sort(),all=ls.filter(function(l){return l.switch===sw}),c=TC(all);
     o.push('<rect class="box" x="'+x+'" y="'+SY+'" width="'+SWW+'" height="118" rx="8"/>');
     o.push('<text class="clk" data-tsw="'+esc(sw)+'" x="'+(x+10)+'" y="'+(SY+18)+'" font-size="'+((d.afm_names||{})[sw]?12:14)+'" font-weight="600">'+esc((d.afm_names||{})[sw]||sw)+"</text>");
     o.push('<text class="m" x="'+(x+SWW-10)+'" y="'+(SY+18)+'" font-size="11" text-anchor="end">'+((d.afm_names||{})[sw]?"":(d.switch_ids||{})[sw]!=null?"AFM "+d.switch_ids[sw]+(c.down?" · "+c.down+" down":""):all.length+" links"+(c.down?" · "+c.down+" down":""))+"</text>");
     if((d.afm_names||{})[sw])o.push('<text class="m" x="'+(x+10)+'" y="'+(SY+114)+'" font-size="10">'+esc(sw)+" · "+all.length+" links"+(c.down?" · "+c.down+" down":"")+"</text>");
     var aw=(SWW-12-(asics.length-1)*6)/Math.max(1,asics.length);
-    asics.forEach(function(a,j){var ax=x+6+j*(aw+6),al=all.filter(function(l){return (l.asic||"")===a}),ca=mCount(al),wst=worst(al);
+    asics.forEach(function(a,j){var ax=x+6+j*(aw+6),al=all.filter(function(l){return (l.asic||"")===a}),ca=TC(al),wst=TW_(al);
       asicPos[sw+"|"+a]={x:ax+aw/2,y:ASY};
       o.push('<g class="clk" data-tas="'+esc(sw+"|"+a)+'"><rect x="'+ax+'" y="'+(SY+28)+'" width="'+aw+'" height="76" rx="6" fill="var(--code)" stroke="'+stColor(wst)+'" stroke-width="'+(wst==="ok"?1:2)+'"/>'+
         '<text x="'+(ax+aw/2)+'" y="'+(SY+46)+'" font-size="12" text-anchor="middle">'+esc(a||"asic")+"</text>"+
         '<text class="m" x="'+(ax+aw/2)+'" y="'+(SY+62)+'" font-size="10.5" text-anchor="middle">'+al.length+" links</text>"+
-        '<text x="'+(ax+aw/2)+'" y="'+(SY+78)+'" font-size="10.5" text-anchor="middle" fill="var(--ok)">'+ca.ok+" ok</text>"+
+        '<text x="'+(ax+aw/2)+'" y="'+(SY+78)+'" font-size="10.5" text-anchor="middle" fill="var(--ok)">'+ca.ok+" "+LB(ifcp).ok+"</text>"+
         ((ca.down||ca.degraded||ca.unknown)?'<text x="'+(ax+aw/2)+'" y="'+(SY+94)+'" font-size="10.5" text-anchor="middle" fill="'+stColor(ca.down?"down":ca.degraded?"degraded":"unknown")+'">'+
-          (ca.down?ca.down+" down ":"")+(ca.degraded?ca.degraded+" deg ":"")+(ca.unknown?ca.unknown+" ?":"")+"</text>":"")+"</g>");
+          (ca.down?ca.down+" "+LB(ifcp).down+" ":"")+(ca.degraded?ca.degraded+" "+LB(ifcp).degraded+" ":"")+(ca.unknown?ca.unknown+" "+LB(ifcp).unknown:"")+"</text>":"")+"</g>");
     });
   });
   // compute trays + GPUs
   trN.forEach(function(t,i){var r=Math.floor(i/perRow),cI=i%perRow,rowN=Math.min(perRow,trN.length-r*perRow),x=10+cI*(TW+TG)+(W-20-rowN*(TW+TG)+TG)/2,y=TY0+r*(TH+28),
-      gp=Object.keys(trays[t]).sort(function(a,b){var na=gpuNum(t,a,d.gpu_map),nb=gpuNum(t,b,d.gpu_map);return na!=null&&nb!=null?na-nb:(a<b?-1:1)}),tl=ls.filter(function(l){return (l.tray||"(no tray)")===t}),c=mCount(tl),w=worst(tl);
+      gp=Object.keys(trays[t]).sort(function(a,b){var na=gpuNum(t,a,d.gpu_map),nb=gpuNum(t,b,d.gpu_map);return na!=null&&nb!=null?na-nb:(a<b?-1:1)}),tl=ls.filter(function(l){return (l.tray||"(no tray)")===t}),c=TC(tl),w=TW_(tl);
     trayPos[t]={x:x+TW/2,y:y};
     o.push('<rect class="box" x="'+x+'" y="'+y+'" width="'+TW+'" height="'+TH+'" rx="8" stroke="'+(w==="ok"?"var(--rule)":stColor(w))+'"/>');
     var an=(d.afm_names||{})[t];
     o.push('<text class="clk" data-ttr="'+esc(t)+'" x="'+(x+8)+'" y="'+(y+17)+'" font-size="'+(an?11:13)+'" font-weight="600">'+esc(an||t)+"</text>");
     o.push('<text class="m" x="'+(x+TW-8)+'" y="'+(y+17)+'" font-size="10" text-anchor="end">'+(an?"":(d.slots||{})[t]!=null?"AFM slot "+d.slots[t]:"")+"</text>");
     var gw=Math.min(22,(TW-16)/Math.max(1,gp.length)-4);
-    gp.forEach(function(g,j){var gx=x+8+j*((TW-16)/gp.length)+((TW-16)/gp.length-gw)/2,gy=y+28,gl=tl.filter(function(l){return mGpu(l)===g}),gs=worst(gl),sel=topoSel===t+"|"+g;
+    gp.forEach(function(g,j){var gx=x+8+j*((TW-16)/gp.length)+((TW-16)/gp.length-gw)/2,gy=y+28,gl=tl.filter(function(l){return mGpu(l)===g}),gs=TW_(gl),sel=topoSel===t+"|"+g;
       gpuPos[t+"|"+g]={x:gx+gw/2,y:gy};
-      o.push('<g class="clk" data-tgp="'+esc(t+"|"+g)+'"><title>'+esc(t+" GPU"+(gpuNum(t,g,d.gpu_map)!=null?gpuNum(t,g,d.gpu_map)+" ("+g+")":" "+g)+": "+gl.length+" links, "+worst(gl))+'</title><rect x="'+gx+'" y="'+gy+'" width="'+gw+'" height="'+gw+'" rx="3" fill="'+stColor(gs)+'" fill-opacity="'+(gs==="ok"?.35:.9)+'" stroke="'+(sel?"var(--acc)":"none")+'" stroke-width="2.5"/>'+
+      o.push('<g class="clk" data-tgp="'+esc(t+"|"+g)+'"><title>'+esc(t+" GPU"+(gpuNum(t,g,d.gpu_map)!=null?gpuNum(t,g,d.gpu_map)+" ("+g+")":" "+g)+": "+gl.length+" links, "+TW_(gl))+'</title><rect x="'+gx+'" y="'+gy+'" width="'+gw+'" height="'+gw+'" rx="3" fill="'+stColor(gs)+'" fill-opacity="'+(gs==="ok"?.35:.9)+'" stroke="'+(sel?"var(--acc)":"none")+'" stroke-width="2.5"/>'+
         '<text class="m" x="'+(gx+gw/2)+'" y="'+(gy+gw+12)+'" font-size="9.5" text-anchor="middle">'+esc(g.indexOf(":")>0?(gpuNum(t,g,d.gpu_map)!=null?"G"+gpuNum(t,g,d.gpu_map):g.slice(0,4)):g.replace(" (described)","*").replace("GPU","G"))+"</text></g>");
     });
-    o.push('<text class="m" x="'+(x+8)+'" y="'+(y+TH-10)+'" font-size="10">'+(an?esc(t)+" · ":"")+tl.length+" links"+(c.down?" · "+c.down+" down":"")+(c.degraded?" · "+c.degraded+" deg":"")+(c.unknown?" · "+c.unknown+" ?":"")+"</text>");
+    o.push('<text class="m" x="'+(x+8)+'" y="'+(y+TH-10)+'" font-size="10">'+(an?esc(t)+" · ":"")+tl.length+" links"+(c.down?" · "+c.down+" "+LB(ifcp).down:"")+(c.degraded?" · "+c.degraded+" "+LB(ifcp).degraded:"")+(c.unknown?" · "+c.unknown+" "+LB(ifcp).unknown:"")+"</text>");
   });
   o.push("</svg>");
   topoSvg._geo={asicPos:asicPos,trayPos:trayPos,gpuPos:gpuPos,pairs:pairs,ls:ls};
-  return '<p class="mut" style="margin:0 0 4px">Lines: compute tray to switch chip, coloured by the worst link they carry (red: a link is down). Click a GPU to see its own lines; click a tray, GPU, chip or switch name for its drill down.'+
+  return '<p class="mut" style="margin:0 0 4px">Lines: compute tray to switch chip, coloured by the worst '+(ifcp?"IFCP state of the links they carry (orange: a link without an IFCP session, red: an IFCP error or a miscabled link, grey: no link).":"link they carry (red: a link is down).")+' Click a GPU to see its own lines; click a tray, GPU, chip or switch name for its drill down.'+
     (Object.keys(trays).some(function(t){return Object.keys(trays[t]).some(function(g){return g.indexOf("described")>0})})?" G1* = GPU numbered as the switch port descriptions (GPU end not matched).":"")+"</p>"+o.join("");
 }
 function drawTopoLines(root){
@@ -1308,9 +1330,9 @@ function drawTopoLines(root){
   if(topoSel&&!geo.gpuPos[topoSel])topoSel=null;      /* a GPU of another rack / check: show all lines again */
   if(topoSel){var x=topoSel.split("|"),ls=geo.ls.filter(function(l){return (l.tray||"(no tray)")===x[0]&&mGpu(l)===x[1]}),by={};
     ls.forEach(function(l){var k=l.switch+"|"+(l.asic||"");(by[k]=by[k]||[]).push(l)});var gp=geo.gpuPos[topoSel];
-    Object.keys(by).forEach(function(k){var a=geo.asicPos[k];if(!a||!gp)return;var st=worst(by[k]),my=(gp.y+a.y)/2;
+    Object.keys(by).forEach(function(k){var a=geo.asicPos[k];if(!a||!gp)return;var st=TW_(by[k]),my=(gp.y+a.y)/2;
       out.push('<path d="M'+gp.x+" "+gp.y+"C"+gp.x+" "+my+" "+a.x+" "+my+" "+a.x+" "+a.y+'" fill="none" stroke="'+stColor(st)+'" stroke-width="2.5" stroke-opacity=".95"><title>'+esc(by[k].length+" links to "+k.replace("|"," ")+": "+st)+"</title></path>")});
-  }else Object.keys(geo.pairs).forEach(function(k){var x=k.split("#"),tp=geo.trayPos[x[0]],a=geo.asicPos[x[1]];if(!tp||!a)return;var ls=geo.pairs[k],st=worst(ls),my=(tp.y+a.y)/2;
+  }else Object.keys(geo.pairs).forEach(function(k){var x=k.split("#"),tp=geo.trayPos[x[0]],a=geo.asicPos[x[1]];if(!tp||!a)return;var ls=geo.pairs[k],st=TW_(ls),my=(tp.y+a.y)/2;
       out.push('<path d="M'+tp.x+" "+tp.y+"C"+tp.x+" "+my+" "+a.x+" "+my+" "+a.x+" "+a.y+'" fill="none" stroke="'+stColor(st)+'" stroke-width="'+(st==="ok"?1:2.2)+'" stroke-opacity="'+(st==="ok"?.35:.9)+'"><title>'+esc(x[0]+" to "+x[1].replace("|"," ")+": "+ls.length+" links, "+st)+"</title></path>")});
   g.innerHTML=out.join("");
 }
@@ -1329,11 +1351,15 @@ function topoHint(){
   $("topo-hint").innerHTML=(lv?"<b>Live</b>: link states as they are now (from the logs, re-read every "+Math.round(live.reconcile_s/60)+" min); trays and cabling from the check of "+esc(stampLocal(mapData.time_utc))
       :"From the check of "+esc(stampLocal(mapData.time_utc))+(age>=1?' <span class="err">('+Math.floor(age)+" day"+(Math.floor(age)>1?"s":"")+" old - Check all links, or turn Live on in Rack map, for today's state)</span>":""))+
     " ("+mapData.links.length+" links)."+(c?" Cables: "+c.confirmed+" confirmed by IFCP"+(c.miscabled?', <b class="err">'+c.miscabled+" miscabled</b>":", 0 miscabled")+".":"")+
+    (topoMode==="ifcp"?" <b>IFCP view</b>: green = IFCP session up, orange = link up but no IFCP session, red = IFCP error or "+
+      "miscabled (the GPU port's IFCP peer is another switch port), grey = no physical link. "+ifcpSum():"")+
     " Click a GPU, a compute tray, a switch chip or a switch name: its drill down opens next to the picture.";
 }
+function ifcpSum(){var c={ok:0,degraded:0,down:0,unknown:0};mapData.links.forEach(function(l){c[ifcpState(l)]++});
+  return "IFCP: "+c.ok+" up, "+c.degraded+" no session, "+c.down+" error / miscabled, "+c.unknown+" no link."}
 function drawTopoInto(){
   var box=$("topo-dyn");if(!box||!mapData)return;
-  box.innerHTML=topoSvg(mapData).replace('<svg class="topo" width="','<svg class="topo" data-big="1" width="');
+  box.innerHTML=topoSvg(mapData,topoMode==="ifcp").replace('<svg class="topo" width="','<svg class="topo" data-big="1" width="');
   var sv=box.querySelector("svg.topo"),vb=sv.getAttribute("viewBox").split(" ");sv.setAttribute("width",Math.round(+vb[2]*1.1));   /* bigger here than in the map */
   wireTopoSvg(box);
 }

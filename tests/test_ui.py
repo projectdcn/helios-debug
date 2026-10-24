@@ -300,7 +300,7 @@ def test_afm_names_and_ifcp_cabling(tmp_path):
     assert server.afm_names(st, "r", {"ct01": 0, "ct02": 1}, ids) == {
         "st1": "pod-2-0-SwitchTray", "st2": "pod-2-1-SwitchTray", "ct01": "pod-2-0-ComputeTray", "ct02": "pod-2-1-ComputeTray"}
     trays = {"ct01": {"gpus": [{"bdf": "0004:01:00.1", "ports": [
-        {"port": 31, "ifcp": {"peer_device_id": "1", "peer_port_id": "164"}},
+        {"port": 31, "ifcp": {"peer_device_id": "1", "peer_port_id": "164", "ll_up": "yes", "in_error": "no"}},
         {"port": 33, "ifcp": {"peer_device_id": "2", "peer_port_id": "8"}},
         {"port": 35, "ifcp": {}}]}]}}
     links = [{"switch": "st1", "sw_port": "Ethernet164", "tray": "ct01", "bdf": "0004:01:00.1", "gpu_port": 31},
@@ -310,6 +310,7 @@ def test_afm_names_and_ifcp_cabling(tmp_path):
     assert (n["confirmed"], n["miscabled"], n["unconfirmed"]) == (1, 1, 1)
     assert links[0]["cable"] == "confirmed" and links[1]["cable"] == "miscabled: the cable reaches st2 Ethernet8"
     assert "cable" not in links[2]
+    assert links[0]["ifcp"] == {"ll": "yes", "pe": None, "err": False} and "ifcp" not in links[2]   # Topology IFCP view; no IFCP data = none
     assert server.ifcp_cabling(links[:1], trays, {})["unconfirmed"] == 1     # IFCP naming not learned: no verdict
 
 
