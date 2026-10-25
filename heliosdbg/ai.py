@@ -369,10 +369,10 @@ CHECK_MODE = ("The evidence lists separate problems as [Problem N: ...]. Treat t
               "Then '### Order' - which problem to fix first and why. Under 350 words.")
 
 WRONG_DEVICE = [   # a command placed ON the wrong kind of node (a mention of the other kind nearby is not enough)
-    (re.compile(r"afmctl[^\n`]{0,60}`?[^.\n;]{0,15}\bon\s+(?:[\w-]+\s+and\s+)?(?:the\s+)?(?:st\d+|switch\s+trays?)\b|"
+    (re.compile(r"afmctl[^\n`.]{0,60}`?[^.\n;]{0,15}\bon\s+(?:[\w-]+\s+and\s+)?(?:the\s+)?(?:st\d+|switch\s+trays?)\b|"
                 r"\bon\s+(?:the\s+)?(?:st\d+|switch\s+tray)\s*:\s*`?(?:sudo\s+)?afmctl", re.I),
      "afmctl runs on compute trays, not on switch trays"),
-    (re.compile(r"\b(?:show\s+(?:mac|vlan|interfaces)|sonic-db-cli)\b[^\n`]{0,60}`?[^.\n;]{0,15}\bon\s+(?:[\w-]+\s+and\s+)?"
+    (re.compile(r"\b(?:show\s+(?:mac|vlan|interfaces)|sonic-db-cli)\b[^\n`.]{0,60}`?[^.\n;]{0,15}\bon\s+(?:[\w-]+\s+and\s+)?"
                 r"(?:the\s+)?(?:ct\d+|compute\s+trays?)\b|\bon\s+(?:the\s+)?(?:ct\d+|compute\s+tray)\s*:\s*`?(?:sudo\s+)?(?:show|sonic-db-cli)", re.I),
      "SONiC commands (show mac / show vlan / sonic-db-cli) run on switch trays, not on compute trays"),
 ]
