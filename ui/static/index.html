@@ -931,7 +931,9 @@ function aiMd(t,ev){
 function aiPanel(box,ctx){
   if(!box)return;var hist=[];
   box.innerHTML='<div class="ai"><div class="row" style="margin:0;align-items:center"><b>AI: root cause, how to debug, what to do</b><span class="mut" style="font-size:12px">advisory - check its claims against the evidence; it changes nothing</span>'+
-    '<span style="flex:1"></span><button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div>'+
+    '<span style="flex:1"></span><button class="sec ai-go ai-guide-go"'+(aiState.ok?"":" disabled")+' title="the AI proposes read-only commands one at a time; you click Run">Investigate step by step</button>'+
+    (/\/scan-/.test(ctx.path)&&!ctx.link?'<select class="ai-aud" style="width:auto" title="who the ticket is for"><option value="all">ticket for: everyone</option><option value="amd">AMD (GPU / AFM)</option><option value="switch">switch / SONiC owner</option><option value="site">site / cabling</option><option value="operator">operator</option></select><button class="sec ai-ticket-go">Write a ticket</button>':"")+
+    '<button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div><div class="ai-guide"></div><div class="ai-ticket"></div>'+
     '<form class="row ai-more hide" style="margin:6px 0 0"><input class="ai-q" placeholder="Follow-up question (e.g. which command shows the IFCP state on the switch?)" style="flex:1;min-width:240px" maxlength="2000"><button class="sec">Ask</button></form></div>';
   var out=box.querySelector(".ai-out"),go=box.querySelector(".ai-go"),form=box.querySelector(".ai-more");
   if(!aiState.ok)go.title=aiState.error;
@@ -950,7 +952,49 @@ function aiPanel(box,ctx){
     }).catch(function(e){wait.className="err";wait.textContent=e.message}).then(function(){go.disabled=!aiState.ok;go.textContent="Ask again"});
   }
   go.addEventListener("click",function(){run("")});
+  var gb=box.querySelector(".ai-guide-go");if(gb)gb.addEventListener("click",function(){guideStart(box.querySelector(".ai-guide"),ctx)});
+  var tb=box.querySelector(".ai-ticket-go");if(tb)tb.addEventListener("click",function(){ticketWrite(box.querySelector(".ai-ticket"),ctx,box.querySelector(".ai-aud").value,tb)});
   form.addEventListener("submit",function(e){e.preventDefault();var q=form.querySelector(".ai-q").value.trim();if(q){form.querySelector(".ai-q").value="";run(q)}});
+}
+
+/* guided debugging: the AI proposes one read-only command at a time; nothing runs without a click */
+function guideStart(el,ctx){
+  var steps=[];
+  el.innerHTML='<div class="ai" style="background:var(--bg)"><b>Step by step</b> <span class="mut" style="font-size:12px">each command is checked against a read-only list for its kind of node and runs only when you click Run</span><div class="g-steps"></div><div class="g-next"></div></div>';
+  var list=el.querySelector(".g-steps"),nx=el.querySelector(".g-next");
+  function ask(){
+    nx.innerHTML='<p class="mut">the AI is choosing the next step ...</p>';
+    api("/api/ai/guide",{path:ctx.path,link:ctx.link||"",steps:steps}).then(function(p){
+      if(p.done){nx.innerHTML='<div class="verdict ok"><h3>Conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+'<div class="mut" style="font-size:12px">'+steps.length+" step(s) run · advisory - check it against the outputs above</div></div>";return}
+      var bad=!p.allowed;
+      nx.innerHTML='<div class="verdict '+(bad?"degraded":"")+'"><h3>Step '+(steps.length+1)+": on "+esc(nodeLabel(p.node||"?"))+"</h3><p><code>"+esc(p.command||"")+"</code></p><p class=\"mut\">"+esc(p.why||"")+"</p>"+
+        (bad?'<p class="err">Not run: '+esc(p.refused||"not allowed")+"</p>":"")+
+        '<div class="row" style="margin:6px 0 0">'+(bad?"":'<button class="go g-run">Run</button>')+'<button class="sec g-other">Another step</button><button class="sec g-stop">Stop</button></div></div>';
+      var rb=nx.querySelector(".g-run");if(rb)rb.addEventListener("click",function(){rb.disabled=true;rb.textContent="running ...";
+        api("/api/ai/run",{path:ctx.path,node:p.node,command:p.command}).then(function(o){
+          steps.push({node:o.node,command:o.command,rc:o.rc,output:o.output});
+          var d=document.createElement("details");d.open=steps.length===1;
+          d.innerHTML='<summary><b>S'+steps.length+"</b> "+esc(nodeLabel(o.node))+": <code>"+esc(o.command)+"</code> "+(o.rc===0?'<span class="mut">ok</span>':'<span class="err">exit '+esc(o.rc)+"</span>")+' <span class="mut">'+o.seconds+" s</span></summary><pre style=\"max-height:40vh\">"+esc(o.output||"(no output)")+"</pre>";
+          list.appendChild(d);ask();
+        }).catch(function(e){rb.disabled=false;rb.textContent="Run";nx.insertAdjacentHTML("beforeend",'<p class="err">'+esc(e.message)+"</p>")})});
+      nx.querySelector(".g-other").addEventListener("click",function(){steps.push({node:p.node,command:p.command,rc:"skipped",output:"(skipped by the user - propose something else)"});ask()});
+      nx.querySelector(".g-stop").addEventListener("click",function(){nx.innerHTML='<p class="mut">Stopped after '+steps.length+" step(s).</p>"});
+    }).catch(function(e){nx.innerHTML='<p class="err">'+esc(e.message)+'</p><button class="sec g-retry">Try again</button>';nx.querySelector(".g-retry").addEventListener("click",ask)});
+  }
+  ask();
+}
+/* a ticket for one audience: facts from the check, summary / request drafted by the AI */
+function ticketWrite(el,ctx,aud,btn){
+  btn.disabled=true;el.innerHTML='<p class="mut">writing the ticket ...</p>';
+  api("/api/ai/ticket",{path:ctx.path,audience:aud}).then(function(t){
+    el.innerHTML='<div class="ai" style="background:var(--bg)"><div class="row" style="margin:0"><b>Ticket</b><span class="mut" style="font-size:12px">'+t.problems.length+" problem(s) · facts from the check"+(t.ai?", summary and request drafted by the AI - check them":"")+'</span><span style="flex:1"></span><button class="sec t-copy">Copy</button><button class="sec t-dl">Download .md</button></div>'+
+      (t.unsafe?'<div class="warn">The drafted request mentions a step that changes the rack ("'+esc(t.unsafe)+'") - check it before sending.</div>':"")+
+      '<textarea class="t-md" style="width:100%;height:46vh;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;margin-top:6px">'+esc(t.markdown)+"</textarea></div>";
+    var ta=el.querySelector(".t-md");
+    el.querySelector(".t-copy").addEventListener("click",function(){ta.select();try{navigator.clipboard.writeText(ta.value)}catch(e){document.execCommand("copy")}});
+    el.querySelector(".t-dl").addEventListener("click",function(){var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([ta.value],{type:"text/markdown"}));
+      a.download="ticket-"+ctx.path.split("/").slice(1).join("-")+"-"+aud+".md";a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},2000)});
+  }).catch(function(e){el.innerHTML='<p class="err">'+esc(e.message)+"</p>"}).then(function(){btn.disabled=false});
 }
 
 /* ---------------------------------------------------------------- node pickers (terminal, config) */

@@ -519,6 +519,87 @@ def ai_ask(state: State, req: dict) -> dict:
         raise BadRequest(str(e)) from None
 
 
+def _ai_subject(state: State, req: dict):
+    """(evidence, subject, rack) for a request naming a check / a link of it / a Diagnose result."""
+    from heliosdbg import ai
+    rel = str(req.get("path") or "").strip("/")
+    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", rel):
+        raise BadRequest("path: link-check/<rack>/scan-... or link-...")
+    rack = rel.split("/")[1]
+    try:
+        if "/link-" in rel:
+            ev, subject = ai.diagnose_context(json.loads(_result_file(state, f"{rel}/link.json").read_text()))
+        else:
+            scan = scan_view(state, rel)
+            link = str(req.get("link") or "").strip()
+            ev, subject = ai.link_context(scan, link) if link else ai.check_context(scan)
+    except ai.AIError as e:
+        raise BadRequest(str(e)) from None
+    return ev, subject, rack
+
+
+def _rack_nodes(state: State, rack: str):
+    inv = _rack_inventory(state, rack)
+    if inv is None:
+        raise BadRequest(f"no inventory for rack {rack} on this machine")
+    roles = {h.name: "switch" for h in inv.all_switches} | {h.name: "compute" for h in inv.all_computes}
+    return inv, roles
+
+
+def ai_guide(state: State, req: dict) -> dict:
+    """The next step of a guided investigation (proposed by the AI, checked against the read-only allow-list)."""
+    from heliosdbg import ai, guide
+    ev, subject, rack = _ai_subject(state, req)
+    _inv, roles = _rack_nodes(state, rack)
+    steps = [s for s in (req.get("steps") or []) if isinstance(s, dict)][:12]
+    try:
+        return guide.propose(ai, ev, subject, steps, roles)
+    except (ai.AIError, guide.GuideError) as e:
+        raise BadRequest(str(e)) from None
+
+
+def ai_run(state: State, req: dict) -> dict:
+    """Run one step the person clicked Run on - read-only allow-list checked again here."""
+    from heliosdbg import guide
+    from heliosdbg.transport import make_transport
+    rel = str(req.get("path") or "").strip("/")
+    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", rel):
+        raise BadRequest("path: link-check/<rack>/scan-... or link-...")
+    inv, roles = _rack_nodes(state, rel.split("/")[1])
+    node = str(req.get("node") or "")
+    host = next((h for h in inv.all_switches + inv.all_computes if h.name == node), None)
+    if host is None:
+        raise BadRequest(f"no node {node!r} in this rack")
+    try:
+        guide.check(str(req.get("command") or ""), roles[node])
+    except guide.GuideError as e:
+        raise BadRequest(str(e)) from None
+    t = make_transport(host, inv.transport or {})
+    try:
+        return guide.run(host, t, str(req.get("command")), roles[node], state.results_dir / "ai")
+    finally:
+        try:
+            t.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def ai_ticket(state: State, req: dict) -> dict:
+    """A ticket for one audience: facts from the check, summary / request drafted by the AI (if one is connected)."""
+    from heliosdbg import ai, ticket
+    rel = str(req.get("path") or "").strip("/")
+    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/scan-[0-9]{8}-[0-9]{6}", rel):
+        raise BadRequest("path: link-check/<rack>/scan-...")
+    audience = str(req.get("audience") or "all")
+    if audience not in ticket.AUDIENCES:
+        raise BadRequest("audience: " + ", ".join(ticket.AUDIENCES))
+    scan = scan_view(state, rel)
+    probs = ticket.problems(scan)
+    text = ticket.ai_paragraphs(ai, scan, audience, probs) if req.get("ai", True) else None
+    return {"markdown": ticket.render(scan, audience, probs, text, f"results/{rel}/report.html"), "problems": probs,
+            "ai": bool(text), "unsafe": (text or {}).get("unsafe"), "audience": audience}
+
+
 def node_config(state: State, req: dict) -> dict:
     """The read-only configuration of one switch / compute tray (Config tab): SONiC CONFIG_DB per ASIC, or afmctl's
     GPU and port configuration. Read live, over the same transport as the checks."""
@@ -931,6 +1012,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, discover_rack(dict(req, afm_password=pw)))
             if u.path == "/api/inventory/save":
                 return self._json(200, save_inventory(self.state, req))
+            if u.path == "/api/ai/guide":
+                return self._json(200, ai_guide(self.state, req))
+            if u.path == "/api/ai/run":
+                return self._json(200, ai_run(self.state, req))
+            if u.path == "/api/ai/ticket":
+                return self._json(200, ai_ticket(self.state, req))
             if u.path == "/api/ai/ask":
                 return self._json(200, ai_ask(self.state, req))
             if u.path == "/api/config":
