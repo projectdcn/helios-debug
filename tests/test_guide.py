@@ -173,3 +173,20 @@ def test_compact_afmctl_json_for_the_model():
     assert dev == "GPU 0002:01:00.1: accelerator 5, config_phase ACTIVE, vPOD accelerators 2"
     assert guide.compact("Ethernet170 down up") == "Ethernet170 down up" and guide.compact("{not json") == "{not json"
     assert "port 35:" in guide.steps_block([{"node": "ct02", "command": "x", "rc": 0, "output": _j.dumps({"device": [{"bdf": "b", "port": ports}]})}])
+
+
+def test_same_moment_ties_ports_that_dropped_together():
+    """A down link names the switch's other ports that went down at the same second (coupled ports, a restart)."""
+    from heliosdbg import ai
+    mk = lambda p, admin, st, t: {"switch": "st2", "asic": "asic1", "sw_port": p, "sw_admin": admin, "sw_oper": "down",
+                                  "state": st, "last_down_time": t, "tray": "ct12", "bdf": "0003:01:00.1", "gpu_port": 16}
+    scan = {"rack": "r", "time_utc": "t", "links": [mk("Ethernet269", "down", "down", "2026-10-25 09:18:01"),
+                                                    mk("Ethernet270", "up", "down", "2026-10-25 09:18:01"),
+                                                    mk("Ethernet300", "up", "down", "2026-10-24 01:00:00"),
+                                                    dict(mk("Ethernet301", "up", "ok", ""), sw_oper="up")]}
+    ev, _s = ai.link_context(scan, "st2 Ethernet270")
+    t = ev.block()
+    assert "Went down at the same second (2026-10-25 09:18:01) as 1 other port(s) of st2: asic1 Ethernet269 (admin down" in t
+    assert "Ethernet300" not in t.split("same second")[1].split("\n")[0]
+    ev, _s = ai.link_context(scan, "st2 Ethernet300")
+    assert "same second" not in ev.block()

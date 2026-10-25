@@ -229,6 +229,20 @@ def _chip_summary(ev: Evidence, scan: dict, sw: str, asic: str, names: dict) -> 
            (f"; {no_sess} links up without an IFCP session" if no_sess else ""), "check")
 
 
+def _same_moment(ev: Evidence, scan: dict, ln: dict) -> None:
+    """Other ports of the switch that last went down at the same second as this one: one change, not separate cable
+    faults (g02-g17: shutting Eth243 also dropped Eth251 - coupled ports; a switch / agent restart drops many)."""
+    t = str(ln.get("last_down_time") or "").strip()
+    if not t or ln.get("state") == "ok":
+        return
+    same = [x for x in scan.get("links") or [] if x.get("switch") == ln.get("switch") and x is not ln
+            and x.get("sw_port") != ln.get("sw_port") and str(x.get("last_down_time") or "").strip() == t]
+    if same:
+        ev.add(f"Went down at the same second ({t}) as {len(same)} other port(s) of {ln.get('switch')}: "
+               + "; ".join(f"{x.get('asic') or ''} {x['sw_port']} (admin {x.get('sw_admin') or '?'}, oper {x.get('sw_oper') or '?'}, "
+                           f"{x.get('state')})" for x in same[:6]) + (" ..." if len(same) > 6 else ""), "check")
+
+
 def _switch_problems(ev: Evidence, scan: dict, names: dict, only: str | None = None) -> None:
     by: dict = {}
     for f in scan.get("fdb_broken") or []:
@@ -257,6 +271,7 @@ def link_context(scan: dict, key: str) -> tuple[Evidence, str]:
     ev.add(f"Rack {scan.get('rack')}, check of {scan.get('time_utc')} (UTC)", "check")
     _link_facts(ev, ln, names, "link")
     _chip_summary(ev, scan, ln.get("switch"), ln.get("asic") or "", names)
+    _same_moment(ev, scan, ln)
     _switch_problems(ev, scan, names, only=ln.get("switch"))
     for f in scan.get("vlan_findings") or []:
         if f.get("switch") == ln.get("switch") and (f.get("port") in (None, ln.get("sw_port"))):
