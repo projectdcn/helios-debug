@@ -155,3 +155,21 @@ def test_rackmap_facts():
     assert any("MAC 02:00:00:07:00:03: static forwarding entry on st6 asic0 Ethernet3" in x for x in f)
     assert any("st6 asic0 Ethernet3 <-> ct02 GPU0" in x and "forwarding entry MAC 02:00:00:07:00:03" in x for x in f)
     assert rackmap.facts(scan, "why is the rack degraded?") == []
+
+
+def test_compact_afmctl_json_for_the_model():
+    """afmctl --json port listings become one line per port (36 ports of one-line JSON were cut after a dozen)."""
+    import json as _j
+    from heliosdbg import guide
+    ports = [{"id": str(p), "spec": {"admin_state": "idle" if p == 25 else "enabled"},
+              "status": {"link_status": "LINK_DOWN" if p == 25 else "LINK_UP",
+                         "ifcp": {"ll_up": "no" if p == 25 else "yes", "peer_enabled": "yes", "peer_device_id": "3",
+                                  "peer_port_id": str(100 + p), "in_error": "no", "peer_in_error": "no"}}} for p in range(36)]
+    out = guide.compact(_j.dumps({"device": [{"bdf": "0001:01:00.1", "port": ports}]}))
+    assert out.splitlines()[0] == "GPU 0001:01:00.1:" and len(out.splitlines()) == 37 and len(out) < 3000
+    assert " port 25: LINK_DOWN, admin idle, IFCP ll_up no peer_enabled yes peer 3/125" in out
+    dev = guide.compact(_j.dumps({"device": [{"bdf": "0002:01:00.1", "spec": {"accelerator_id": "5", "config_phase": "ACTIVE",
+                                                                                   "vpod_accelerators": ["1", "2"]}}]}))
+    assert dev == "GPU 0002:01:00.1: accelerator 5, config_phase ACTIVE, vPOD accelerators 2"
+    assert guide.compact("Ethernet170 down up") == "Ethernet170 down up" and guide.compact("{not json") == "{not json"
+    assert "port 35:" in guide.steps_block([{"node": "ct02", "command": "x", "rc": 0, "output": _j.dumps({"device": [{"bdf": "b", "port": ports}]})}])

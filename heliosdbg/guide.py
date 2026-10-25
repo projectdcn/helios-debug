@@ -77,11 +77,41 @@ GUIDE_SYSTEM_ADD = (
 )
 
 
+def compact(output: str) -> str:
+    """afmctl's --json port / device listings in one line per port / GPU (36 ports of JSON are ~6000 characters on one
+    line: cut for the model, the ports after the first dozen were never seen). Anything else unchanged."""
+    t = (output or "").strip()
+    if not t.startswith("{"):
+        return output
+    try:
+        d = json.loads(t.split("\n[stderr]", 1)[0])
+    except ValueError:
+        return output
+    lines = []
+    for dev in d.get("device") or []:
+        if not isinstance(dev, dict):
+            continue
+        if dev.get("port"):
+            lines.append(f"GPU {dev.get('bdf')}:")
+            for p in dev["port"]:
+                sp, st = p.get("spec") or {}, p.get("status") or {}
+                ic = st.get("ifcp") or {}
+                lines.append(f" port {p.get('id')}: {st.get('link_status')}, admin {sp.get('admin_state')}, "
+                             f"IFCP ll_up {ic.get('ll_up')} peer_enabled {ic.get('peer_enabled')} peer {ic.get('peer_device_id')}/"
+                             f"{ic.get('peer_port_id')}" + (" IN ERROR" if "yes" in (ic.get("in_error"), ic.get("peer_in_error")) else ""))
+        else:
+            sp, st = dev.get("spec") or {}, dev.get("status") or {}
+            state = st.get("state") or st.get("oper_state")
+            lines.append(f"GPU {dev.get('bdf')}: accelerator {sp.get('accelerator_id')}, config_phase {sp.get('config_phase')}, "
+                         + (f"state {state}, " if state else "") + f"vPOD accelerators {len(sp.get('vpod_accelerators') or [])}")
+    return "\n".join(lines) if lines else output
+
+
 def steps_block(steps: list[dict]) -> str:
     out = []
     for i, s in enumerate(steps[-8:], 1):
         out.append(f"[S{i}] on {s.get('node')}: `{s.get('command')}` (exit {s.get('rc')}) ->\n"
-                   + str(s.get("output") or "")[:OUTPUT_MAX // 2])
+                   + compact(str(s.get("output") or ""))[:OUTPUT_MAX // 2])
     return "\n".join(out)
 
 
@@ -104,8 +134,8 @@ def parse_step(text: str) -> dict:
     raise GuideError("the model did not answer with a step (JSON) - ask again")
 
 
-def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None) -> dict:
-    """The model's next step: {done, node, command, why, allowed, refused} or {done, conclusion, next}."""
+def messages(ai, ev, subject: str, steps: list[dict], nodes: dict) -> list[dict]:
+    """The chat messages of one guided step - also what helios-slm (vguide.py) trains and evaluates on."""
     msgs = ai.build_messages(ev, subject)
     msgs[0]["content"] += GUIDE_SYSTEM_ADD
     node_list = ", ".join(f"{n} ({r})" for n, r in sorted(nodes.items()))
@@ -113,6 +143,12 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None) -> d
          + (f"Steps run so far:\n{steps_block(steps)}\n" if steps else "No step run yet.\n")
          + "What is the next read-only step (or your conclusion)?")
     msgs[-1]["content"] = msgs[-1]["content"].rsplit("\n\nQuestion:", 1)[0] + "\n\n" + q
+    return msgs
+
+
+def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None) -> dict:
+    """The model's next step: {done, node, command, why, allowed, refused} or {done, conclusion, next}."""
+    msgs = messages(ai, ev, subject, steps, nodes)
     text, model = ai.chat(msgs, env, max_tokens=500)
     st = parse_step(text)
     st["model"] = model
@@ -152,6 +188,7 @@ def run(host, transport, command: str, role: str, log_dir: Path | None = None) -
                          f"{round(time.time() - t0, 1)}s {shlex.quote(c)}\n")
         except OSError:
             pass
+    out = compact(out)                                   # before cutting: a cut JSON cannot be read any more
     if len(out) > OUTPUT_MAX:
         out = out[:OUTPUT_MAX // 2] + f"\n... ({len(out) - OUTPUT_MAX} characters cut) ...\n" + out[-OUTPUT_MAX // 2:]
     return {"node": host.name, "command": c, "rc": rc, "output": out, "seconds": round(time.time() - t0, 1)}
