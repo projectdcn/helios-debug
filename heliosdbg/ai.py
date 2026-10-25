@@ -363,8 +363,8 @@ def wrong_device(text: str) -> list[str]:
     return [why for rx, why in WRONG_DEVICE if rx.search(text or "")]
 
 
-def ask(ev: Evidence, subject: str, question: str = "", history: list | None = None, env=None) -> dict:
-    """{answer, model, evidence, unsafe, cited, unknown_citations, seconds}."""
+def build_messages(ev: Evidence, subject: str, question: str = "", history: list | None = None) -> list[dict]:
+    """The chat messages ask() sends - also what helios-slm trains and evaluates on, so both see the same input."""
     q = (question or "").strip()
     if not q and ev.verdict == "ok":     # a small model otherwise turns a working link into a fault
         q = (f"The checker found {subject} WORKING (verdict ok). Say so first. Is anything in the evidence worth "
@@ -375,18 +375,27 @@ def ask(ev: Evidence, subject: str, question: str = "", history: list | None = N
              for m in ({"role": "user", "content": str(h["q"])[:2000]}, {"role": "assistant", "content": str(h["a"])[:4000]})]
     system = SYSTEM + ("\n" + CHECK_MODE if subject == "this check of the rack" and not turns else "")
     if turns:          # a follow-up: the evidence once, the earlier turns, then the new question
-        msgs = [{"role": "system", "content": SYSTEM},
+        return [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": f"Evidence about {subject}:\n{ev.block()}"},
                 {"role": "assistant", "content": "Understood - I will answer from these evidence items."},
                 *turns, {"role": "user", "content": f"Question: {q}"}]
-    else:
-        msgs = [{"role": "system", "content": system},
-                {"role": "user", "content": f"Evidence about {subject}:\n{ev.block()}\n\nQuestion: {q}"}]
-    t0 = time.time()
-    text, model = chat(msgs, env)
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": f"Evidence about {subject}:\n{ev.block()}\n\nQuestion: {q}"}]
+
+
+def review(text: str, ev: Evidence) -> dict:
+    """The checks on an answer: a step that changes the rack, a command on the wrong kind of node, citations."""
     refs = {x["ref"] for x in ev.items}
     cited = sorted(set(re.findall(r"\bE(\d+)\b", text)), key=int)
-    return {"answer": text, "model": model, "evidence": ev.items, "unsafe": unsafe_text(text), "wrong_device": wrong_device(text),
+    return {"unsafe": unsafe_text(text), "wrong_device": wrong_device(text),
             "cited": [f"E{n}" for n in cited if f"E{n}" in refs],
-            "unknown_citations": [f"E{n}" for n in cited if f"E{n}" not in refs],
+            "unknown_citations": [f"E{n}" for n in cited if f"E{n}" not in refs]}
+
+
+def ask(ev: Evidence, subject: str, question: str = "", history: list | None = None, env=None) -> dict:
+    """{answer, model, evidence, unsafe, wrong_device, cited, unknown_citations, seconds, subject}."""
+    msgs = build_messages(ev, subject, question, history)
+    t0 = time.time()
+    text, model = chat(msgs, env)
+    return {"answer": text, "model": model, "evidence": ev.items, **review(text, ev),
             "seconds": round(time.time() - t0, 1), "subject": subject}
