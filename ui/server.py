@@ -662,8 +662,17 @@ def ai_chat(state: State, req: dict) -> dict:
             live = []
     link = str(req.get("link") or "").strip()
     try:
+        macs = None
+        if re.search(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}|\bmac\b|Ethernet\d+", q, re.I):   # MACs: the check's raw switch read
+            import gzip
+            from heliosdbg import rackmap
+            raw = state.results_dir / rel / "raw" / "switches.json.gz"
+            try:
+                macs = rackmap.mac_index(json.load(gzip.open(raw, "rt"))) if raw.is_file() else None
+            except (OSError, ValueError, EOFError):
+                macs = None
         ev, subject = ai.chat_context(scan, q, link if link and any(
-            f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load())
+            f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load(), macs)
         hist = req.get("history") or []
         out = ai.ask(ev, subject, q, hist if isinstance(hist, list) else [])
     except ai.AIError as e:

@@ -113,3 +113,33 @@ def test_chat_smalltalk_is_answered_without_the_model():
     assert not server.SMALLTALK_RX.fullmatch("hi, why is st6 asic0 degraded?")
     r = server.smalltalk("hi", {"time_utc": "t", "links": [{"state": "ok"}, {"state": "down"}]}, "g02-g17", "p")
     assert r["answer"].startswith("Hi.") and "2 GPU links - 1 down, 1 ok" in r["answer"] and r["model"] == "(no model needed)"
+
+
+def test_rackmap_facts():
+    """GPU port -> switch port by GPU number / PCI / acc id, the path between two GPUs, MAC lookups, unread switches."""
+    from heliosdbg import rackmap
+    links = []
+    for tray, base, acc in (("ct02", 0, 7), ("ct13", 100, 51)):
+        for p in range(4):
+            links.append({"switch": "st6" if p % 2 else "st5", "asic": "asic0", "sw_port": f"Ethernet{base + p}", "tray": tray,
+                          "bdf": "0004:01:00.1", "gpu_port": p, "state": "ok", "vlans": [["Vlan100", "pt"]]})
+    scan = {"links": links, "afm_names": {"ct02": "pod-1-1-ComputeTray", "st6": "pod-1-5-SwitchTray"},
+            "gpu_map": {"ct02:GPU0": "0004:01:00.1", "ct13:GPU0": "0004:01:00.1"}, "gpu_acc": {"ct02:0004:01:00.1": 7, "ct13:0004:01:00.1": 51},
+            "not_checked": [{"node": "st1", "role": "switch"}]}
+    f = rackmap.facts(scan, "Which switch ports is pod-1-1-ComputeTray GPU0 connected to?")
+    assert any("GPU0 (0004:01:00.1, acc 7): 4 links" in x and "st6 asic0: GPU ports 1/3 -> Ethernet1/Ethernet3" in x for x in f)
+    assert any("could not read switch(es) st1" in x for x in f)
+    f = rackmap.facts(scan, "path from ct02 GPU0 to acc 51")
+    assert any(x.startswith("Path ct02") for x in f) and any("port 1: Ethernet1 -> Ethernet101" in x for x in f)
+    assert any("--dst-accelerator 51" in x for x in f)
+    assert "Summary: 4 of 4 common ports have both ends ok; every chip on the path is fully ok" in f
+    links[5]["state"] = "down"                                  # ct13 port 1 (st6)
+    f = rackmap.facts(scan, "path from ct02 GPU0 to acc 51")
+    assert "Summary: 3 of 4 common ports have both ends ok; not fully ok: st6 asic0 (1 of 2)" in f
+    links[5]["state"] = "ok"
+    f = rackmap.facts(scan, "which switch port is ct05 GPU1 connected to?")
+    assert any(x.startswith("ct05: no GPU link of it in this check") for x in f)
+    f = rackmap.facts(scan, "what is on st6 Ethernet3 and MAC 02:00:00:07:00:03?", {"02:00:00:07:00:03": {"switch": "st6", "ns": "asic0", "port": "Ethernet3", "vlan": "100"}})
+    assert any("MAC 02:00:00:07:00:03: static forwarding entry on st6 asic0 Ethernet3" in x for x in f)
+    assert any("st6 asic0 Ethernet3 <-> ct02 GPU0" in x and "forwarding entry MAC 02:00:00:07:00:03" in x for x in f)
+    assert rackmap.facts(scan, "why is the rack degraded?") == []

@@ -97,6 +97,7 @@ nav button.exp{border-style:dashed}
 /* the chat drawer: on the right, kept while moving between tabs */
 #chat{position:fixed;top:0;right:0;width:min(460px,100vw);height:100vh;background:var(--card);border-left:1px solid var(--rule);
   box-shadow:-6px 0 24px rgba(0,0,0,.12);z-index:60;display:flex;flex-direction:column;margin:0;padding:0;border-radius:0;border-width:0 0 0 1px}
+#chat.hide{display:none}             /* the id selector above outranks .hide: without this the drawer never closes */
 #chat .ch-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--rule)}
 #chat .ch-ctx{font-size:12px;color:var(--mut);padding:6px 12px;border-bottom:1px solid var(--rule)}
 #chat .ch-log{flex:1;overflow-y:auto;padding:10px 12px}
@@ -1052,7 +1053,10 @@ function chatSend(q){
   api("/api/ai/chat",{inventory:i.file,path:mapData&&mapData.rack===i.rack?mapData.path:"",link:lk||"",question:q,history:chat.hist}).then(function(a){
     chat.hist.push({q:q,a:a.answer});
     var refs=(a.evidence||[]).concat((a.docs||[]).map(function(d){return {ref:d.ref,text:d.title+": "+d.text}}));
-    ad.innerHTML=aiMd(a.answer,refs)+
+    ad.innerHTML=((a.map_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Rack map - exact, from the check'+
+        (a.context&&a.context.path?" "+esc(a.context.path):"")+'</b>'+a.map_facts.map(function(t){return '<div style="margin-top:3px">'+(/^Summary:/.test(t)?"<b>"+esc(t)+"</b>":esc(t))+"</div>"}).join("")+"</div>"+
+        '<div class="mut" style="font-size:12px;margin:4px 0">AI explanation - the lines above are exact; if they disagree, they are right:</div>':"")+
+      aiMd(a.answer,refs)+
       (a.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(a.unsafe)+'") - only with a go-ahead.</div>':"")+
       ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
       (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+".</div>":"")+

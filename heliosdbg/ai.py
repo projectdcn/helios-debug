@@ -395,16 +395,24 @@ PROBLEM_RX = re.compile(r"\b(wrong|problems?|faults?|failing|failed|broken|down|
 _NODE_RX = re.compile(r"\b(st\d+|ct\d{2}|c\d+|pod-\d+-\d+-(?:Switch|Compute)Tray|Ethernet\d+|asic\d)\b", re.I)
 
 
-def chat_context(scan: dict, question: str, link: str = "", live: list | None = None, docs=None) -> tuple[Evidence, str]:
-    """Evidence for one chat question: the open link (or the whole check), facts about the nodes / ports the question
-    names, the newest Live changes, and documentation passages that match the question."""
-    howto = bool(HOWTO_RX.search(question or "")) and not PROBLEM_RX.search(question or "") and not link
+def chat_context(scan: dict, question: str, link: str = "", live: list | None = None, docs=None,
+                 macs: dict | None = None) -> tuple[Evidence, str]:
+    """Evidence for one chat question: the open link (or the whole check), the rack map facts it asks about (which GPU
+    port is cabled where, MACs, accelerator ids, VLANs, the path between two GPUs - heliosdbg/rackmap.py), facts about
+    the nodes / ports it names, the newest Live changes, and documentation passages that match it."""
+    from . import rackmap
+    q0 = question or ""
+    howto = ((bool(HOWTO_RX.search(q0)) or bool(rackmap.TOPO_WORDS.search(q0))) and not PROBLEM_RX.search(q0) and not link)
     if howto:                                  # 'how do I / what does / which command': documentation first
         ev, subject = Evidence(), ""
         ls0 = scan.get("links") or []
         ev.add(f"Rack {scan.get('rack')}, check of {scan.get('time_utc')} (UTC): {len(ls0)} GPU links checked", "check")
     else:
         ev, subject = (link_context(scan, link) if link else check_context(scan))
+    mapfacts = rackmap.facts(scan, q0, macs)
+    ev.map_facts = mapfacts                     # shown to the person exactly as they are (the model only explains them)
+    for t in mapfacts:
+        ev.add(t, "rack map")
     names = scan.get("afm_names") or {}
     rev = {v.lower(): k for k, v in names.items()}
     ls = scan.get("links") or []
@@ -412,7 +420,7 @@ def chat_context(scan: dict, question: str, link: str = "", live: list | None = 
     nodes = {rev.get(a.lower(), a) for a in asked if not a.lower().startswith(("ethernet", "asic"))}
     ports = {a for a in asked if a.lower().startswith("ethernet")}
     asics = {a.lower() for a in asked if a.lower().startswith("asic")}
-    for n in sorted(nodes):
+    for n in sorted(nodes if not mapfacts else ()):   # a rack-map question: its exact facts, not the node's problem dump
         mine = [x for x in ls if n in (x.get("switch"), x.get("tray")) and (not asics or (x.get("asic") or "").lower() in asics)]
         if not mine:
             ev.add(f"{_nm(n, names)}: no link of it in this check", "chat")
@@ -428,7 +436,7 @@ def chat_context(scan: dict, question: str, link: str = "", live: list | None = 
         for x in bad:
             ev.add(f"  {x['switch']} {x.get('asic') or ''} {x['sw_port']} <-> {x.get('tray') or '?'} {x.get('bdf') or '?'} port "
                    f"{x.get('gpu_port')}: {x.get('state')} {x.get('kind') or ''} - {str(x.get('cause') or '')[:140]}", "chat")
-    for pt in sorted(ports):
+    for pt in sorted(ports if not mapfacts else ()):
         for x in [x for x in ls if x.get("sw_port") == pt and (not nodes or x.get("switch") in nodes)][:3]:
             ev.add(f"{x['switch']} {x.get('asic') or ''} {pt} <-> {x.get('tray') or '?'} {x.get('bdf') or '?'} port {x.get('gpu_port')}: "
                    f"{x.get('state')} {x.get('kind') or ''}; IFCP {((x.get('ifcp') or {}).get('ll'))}; VLAN "
@@ -453,6 +461,11 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
     turns = [m for h in (history or [])[-6:] if isinstance(h, dict) and h.get("q") and h.get("a")
              for m in ({"role": "user", "content": str(h["q"])[:2000]}, {"role": "assistant", "content": str(h["a"])[:4000]})]
     chat_mode = subject.endswith("(chat)")
+    if chat_mode and getattr(ev, "map_facts", None):
+        q += ("\n(The exact rack-map lines - ports, MACs, accelerator ids, paths - are shown to the person separately, as "
+              "they are. Do NOT restate port numbers or MACs; explain what they mean in 2-5 sentences of plain prose (no "
+              "headings): which switches / chips are involved, whether every link of it is ok (take this from the 'Summary' "
+              "line when there is one), and what to check next. Say nothing about a cause the evidence does not state.)")
     system = (SYSTEM_BASE + CHAT_MODE if chat_mode else
               SYSTEM + ("\n" + CHECK_MODE if subject == "this check of the rack" and not turns else ""))
     if turns:          # a follow-up: the evidence once, the earlier turns, then the new question
@@ -477,5 +490,6 @@ def ask(ev: Evidence, subject: str, question: str = "", history: list | None = N
     msgs = build_messages(ev, subject, question, history)
     t0 = time.time()
     text, model = chat(msgs, env)
-    return {"answer": text, "model": model, "evidence": ev.items, "docs": getattr(ev, "docs", None) or [], **review(text, ev),
+    return {"answer": text, "model": model, "evidence": ev.items, "docs": getattr(ev, "docs", None) or [],
+            "map_facts": getattr(ev, "map_facts", None) or [], **review(text, ev),
             "seconds": round(time.time() - t0, 1), "subject": subject}
