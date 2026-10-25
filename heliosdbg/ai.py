@@ -4,6 +4,7 @@ The model is any OpenAI-compatible chat server (helios-slm's mlx_lm.server on a 
     HELIOS_AI_URL    default http://127.0.0.1:8090/v1 ("off" turns the AI off)
     HELIOS_AI_MODEL  default: the first model the server lists
     HELIOS_AI_KEY    optional bearer key
+    HELIOS_AI_NO_THINK  1: add Qwen3's '/no_think' (a hybrid reasoning model such as Qwen3-8B answers directly)
 The UI on the jump host reaches a model on your Mac through the same SSH session as the UI tunnel:
     ssh -N -L 8780:localhost:8780 -R 8090:127.0.0.1:8090 -p 8059 tenant-hpe@<jump host>
 
@@ -126,6 +127,11 @@ def chat(messages: list[dict], env=None, max_tokens: int = 900, timeout: float =
     model = s["model"] or _MODEL_CACHE.get(s["url"]) or status(env).get("model")
     if not model:
         raise AIError(status(env).get("error") or "no model")
+    if str((env if env is not None else os.environ).get("HELIOS_AI_NO_THINK", "")).lower() in ("1", "yes", "true"):
+        # a hybrid reasoning model (Qwen3-8B ...): its soft switch, else a long <think> block eats max_tokens
+        messages = [dict(m) for m in messages]
+        last = next(i for i in range(len(messages) - 1, -1, -1) if messages[i]["role"] == "user")
+        messages[last]["content"] += "\n/no_think"
     try:
         d = _req(s["url"] + "/chat/completions", s["key"],
                  {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": max_tokens}, timeout=timeout)
