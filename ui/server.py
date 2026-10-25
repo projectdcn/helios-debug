@@ -610,7 +610,10 @@ def smalltalk(q: str, scan: dict, rack: str, rel: str) -> dict:
     c: dict = {}
     for x in ls:
         c[x.get("state")] = c.get(x.get("state"), 0) + 1
-    state_line = (f"{rack}: the check of {scan.get('time_utc')} UTC read {len(ls)} GPU links - "
+    t = str(scan.get("time_utc") or "")
+    m = re.match(r"(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)", t)
+    when = f"{m.group(1)}-{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)} UTC" if m else t
+    state_line = (f"{rack}: the check of {when} read {len(ls)} GPU links - "
                   + ", ".join(f"{v} {k}" for k, v in sorted(c.items())) + ".")
     low = q.strip().lower()
     if low.startswith(("thank", "thx", "ok", "cool", "great", "nice", "got")):
