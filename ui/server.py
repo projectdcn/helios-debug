@@ -600,6 +600,35 @@ def ai_ticket(state: State, req: dict) -> dict:
             "ai": bool(text), "unsafe": (text or {}).get("unsafe"), "audience": audience}
 
 
+SMALLTALK_RX = re.compile(r"\s*(hi+|hello|hey|hiya|yo|good\s+(morning|afternoon|evening)|thanks?(\s+you)?|thank\s+you|thx|"
+                          r"ok(ay)?|cool|great|nice|got\s+it|bye|help|\?)\s*[!.?]*\s*", re.I)
+
+
+def smalltalk(q: str, scan: dict, rack: str, rel: str) -> dict:
+    """A greeting / thanks / 'help': a short reply with what the chat can do and the rack's state in one line."""
+    ls = scan.get("links") or []
+    c: dict = {}
+    for x in ls:
+        c[x.get("state")] = c.get(x.get("state"), 0) + 1
+    state_line = (f"{rack}: the check of {scan.get('time_utc')} UTC read {len(ls)} GPU links - "
+                  + ", ".join(f"{v} {k}" for k, v in sorted(c.items())) + ".")
+    low = q.strip().lower()
+    if low.startswith(("thank", "thx", "ok", "cool", "great", "nice", "got")):
+        text = "You're welcome. Ask another question any time."
+    elif low.startswith("bye"):
+        text = "Bye - the conversation stays here until you press New."
+    else:
+        text = ("Hi. Ask me anything about this rack - for example:\n"
+                "- What is wrong with this rack, and in what order should it be fixed?\n"
+                "- Which links on st6 asic0 have no IFCP session?\n"
+                "- What does 'forwarding entries without a switch port' mean?\n"
+                "- How do I read the IFCP state of a GPU port?\n\n"
+                f"Right now: {state_line} Open a link in the Rack map to ask about that link.")
+    return {"answer": text, "model": "(no model needed)", "evidence": [], "docs": [], "unsafe": None, "wrong_device": [],
+            "cited": [], "unknown_citations": [], "seconds": 0, "subject": "chat",
+            "context": {"rack": rack, "path": rel, "time_utc": scan.get("time_utc"), "link": None, "live_changes": 0}}
+
+
 def ai_chat(state: State, req: dict) -> dict:
     """One chat question about a rack: its check (the one shown, else the newest full one), the open link if any, the
     newest Live changes when Live runs for that rack, and matching documentation passages."""
@@ -618,6 +647,8 @@ def ai_chat(state: State, req: dict) -> dict:
             raise BadRequest(f"no check of {rack} yet - run Check all links first")
         rel = lf
     scan = scan_view(state, rel)
+    if SMALLTALK_RX.fullmatch(q):                  # 'hi', 'thanks', 'ok': no model call, no rack dump
+        return smalltalk(q, scan, rack, rel)
     live = []
     with state.lock:
         lv, lv_inv = state.live, state.live_inventory

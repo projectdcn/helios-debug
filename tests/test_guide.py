@@ -105,3 +105,11 @@ def test_docsearch_and_chat_context(tmp_path, monkeypatch):
     assert "open chat" in msgs[0]["content"] and "### Problem" not in msgs[0]["content"].split("open chat")[1][:50]
     r = ai.review("See [E1] and [D1], not [D7].", ev)
     assert "D1" in r["cited"] and r["unknown_citations"] == ["D7"]
+
+
+def test_chat_smalltalk_is_answered_without_the_model():
+    from ui import server
+    assert server.SMALLTALK_RX.fullmatch("hi") and server.SMALLTALK_RX.fullmatch("Thanks!") and server.SMALLTALK_RX.fullmatch(" hello ")
+    assert not server.SMALLTALK_RX.fullmatch("hi, why is st6 asic0 degraded?")
+    r = server.smalltalk("hi", {"time_utc": "t", "links": [{"state": "ok"}, {"state": "down"}]}, "g02-g17", "p")
+    assert r["answer"].startswith("Hi.") and "2 GPU links - 1 down, 1 ok" in r["answer"] and r["model"] == "(no model needed)"
