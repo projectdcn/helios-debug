@@ -674,7 +674,15 @@ def ai_chat(state: State, req: dict) -> dict:
         ev, subject = ai.chat_context(scan, q, link if link and any(
             f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load(), macs)
         hist = req.get("history") or []
-        out = ai.ask(ev, subject, q, hist if isinstance(hist, list) else [])
+        try:
+            out = ai.ask(ev, subject, q, hist if isinstance(hist, list) else [])
+        except ai.AIError as e:
+            if not getattr(ev, "map_facts", None):
+                raise
+            # a rack-map lookup needs no model: the exact lines, and why there is no explanation
+            out = {"answer": f"_(No explanation: {e})_", "model": "none", "evidence": ev.items, "docs": [],
+                   "map_facts": ev.map_facts, "unsafe": None, "wrong_device": [], "cited": [], "unknown_citations": [],
+                   "seconds": 0, "subject": subject}
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
     return out | {"context": {"rack": rack, "path": rel, "time_utc": scan.get("time_utc"), "link": link or None,

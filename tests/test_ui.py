@@ -434,6 +434,13 @@ def test_ai_status_and_ask_with_a_stand_in_model(ui, monkeypatch):
         assert call(base, "/api/ai/ask", {"path": "../etc"})[0] == 400
         monkeypatch.setenv("HELIOS_AI_URL", "off")
         assert "turned off" in json.loads(call(base, "/api/ai/ask", {"path": "link-check/lab/scan-20261024-000000"})[1])["error"]
+        # a rack-map lookup still answers without a model: the exact lines, no explanation
+        code, body = call(base, "/api/ai/chat", {"inventory": "lab.local.yaml", "path": "link-check/lab/scan-20261024-000000",
+                                                 "question": "which switch port is c1 connected to?"})
+        a = json.loads(body)
+        assert code == 200 and a["model"] == "none" and any("st1 asic0: GPU ports 31 -> Ethernet8" in x for x in a["map_facts"])
+        assert call(base, "/api/ai/chat", {"inventory": "lab.local.yaml", "path": "link-check/lab/scan-20261024-000000",
+                                           "question": "why is st1 degraded?"})[0] == 400
     finally:
         m.shutdown()
 
