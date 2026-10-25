@@ -948,7 +948,7 @@ function aiMd(t,ev){
   });
   if(list)out.push("</"+list+">");
   return out.join("").replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
-    .replace(/\[?\b(E\d+)\b\]?/g,function(all,ref){return '<span class="cite'+(refs[ref]?"":" bad")+'" title="'+esc(refs[ref]||"not one of the evidence items given")+'">'+ref+"</span>"});
+    .replace(/\[?\b([ED]\d+)\b\]?/g,function(all,ref){return '<span class="cite'+(refs[ref]?"":" bad")+'" title="'+esc(refs[ref]||"not one of the evidence items given")+'">'+ref+"</span>"});
 }
 /* an "Ask the AI" panel in box: ctx {path, link?, label} */
 function aiPanel(box,ctx){
@@ -1083,6 +1083,16 @@ function chatEmpty(){
 var aiDocs=[];
 function chatOpen(){$("chat").classList.remove("hide");document.body.classList.add("chat-open");chatCtx();chatEmpty();$("chat-q").focus()}
 function chatClose(){$("chat").classList.add("hide");document.body.classList.remove("chat-open")}
+/* the documents an answer drew on: the ones it cited first, else the ones it was given */
+function docSources(a){
+  var docs=a.docs||[];if(!docs.length)return "";
+  var cited=docs.filter(function(d){return (a.cited||[]).indexOf(d.ref)>=0});
+  var by={};(cited.length?cited:docs).forEach(function(d){var m=/^(.*?) - (.*)$/.exec(d.title),t=m?m[1]:d.title,s=m?m[2]:"";
+    (by[t]=by[t]||{url:d.url,secs:[]}).secs.push(s.replace(/:.*$/,""))});
+  return '<div class="mut" style="font-size:12px;margin-top:4px"><b>'+(cited.length?"Sources":"Looked up (not cited)")+":</b> "+Object.keys(by).map(function(t){
+    var x=by[t],secs=x.secs.filter(Boolean).filter(function(s,i,l){return l.indexOf(s)===i});
+    return (/^https?:/.test(x.url)?'<a href="'+esc(x.url)+'" target="_blank" rel="noopener">'+esc(t)+"</a>":esc(t))+(secs.length?" ("+esc(secs.join(", "))+")":"")}).join(" · ")+"</div>";
+}
 function chatSend(q){
   q=(q||"").trim();var i=inv();if(!q||!i)return;
   var log=$("chat-log");if(!chat.hist.length)log.innerHTML="";
@@ -1096,7 +1106,9 @@ function chatSend(q){
     ad.innerHTML=((a.map_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Rack map - exact, from the check'+
         (a.context&&a.context.path?" "+esc(a.context.path):"")+'</b>'+a.map_facts.map(function(t){return '<div style="margin-top:3px">'+(/^Summary:/.test(t)?"<b>"+esc(t)+"</b>":esc(t))+"</div>"}).join("")+"</div>"+
         '<div class="mut" style="font-size:12px;margin:4px 0">AI explanation - the lines above are exact; if they disagree, they are right:</div>':"")+
-      aiMd(a.answer,refs)+
+      ((a.plan_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Test plan - exact, latest result</b>'+
+        a.plan_facts.map(function(t){return '<div style="margin-top:3px">'+esc(t)+"</div>"}).join("")+"</div>":"")+
+      aiMd(a.answer,refs)+docSources(a)+
       (a.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(a.unsafe)+'") - only with a go-ahead.</div>':"")+
       ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
       (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+".</div>":"")+

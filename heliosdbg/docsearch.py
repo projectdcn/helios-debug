@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "link-debug-guide.md"
+ID_RX = re.compile(r"(?:tc|hc|maint|hw)-[a-z0-9]+(?:-[a-z0-9]+)*-?\d+[a-z]?|(?:tc|hc)-\d+")
 _STOP = set("the a an and or of to in on for is are be by with this that it as at from what how which when where do does "
             "i you we can my your our not no".split())
 
@@ -77,6 +78,7 @@ class Index:
 
     def search(self, query: str, k: int = 3, min_score: float = 2.0) -> list[dict]:
         q = [w for w in dict.fromkeys(tokens(query)) if w in self.idf]
+        ids = [w for w in q if ID_RX.fullmatch(w)]          # a test case id named: its passages come first
         scored = []
         for i, tf in enumerate(self.tf):
             s, ln = 0.0, len(self.toks[i])
@@ -84,10 +86,21 @@ class Index:
                 f = tf.get(w)
                 if f:
                     s += self.idf[w] * f * (self.k1 + 1) / (f + self.k1 * (1 - self.b + self.b * ln / self.avg))
+            if ids and any(w in tf for w in ids):           # its own passage far ahead; one that mentions it, a bit
+                s += 50.0 if any(w in tokens(self.chunks[i].get("title", "")) for w in ids) else 5.0
             if s >= min_score:
                 scored.append((s, i))
         scored.sort(key=lambda x: -x[0])
-        return [dict(self.chunks[i], score=round(s, 2)) for s, i in scored[:k]]
+        # no one source fills every slot (705 test-plan rows would crowd out the manuals) unless an id was named
+        cap, per, out = (k if ids else max(2, (k + 1) // 2)), {}, []
+        for s, i in scored:
+            src = self.chunks[i].get("source", "")
+            if per.get(src, 0) < cap:
+                per[src] = per.get(src, 0) + 1
+                out.append(dict(self.chunks[i], score=round(s, 2)))
+                if len(out) == k:
+                    break
+        return out
 
 
 _CACHE: dict = {}

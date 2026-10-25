@@ -447,10 +447,29 @@ def chat_context(scan: dict, question: str, link: str = "", live: list | None = 
     for ch in (live or [])[-12:]:
         ev.add(f"Live change {ch.get('t')}: {ch.get('link') or ''} {ch.get('what')}: {ch.get('from')} -> {ch.get('to')} "
                f"[{ch.get('source')}]", "live")
+    ev.plan_facts = []
     if docs is not None:
         for d in docs.search(question or "", k=5 if howto else 3):
             ev.add_doc(d)
+        ev.plan_facts = plan_facts(docs, question or "")
     return ev, (f"link {link}" if link else "the rack") + " (chat)"
+
+
+def plan_facts(docs, question: str) -> list[str]:
+    """For each test case the question names: its title and LATEST status from the test plan index, exactly (a small
+    model otherwise reads an older failure in the notes as the current result)."""
+    from .docsearch import ID_RX, tokens
+    out = []
+    for tid in [w for w in dict.fromkeys(tokens(question)) if ID_RX.fullmatch(w)][:3]:
+        c = next((c for c in getattr(docs, "chunks", []) if c.get("title", "").lower() == f"test plan {tid}"), None)
+        if not c:
+            continue
+        m = re.search(r"LATEST execution status: (.*?)\. (?:Latest run: (.*?)(?: Access needed:| Non-disruptive| Disruptive|$))?",
+                      c.get("text", ""), re.S)
+        if m:
+            out.append(f"{tid.upper()} ({c.get('section')}): latest status {m.group(1).strip()}"
+                       + (f" - {m.group(2).strip()[:400]}" if m.group(2) else ""))
+    return out
 
 
 def build_messages(ev: Evidence, subject: str, question: str = "", history: list | None = None) -> list[dict]:
@@ -469,6 +488,10 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
               "they are. Do NOT restate port numbers or MACs; explain what they mean in 2-5 sentences of plain prose (no "
               "headings): which switches / chips are involved, whether every link of it is ok (take this from the 'Summary' "
               "line when there is one), and what to check next. Say nothing about a cause the evidence does not state.)")
+    if chat_mode and getattr(ev, "plan_facts", None):
+        q += ("\n(From the test plan, exactly: " + " | ".join(ev.plan_facts) + ". Start the answer with that LATEST status "
+              "word as it is - PARTIAL is not a failure: it passed where it could run. Anything after 'OLDER runs' is history "
+              "that the latest run superseded; mention it only as history.)")
     system = (SYSTEM_BASE + CHAT_MODE if chat_mode else
               SYSTEM + ("\n" + CHECK_MODE if subject == "this check of the rack" and not turns else ""))
     if turns:          # a follow-up: the evidence once, the earlier turns, then the new question
@@ -494,5 +517,6 @@ def ask(ev: Evidence, subject: str, question: str = "", history: list | None = N
     t0 = time.time()
     text, model = chat(msgs, env)
     return {"answer": text, "model": model, "evidence": ev.items, "docs": getattr(ev, "docs", None) or [],
-            "map_facts": getattr(ev, "map_facts", None) or [], **review(text, ev),
+            "map_facts": getattr(ev, "map_facts", None) or [], "plan_facts": getattr(ev, "plan_facts", None) or [],
+            **review(text, ev),
             "seconds": round(time.time() - t0, 1), "subject": subject}

@@ -704,11 +704,11 @@ def ai_chat(state: State, req: dict) -> dict:
         try:
             out = ai.ask(ev, subject, q, hist if isinstance(hist, list) else [])
         except ai.AIError as e:
-            if not getattr(ev, "map_facts", None):
+            if not (getattr(ev, "map_facts", None) or getattr(ev, "plan_facts", None)):
                 raise
-            # a rack-map lookup needs no model: the exact lines, and why there is no explanation
-            out = {"answer": f"_(No explanation: {e})_", "model": "none", "evidence": ev.items, "docs": [],
-                   "map_facts": ev.map_facts, "unsafe": None, "wrong_device": [], "cited": [], "unknown_citations": [],
+            # a rack-map / test-plan lookup needs no model: the exact lines, and why there is no explanation
+            out = {"answer": f"_(No explanation: {e})_", "model": "none", "evidence": ev.items, "docs": getattr(ev, "docs", None) or [],
+                   "map_facts": ev.map_facts, "plan_facts": ev.plan_facts, "unsafe": None, "wrong_device": [], "cited": [], "unknown_citations": [],
                    "seconds": 0, "subject": subject}
     except ai.AIError as e:
         raise BadRequest(str(e)) from None

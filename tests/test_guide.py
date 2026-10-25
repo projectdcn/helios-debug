@@ -91,6 +91,18 @@ def test_docsearch_and_chat_context(tmp_path, monkeypatch):
     idx = docsearch.load()
     assert {s["source"] for s in docsearch.sources()} >= {"debug guide", "sonic"}
     assert idx.search("bcm shell second asic")[0]["source"] == "sonic"
+    # a test case id named: its own passage first; otherwise no one source fills every slot
+    rows = [{"title": f"Test plan TC-AFM-00{i}", "section": "s", "text": f"Test case TC-AFM-00{i}: IFCP session check "
+             + ("mentions TC-AFM-002" if i == 3 else ""), "source": "testplan"} for i in range(1, 7)]
+    small = docsearch.Index(rows + [{"title": "Guide", "section": "IFCP", "text": "IFCP session: how to read it", "source": "guide"}])
+    assert [h["title"] for h in small.search("did TC-AFM-002 pass?", k=2)] == ["Test plan TC-AFM-002", "Test plan TC-AFM-003"]
+    assert [h["source"] for h in small.search("IFCP session check", k=3, min_score=0.01)].count("testplan") == 2
+    plan = docsearch.Index([{"title": "Test plan TC-AFM-002", "section": "TransferBench In-Domain", "source": "testplan",
+                             "text": "Test case TC-AFM-002 (L1): TransferBench In-Domain. LATEST execution status: PARTIAL on SONiC.x. "
+                                     "Latest run: [16 Oct] PARTIAL: passed on every reachable tray. Access needed: SSH."}])
+    assert ai.plan_facts(plan, "did tc-afm-002 pass?") == [
+        "TC-AFM-002 (TransferBench In-Domain): latest status PARTIAL on SONiC.x - [16 Oct] PARTIAL: passed on every reachable tray."]
+    assert ai.plan_facts(plan, "why is st6 degraded?") == []
     scan = {"rack": "r", "time_utc": "t", "afm_names": {"st6": "pod-1-5-SwitchTray"},
             "links": [{"switch": "st6", "asic": "asic0", "sw_port": "Ethernet170", "tray": "ct02", "bdf": "b", "gpu_port": 20,
                        "state": "degraded", "kind": "ifcp", "cause": "no IFCP session", "ifcp": {"ll": "no"}, "vlans": [["Vlan200", "pt"]]},
