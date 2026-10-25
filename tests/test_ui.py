@@ -432,6 +432,32 @@ def test_ai_status_and_ask_with_a_stand_in_model(ui, monkeypatch):
         a = json.loads(call(base, "/api/ai/ask", {"path": "link-check/lab/scan-20261024-000000"})[1])
         assert a["unsafe"] is None and a["subject"] == "this check of the rack"
         assert call(base, "/api/ai/ask", {"path": "../etc"})[0] == 400
+        # a resolution: stored with the evidence, listed, shown to the AI next time for the same link
+        rel = "link-check/lab/scan-20261024-000000"
+        assert call(base, "/api/ai/resolution", {"path": rel, "link": "st1 Ethernet8", "cause": "short"})[0] == 400
+        assert call(base, "/api/ai/resolution", {"path": rel, "cause": "a long enough cause", "category": "nope"})[0] == 400
+        code, body = call(base, "/api/ai/resolution", {"path": rel, "link": "st1 Ethernet8", "category": "cabling", "confirmed": True,
+                                                       "cause": "GPU port 31 cable not seated", "fix": "reseated by site",
+                                                       "steps": [{"node": "c1", "command": "sudo afmctl show device", "output": "x"}]})
+        r = json.loads(body)
+        assert code == 200 and r["resolution"]["evidence"] > 0 and r["resolution"]["rack"] == "lab" and r["count"] == 1
+        stored = json.loads((tmp / "results" / "ai" / "resolutions.jsonl").read_text().splitlines()[0])
+        assert stored["subject"] == "link st1 Ethernet8" and any("no IFCP session" in x["text"] for x in stored["evidence"])
+        assert stored["steps"][0]["command"] == "sudo afmctl show device"
+        lst = json.loads(call(base, "/api/ai/resolutions?rack=lab")[1])
+        assert [x["cause"] for x in lst["resolutions"]] == ["GPU port 31 cable not seated"] and "cabling" in lst["categories"]
+        replies.append("It is the cable [E1].")
+        call(base, "/api/ai/ask", {"path": rel, "link": "st1 Ethernet8"})
+        user = seen[-1]["messages"][1]["content"]
+        assert "Past resolution (" in user and "cause: GPU port 31 cable not seated; fixed by: reseated by site" in user
+        # a correction replaces the earlier record, and its own evidence never contains earlier resolutions
+        call(base, "/api/ai/resolution", {"path": rel, "link": "st1 Ethernet8", "cause": "it was the optic, not the cable",
+                                          "replaces": r["saved"]})
+        lst = json.loads(call(base, "/api/ai/resolutions?rack=lab")[1])["resolutions"]
+        assert [x["cause"] for x in lst] == ["it was the optic, not the cable"]
+        last = json.loads((tmp / "results" / "ai" / "resolutions.jsonl").read_text().splitlines()[-1])
+        assert not any(x["source"] == "resolution" for x in last["evidence"])
+        assert call(base, "/api/ai/resolution", {"cause": "no path and no subject"})[0] == 400
         monkeypatch.setenv("HELIOS_AI_URL", "off")
         assert "turned off" in json.loads(call(base, "/api/ai/ask", {"path": "link-check/lab/scan-20261024-000000"})[1])["error"]
         # a rack-map lookup still answers without a model: the exact lines, no explanation

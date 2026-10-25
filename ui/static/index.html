@@ -956,7 +956,8 @@ function aiPanel(box,ctx){
   box.innerHTML='<div class="ai"><div class="row" style="margin:0;align-items:center"><b>AI: root cause, how to debug, what to do</b><span class="mut" style="font-size:12px">advisory - check its claims against the evidence; it changes nothing</span>'+
     '<span style="flex:1"></span><button class="sec ai-go ai-guide-go"'+(aiState.ok?"":" disabled")+' title="the AI proposes read-only commands one at a time; you click Run">Investigate step by step</button>'+
     (/\/scan-/.test(ctx.path)&&!ctx.link?'<select class="ai-aud" style="width:auto" title="who the ticket is for"><option value="all">ticket for: everyone</option><option value="amd">AMD (GPU / AFM)</option><option value="switch">switch / SONiC owner</option><option value="site">site / cabling</option><option value="operator">operator</option></select><button class="sec ai-ticket-go">Write a ticket</button>':"")+
-    '<button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div><div class="ai-guide"></div><div class="ai-ticket"></div>'+
+    '<button class="sec ai-res-go" title="what it turned out to be and what fixed it - the AI learns from these">Record the resolution</button>'+
+    '<button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div><div class="ai-guide"></div><div class="ai-ticket"></div><div class="ai-res"></div>'+
     '<form class="row ai-more hide" style="margin:6px 0 0"><input class="ai-q" placeholder="Follow-up question (e.g. which command shows the IFCP state on the switch?)" style="flex:1;min-width:240px" maxlength="2000"><button class="sec">Ask</button></form></div>';
   var out=box.querySelector(".ai-out"),go=box.querySelector(".ai-go"),form=box.querySelector(".ai-more");
   if(!aiState.ok)go.title=aiState.error;
@@ -976,13 +977,15 @@ function aiPanel(box,ctx){
   }
   go.addEventListener("click",function(){run("")});
   var gb=box.querySelector(".ai-guide-go");if(gb)gb.addEventListener("click",function(){guideStart(box.querySelector(".ai-guide"),ctx)});
+  box.querySelector(".ai-res-go").addEventListener("click",function(){resolutionForm(box.querySelector(".ai-res"),ctx,function(){
+    return {answer:hist.length?hist[hist.length-1].a:"",steps:box.querySelector(".ai-guide")._steps||[]}})});
   var tb=box.querySelector(".ai-ticket-go");if(tb)tb.addEventListener("click",function(){ticketWrite(box.querySelector(".ai-ticket"),ctx,box.querySelector(".ai-aud").value,tb)});
   form.addEventListener("submit",function(e){e.preventDefault();var q=form.querySelector(".ai-q").value.trim();if(q){form.querySelector(".ai-q").value="";run(q)}});
 }
 
 /* guided debugging: the AI proposes one read-only command at a time; nothing runs without a click */
 function guideStart(el,ctx){
-  var steps=[];
+  var steps=[];el._steps=steps;          // a resolution recorded afterwards keeps the commands run and their output
   el.innerHTML='<div class="ai" style="background:var(--bg)"><b>Step by step</b> <span class="mut" style="font-size:12px">each command is checked against a read-only list for its kind of node and runs only when you click Run</span><div class="g-steps"></div><div class="g-next"></div></div>';
   var list=el.querySelector(".g-steps"),nx=el.querySelector(".g-next");
   function ask(){
@@ -1005,6 +1008,43 @@ function guideStart(el,ctx){
     }).catch(function(e){nx.innerHTML='<p class="err">'+esc(e.message)+'</p><button class="sec g-retry">Try again</button>';nx.querySelector(".g-retry").addEventListener("click",ask)});
   }
   ask();
+}
+/* a resolution: what the problem turned out to be and what fixed it, written by the person who debugged it.
+   Stored with the evidence the AI saw; shown to the AI for similar problems, and the training data for real root causes. */
+var RES_CAT={cabling:"cable / optic / seating (site)",gpu:"GPU / AFM / IFCP (AMD)",switch:"switch / SONiC (switch owner)",config:"configuration (VLAN, vPOD, forwarding entries)",env:"test environment / tooling",transient:"went away by itself / not reproduced",other:"other"};
+function lsGet(k){try{return localStorage.getItem(k)||""}catch(e){return ""}}
+function lsSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
+function resolutionForm(el,ctx,extra){
+  if(el.querySelector(".r-form")){el.innerHTML="";return}             // the button toggles the form
+  var rack=(ctx.path||"").split("/")[1]||ctx.rack||"";
+  el.innerHTML='<form class="ai r-form" style="background:var(--bg);display:block"><b>Record the resolution'+(ctx.link?" - "+esc(ctx.link):"")+'</b><div class="mut" style="font-size:12px">what it turned out to be and what fixed it. '+
+    'Saved with the evidence on this machine; the AI is shown it for similar problems. Changes nothing on the rack.</div>'+
+    '<label style="display:block;margin-top:6px">What was it <select class="r-cat" style="width:auto;max-width:100%">'+Object.keys(RES_CAT).map(function(k){return '<option value="'+k+'">'+esc(RES_CAT[k])+"</option>"}).join("")+"</select></label>"+
+    '<textarea class="r-cause" required minlength="10" maxlength="2000" placeholder="Cause - e.g. the cable to GPU port 25 was not fully seated; IFCP came up after reseating it" style="width:100%;height:64px;margin-top:6px"></textarea>'+
+    '<textarea class="r-fix" maxlength="2000" placeholder="What fixed it (or what is still to do) - e.g. site reseated the cable 25 Oct; link ok in the next check" style="width:100%;height:52px;margin-top:4px"></textarea>'+
+    '<div class="row" style="margin:4px 0 0;align-items:center"><label><input type="checkbox" class="r-ok"> confirmed - the fix made it work</label>'+
+    '<input class="r-by" placeholder="your name (optional)" maxlength="80" style="width:180px" value="'+esc(lsGet("hd-res-by"))+'">'+
+    '<span style="flex:1"></span><button class="go">Save</button></div><div class="r-msg"></div>'+
+    '<details class="r-past" style="margin-top:6px"><summary class="mut" style="font-size:12px">Earlier resolutions on '+esc(rack||"this rack")+"</summary><div class=\"r-list mut\">loading ...</div></details></form>";
+  var f=el.querySelector(".r-form"),msg=f.querySelector(".r-msg");
+  function list(){
+    api("/api/ai/resolutions?rack="+encodeURIComponent(rack)).then(function(d){
+      var rs=d.resolutions||[];f.querySelector(".r-past summary").textContent="Earlier resolutions on "+(rack||"this rack")+" ("+rs.length+")";
+      f.querySelector(".r-list").innerHTML=rs.length?rs.slice(0,30).map(function(r){return '<div style="font-size:12px;margin-top:4px"><b>'+esc(r.time_utc.slice(0,16))+"</b> "+esc(r.link||r.subject||"")+" · "+esc(RES_CAT[r.category]||r.category)+(r.confirmed?" · confirmed":"")+(r.by?" · "+esc(r.by):"")+
+        "<br>"+esc(r.cause)+(r.fix?"<br><i>fix:</i> "+esc(r.fix):"")+"</div>"}).join(""):"none yet";
+    }).catch(function(e){f.querySelector(".r-list").textContent=e.message});
+  }
+  list();
+  f.addEventListener("submit",function(e){
+    e.preventDefault();var b=f.querySelector("button.go");b.disabled=true;var x=(extra&&extra())||{};
+    lsSet("hd-res-by",f.querySelector(".r-by").value.trim());
+    api("/api/ai/resolution",{path:ctx.path||"",link:ctx.link||"",rack:rack,subject:ctx.subject||"",category:f.querySelector(".r-cat").value,
+      cause:f.querySelector(".r-cause").value,fix:f.querySelector(".r-fix").value,confirmed:f.querySelector(".r-ok").checked,
+      by:f.querySelector(".r-by").value,ai_answer:x.answer||"",steps:x.steps||[]}).then(function(r){
+      msg.innerHTML='<div class="verdict ok" style="font-size:12px">Saved ('+r.resolution.evidence+" evidence items kept with it; "+r.count+" resolution(s) on this machine). The AI is shown it when a similar problem comes up.</div>";
+      f.querySelector(".r-cause").value="";f.querySelector(".r-fix").value="";list();
+    }).catch(function(e){msg.innerHTML='<p class="err">'+esc(e.message)+"</p>"}).then(function(){b.disabled=false});
+  });
 }
 /* a ticket for one audience: facts from the check, summary / request drafted by the AI */
 function ticketWrite(el,ctx,aud,btn){
@@ -1063,9 +1103,11 @@ function chatSend(q){
       '<details style="margin-top:4px"><summary class="mut" style="font-size:12px">'+(a.evidence||[]).length+" evidence items"+((a.docs||[]).length?", "+a.docs.length+" doc passages":"")+" · "+esc(String(a.model).split("/").pop())+" · "+a.seconds+" s</summary>"+
       (a.evidence||[]).map(function(x){return '<div style="font-size:12px"><span class="cite">'+x.ref+"</span> "+esc(x.text)+"</div>"}).join("")+
       (a.docs||[]).map(function(d){return '<div style="font-size:12px"><span class="cite">'+d.ref+"</span> <b>"+esc(d.title)+"</b>"+(d.url&&/^https?:/.test(d.url)?' <a href="'+esc(d.url)+'" target="_blank" rel="noopener">open</a>':"")+" - "+esc(d.text.slice(0,300))+"</div>"}).join("")+
-      '</details><div class="row" style="margin:6px 0 0"><button class="sec ch-guide">Investigate step by step</button></div><div class="ch-g"></div>';
+      '</details><div class="row" style="margin:6px 0 0"><button class="sec ch-guide">Investigate step by step</button><button class="sec ch-res">Record the resolution</button></div><div class="ch-g"></div><div class="ch-r"></div>';
     var ctx={path:a.context.path,link:a.context.link||""};
     ad.querySelector(".ch-guide").addEventListener("click",function(){guideStart(ad.querySelector(".ch-g"),ctx)});
+    ad.querySelector(".ch-res").addEventListener("click",function(){resolutionForm(ad.querySelector(".ch-r"),ctx,function(){
+      return {answer:"Q: "+q+"\n\n"+a.answer,steps:ad.querySelector(".ch-g")._steps||[]}})});
     log.scrollTop=log.scrollHeight;
   }).catch(function(e){ad.innerHTML='<p class="err">'+esc(e.message)+"</p>"}).then(function(){$("chat-send").disabled=false});
 }

@@ -39,6 +39,8 @@ SYSTEM_BASE = (
     "How to reason: when many links of one switch chip (or one tray / GPU) share a fault, the cause is what they share "
     "(that chip, its switch agent or AFM's programming of it), not each link; a single bad link points at its cable, "
     "connector or one end.\n"
+    "An evidence item starting 'Past resolution' is what a person found for an earlier, similar problem on this rack: "
+    "use it as a strong hint, say that it is a past case, and check that the current evidence matches it.\n"
     "Read-only commands that exist - use only these, on the device named, with the real names from the evidence:\n"
     "  switch tray (SONiC, per chip -n asic0 / -n asic1): show interfaces status -n asicN; show interfaces description "
     "-n asicN; show mac -n asicN; show interfaces counters -n asicN; show vlan brief -n asicN; sudo sonic-db-cli -n asicN "

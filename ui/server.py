@@ -507,20 +507,16 @@ def ai_ask(state: State, req: dict) -> dict:
     q, hist = str(req.get("question") or "")[:2000], req.get("history") or []
     if not isinstance(hist, list):
         raise BadRequest("history: a list of {q, a}")
+    ev, subject, _rack = _ai_subject(state, req, past=True)
     try:
-        if "/link-" in rel:
-            ev, subject = ai.diagnose_context(json.loads(_result_file(state, f"{rel}/link.json").read_text()))
-        else:
-            scan = scan_view(state, rel)
-            link = str(req.get("link") or "").strip()
-            ev, subject = ai.link_context(scan, link) if link else ai.check_context(scan)
         return ai.ask(ev, subject, q, hist)
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
 
 
-def _ai_subject(state: State, req: dict):
-    """(evidence, subject, rack) for a request naming a check / a link of it / a Diagnose result."""
+def _ai_subject(state: State, req: dict, past: bool = False):
+    """(evidence, subject, rack) for a request naming a check / a link of it / a Diagnose result (+ past=True: the
+    most similar resolutions people recorded)."""
     from heliosdbg import ai
     rel = str(req.get("path") or "").strip("/")
     if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", rel):
@@ -535,6 +531,9 @@ def _ai_subject(state: State, req: dict):
             ev, subject = ai.link_context(scan, link) if link else ai.check_context(scan)
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
+    if past:
+        lk = str(req.get("link") or "").strip() or (subject[5:] if subject.startswith("link ") else "")
+        add_past_resolutions(state, ev, rack, lk, str(req.get("question") or "") + " " + " ".join(x["text"] for x in ev.items[:8]))
     return ev, subject, rack
 
 
@@ -549,7 +548,7 @@ def _rack_nodes(state: State, rack: str):
 def ai_guide(state: State, req: dict) -> dict:
     """The next step of a guided investigation (proposed by the AI, checked against the read-only allow-list)."""
     from heliosdbg import ai, guide
-    ev, subject, rack = _ai_subject(state, req)
+    ev, subject, rack = _ai_subject(state, req, past=True)
     _inv, roles = _rack_nodes(state, rack)
     steps = [s for s in (req.get("steps") or []) if isinstance(s, dict)][:12]
     try:
@@ -598,6 +597,32 @@ def ai_ticket(state: State, req: dict) -> dict:
     text = ticket.ai_paragraphs(ai, scan, audience, probs) if req.get("ai", True) else None
     return {"markdown": ticket.render(scan, audience, probs, text, f"results/{rel}/report.html"), "problems": probs,
             "ai": bool(text), "unsafe": (text or {}).get("unsafe"), "audience": audience}
+
+
+def ai_resolution(state: State, req: dict) -> dict:
+    """Record what a problem turned out to be and what fixed it (written by a person) - with the evidence of the
+    check / link / Diagnose result it is about, as the AI sees it. Changes nothing on the rack."""
+    from heliosdbg import resolutions
+    rel = str(req.get("path") or "").strip("/")
+    ev, subject = None, ""
+    if rel:
+        ev, subject, rack = _ai_subject(state, req)
+        req = dict(req, rack=rack)
+        ev.items = [x for x in ev.items if x.get("source") != "resolution"]   # not earlier resolutions: no copying
+    elif not str(req.get("rack") or "").strip() or not str(req.get("subject") or "").strip():
+        raise BadRequest("path (a check / Diagnose result), or rack + subject (e.g. a test case id)")
+    try:
+        r = resolutions.record(state.results_dir, req, ev, subject)
+    except resolutions.ResolutionError as e:
+        raise BadRequest(str(e)) from None
+    return {"saved": r["id"], "resolution": r | {"evidence": len(r["evidence"])}, "count": len(resolutions.load(state.results_dir))}
+
+
+def add_past_resolutions(state: State, ev, rack: str, link: str = "", text: str = "") -> None:
+    """Show the AI the most similar resolutions people recorded for this rack (same link first)."""
+    from heliosdbg import resolutions
+    for r in resolutions.similar(resolutions.load(state.results_dir, rack), link, text):
+        ev.add(resolutions.line(r), "resolution")
 
 
 SMALLTALK_RX = re.compile(r"\s*(hi+|hello|hey|hiya|yo|good\s+(morning|afternoon|evening)|thanks?(\s+you)?|thank\s+you|thx|"
@@ -673,6 +698,8 @@ def ai_chat(state: State, req: dict) -> dict:
                 macs = None
         ev, subject = ai.chat_context(scan, q, link if link and any(
             f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load(), macs)
+        if not getattr(ev, "map_facts", None):              # a map lookup is exact on its own
+            add_past_resolutions(state, ev, rack, link or "", q)
         hist = req.get("history") or []
         try:
             out = ai.ask(ev, subject, q, hist if isinstance(hist, list) else [])
@@ -980,6 +1007,11 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/ai/status":
                 from heliosdbg import ai, docsearch
                 return self._json(200, ai.status() | {"docs": docsearch.sources()})
+            if u.path == "/api/ai/resolutions":
+                from heliosdbg import resolutions
+                rack = (q.get("rack") or [""])[0]
+                return self._json(200, {"resolutions": resolutions.load(st.results_dir, rack or None),
+                                        "categories": resolutions.CATEGORIES})
             if u.path == "/api/term/list":
                 return self._json(200, {"terminals": st.terms.list()})
             if u.path.startswith("/static/vendor/"):          # the bundled terminal emulator (xterm.js), nothing else
@@ -1111,6 +1143,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, ai_ticket(self.state, req))
             if u.path == "/api/ai/ask":
                 return self._json(200, ai_ask(self.state, req))
+            if u.path == "/api/ai/resolution":
+                return self._json(200, ai_resolution(self.state, req))
             if u.path == "/api/config":
                 return self._json(200, node_config(self.state, req))
             if u.path == "/api/term/open":
