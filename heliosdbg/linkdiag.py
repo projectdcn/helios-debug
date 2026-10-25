@@ -139,6 +139,25 @@ def read_vlans(sw, ns) -> dict:
     return {"vlans": sorted(vlans, key=lambda v: int(re.sub(r"\D", "", v) or 0)), "members": members}
 
 
+_FLAP_SCRIPT = (                                   # one command per ASIC: APPL_DB PORT_TABLE of every port (one call each)
+    "for k in $(sonic-db-cli{ns} APPL_DB keys 'PORT_TABLE:Ethernet*'); do "
+    "echo \"${{k#PORT_TABLE:}}|$(sonic-db-cli{ns} APPL_DB hgetall \"$k\")\"; done")
+
+
+def read_flaps(sw, ns) -> dict:
+    """{EthernetN: (flap_count, last_down_time)} of one ASIC, from APPL_DB PORT_TABLE (portmgrd counts every oper
+    down; the same fields Diagnose reads with port_states). A link that works now but went down many times is a
+    marginal cable / connector the up/down state alone does not show."""
+    out = {}
+    for ln in sw.sh(_FLAP_SCRIPT.format(ns=ns_flag(ns)), sudo=True, timeout=300).splitlines():
+        port, _, rest = ln.partition("|")
+        if not port.strip().startswith("Ethernet"):
+            continue
+        d = parse_db_kv(rest)
+        out[port.strip()] = (num(d.get("flap_count")), str(d.get("last_down_time") or "") or None)
+    return out
+
+
 def read_fdb(sw, ns) -> list[dict]:
     """`show mac` of one ASIC; when SONiC's command fails on entries without a switch port, raise FdbBrokenEntries
     naming them (instead of a bare KeyError line)."""
@@ -174,11 +193,15 @@ def collect_switch(sw) -> dict:
             pres = {r.get("Port"): r.get("Presence", "") for r in
                     parse_table(sw.run(f"show interfaces transceiver presence{ns_flag(ns)}", sudo=True, timeout=180).stdout)}
             try:
+                flaps = read_flaps(sw, ns)
+            except Exception:  # noqa: BLE001 - flap counts are extra evidence: without them the links are still checked
+                flaps = {}
+            try:
                 vl = read_vlans(sw, ns)
             except Exception as e:  # noqa: BLE001 - VLANs are extra: a failed read is noted, the links are still checked
                 vl = {"vlans": [], "members": {}, "error": f"{type(e).__name__}: {str(e)[:160]}"}
             out["asics"][key] = {"status": status, "desc": desc, "fdb": fdb, "counters": cnt, "fec": fec, "presence": pres,
-                                 "vlan": vl}
+                                 "vlan": vl, "flaps": flaps}
     except Exception as e:  # noqa: BLE001 - an unreachable switch is reported, not fatal
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     if broken:                                       # a problem on the switch: named in full, entries kept
@@ -259,6 +282,8 @@ class Link:
     afm_port: str | None = None         # AFM gpu-info port oper-state (with the AFM view)
     vlans: list | None = None           # [[Vlan100, tagging_mode], ...] of the switch port (None = VLANs not read)
     mtu: str | None = None              # switch port MTU ('show interfaces status'; the fabric uses 9100)
+    flap_count: int | None = None       # APPL_DB PORT_TABLE flap_count of the switch port (None = not read)
+    last_down_time: str | None = None   # APPL_DB PORT_TABLE last_down_time
 
 
 def join(switches: list[dict], trays: list[dict], quarantined: dict | None = None) -> tuple[list[Link], dict]:
@@ -270,7 +295,7 @@ def join(switches: list[dict], trays: list[dict], quarantined: dict | None = Non
             for p in g["ports"]:
                 if p["mac"]:
                     by_mac[p["mac"]] = (t, g, p)
-    links, slot_votes, gpu_map, matched = [], {}, {}, set()
+    links, slot_votes, gpu_votes, gpu_map, matched = [], {}, {}, {}, set()
     for s in switches:
         for ns, a in s["asics"].items():
             static = {}
@@ -287,22 +312,36 @@ def join(switches: list[dict], trays: list[dict], quarantined: dict | None = Non
                 vl = a.get("vlan") or {}
                 ln.vlans = None if vl.get("error") or "members" not in vl else vl["members"].get(port, [])
                 ln.fdb_static = bool(static.get(port))
-                for mac in static.get(port, ()):
-                    hit = by_mac.get(mac)
-                    if hit and hit[2]["port"] == cab[3]:
-                        t, g, p = hit
-                        ln.tray, ln.bdf, ln.gpu_port, ln.station, ln.gpu, ln.matched_by = t["name"], g["bdf"], p["port"], p["station"], p, "mac"
-                        matched.add((t["name"], g["bdf"], p["port"]))
-                        slot_votes.setdefault(t["name"], {}).setdefault(cab[0], 0)
-                        slot_votes[t["name"]][cab[0]] += 1
-                        gpu_map[(t["name"], cab[1])] = g["bdf"]
-                        break
+                ln.flap_count, ln.last_down_time = (a.get("flaps") or {}).get(port, (None, None))
+                hits = [by_mac[mac] for mac in sorted(static.get(port, ())) if mac in by_mac]
+                hit = next((h for h in hits if h[2]["port"] == cab[3]), None)
+                if hit is None and len(hits) == 1:
+                    # the port's one static entry is another GPU port number than its description says: the entry
+                    # (the GPU port's own MAC) names the real far end; the description is checked against it below
+                    hit = hits[0]
+                if hit:
+                    t, g, p = hit
+                    ln.tray, ln.bdf, ln.gpu_port, ln.station, ln.gpu, ln.matched_by = t["name"], g["bdf"], p["port"], p["station"], p, "mac"
+                    matched.add((t["name"], g["bdf"], p["port"]))
+                    slot_votes.setdefault(t["name"], {}).setdefault(cab[0], 0)
+                    slot_votes[t["name"]][cab[0]] += 1
+                    gpu_votes.setdefault((t["name"], g["bdf"]), {}).setdefault(cab[1], 0)
+                    gpu_votes[(t["name"], g["bdf"])][cab[1]] += 1
                 ln._cab = cab
                 links.append(ln)
     slots = {t: max(v, key=v.get) for t, v in slot_votes.items()}
     for t in trays:                                   # inventory slot wins when given
         if t.get("slot") is not None:
             slots[t["name"]] = int(t["slot"])
+    # the GPU number each GPU is described with: the majority over its links matched by MAC (one miscabled link, or a
+    # swapped pair, is outvoted - it no longer teaches a wrong GPU number to the description fallback)
+    gpu_of = {}
+    for (tn, bdf), v in gpu_votes.items():
+        best = max(v, key=v.get)
+        gpu_map[(tn, best)] = bdf
+        if v[best] >= 2 and v[best] * 2 > sum(v.values()):
+            gpu_of[(tn, bdf)] = best
+    mark_described_elsewhere(links, slots, slot_votes, gpu_of, trays)
     by_slot = {v: k for k, v in slots.items()}
     tray_by_name = {t["name"]: t for t in trays}
     for ln in links:                                  # fallback: description + what the healthy links taught
@@ -328,6 +367,35 @@ def join(switches: list[dict], trays: list[dict], quarantined: dict | None = Non
             ln.bdf, ln.gpu_port, ln.station, ln.gpu, ln.matched_by = bdf, port, p["station"], p, how
             matched.add((tname, bdf, port))
     return links, {"slots": slots, "gpu_map": {f"{k[0]}:GPU{k[1]}": v for k, v in gpu_map.items()}}
+
+
+def mark_described_elsewhere(links: list[Link], slots: dict, slot_votes: dict, gpu_of: dict, trays: list[dict]) -> int:
+    """A link matched by the GPU port's own MAC whose description names another tray slot, GPU or GPU port than the
+    one the MAC belongs to: the cable is not where the cabling plan (the descriptions) says - or the description is
+    wrong. Sets ln._desc_off = ((slot, gpu, port) real, partner link described as reaching it or None).
+    The accelerator number in the description is NOT compared: on g02-g17 it is a naming convention of its own (AFM
+    acc 0 described as acc 3, ...), and an acc off by one alone is no cabling fault. A tray's slot counts only when
+    the inventory gives it or a clear majority of its links agree, a GPU number only by a clear majority (gpu_of).
+    When more than a quarter of the matched links (and more than 8) disagree, it is a numbering convention of the rack,
+    not cabling: nothing is marked. Returns how many links were marked."""
+    inv_slot = {t["name"] for t in trays if t.get("slot") is not None}
+    sure_slot = {t for t, v in slot_votes.items() if t in inv_slot or (v[slots[t]] >= 2 and v[slots[t]] * 2 > sum(v.values()))}
+    sure_slot |= inv_slot
+    by_desc = {(x._cab[0], x._cab[1], x._cab[3]): x for x in links if getattr(x, "_cab", None)}
+    off = []
+    for ln in links:
+        if ln.matched_by != "mac" or not getattr(ln, "_cab", None):
+            continue
+        d = ln._cab
+        real = (slots.get(ln.tray) if ln.tray in sure_slot else d[0], gpu_of.get((ln.tray, ln.bdf), d[1]), ln.gpu_port)
+        if real != (d[0], d[1], d[3]):
+            off.append((ln, real))
+    if len(off) > max(8, sum(1 for x in links if x.matched_by == "mac") // 4):
+        return 0
+    for ln, real in off:
+        partner = by_desc.get(real)
+        ln._desc_off = (real, partner if partner is not ln else None)
+    return len(off)
 
 
 # ---------------------------------------------------------------------------------------------- diagnosis
@@ -397,7 +465,9 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
     up = lambda v: str(v or "").lower() == "up"  # noqa: E731
     g, ev = ln.gpu, ln.evidence
     ev.append(f"switch {ln.switch} {ln.asic or ''} {ln.sw_port}: admin {ln.sw_admin}, oper {ln.sw_oper}"
-              + (f", MTU {ln.mtu}" if ln.mtu else "") + f"; described as '{ln.desc}'")
+              + (f", MTU {ln.mtu}" if ln.mtu else "")
+              + (f", flap count {ln.flap_count}" + (f", last down {ln.last_down_time}" if ln.last_down_time else "")
+                 if ln.flap_count is not None else "") + f"; described as '{ln.desc}'")
     t = trays.get(ln.tray) if ln.tray else None
     if g:
         ev.append(f"GPU {ln.tray} {ln.bdf} port {ln.gpu_port}: admin {g['admin']}, link {g['link']}, fault {g['fault']}, "
@@ -467,6 +537,23 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
                                              f"description ('{ln.desc}')", SITE,
                     "Trace the cable: either it is in another switch port than the description says, or the description "
                     "is wrong. Fix the cabling (or the description) so both agree.")
+    off = getattr(ln, "_desc_off", None)
+    if off:
+        (slot, gpu, port), partner = off
+        d = ln._cab
+        i = g.get("ifcp") or {}
+        seen = ("the GPU port's own MAC in the port's forwarding entry" +
+                (", and its IFCP peer is this switch port" if ifcp_map and ifcp_map.get("port_is_ethernet") and
+                 str(i.get("peer_port_id")) == ln.sw_port[8:] and i.get("peer_device_id") not in (None, "") else ""))
+        ev.append(f"described as Slot{d[0]}/GPU{d[1]}/Port{d[3]}; the cable reaches slot {slot} GPU{gpu} port {port} "
+                  f"({ln.tray} {ln.bdf}) by {seen}")
+        return set_("degraded", "miscabled",
+                    f"the description says Slot{d[0]}/GPU{d[1]}/Port{d[3]} ('{ln.desc}'), but the cable reaches {ln.tray} "
+                    f"(slot {slot}) GPU{gpu} {ln.bdf} port {port} - by {seen}"
+                    + (f"; {partner.switch} {partner.sw_port} is the port described as reaching it" if partner else ""),
+                    SITE, "The cable is not where the cabling plan (the port descriptions) says: re-cable it to the plan "
+                          "(the ports described as reaching each other" + (f": {ln.sw_port} and {partner.sw_port}" if partner else "")
+                          + "), or, if the plan is what is wrong, correct the descriptions. Check with Cabling plan.")
     fec_bad = ln.deltas.get("FEC_UNCORR", 0) > 0
     err_bad = any(ln.deltas.get(k, 0) > 0 for k in ("RX_ERR",))
     if fec_bad or err_bad:

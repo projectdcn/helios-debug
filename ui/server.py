@@ -272,7 +272,7 @@ def _result_file(state: State, rel: str) -> Path:
 
 
 LINK_KEYS = ("switch", "asic", "sw_port", "desc", "sw_oper", "sw_admin", "tray", "bdf", "gpu_port", "state", "kind",
-             "cause", "owner", "action", "afm_port", "matched_by", "vlans", "mtu")
+             "cause", "owner", "action", "afm_port", "matched_by", "vlans", "mtu", "flap_count", "last_down_time")
 
 
 def overview(state: State) -> list[dict]:
@@ -468,7 +468,16 @@ def ifcp_cabling(links: list, trays: dict, ifcp: dict) -> dict:
             n["unconfirmed"] += 1
             continue
         peer = (dev.get(str(i["peer_device_id"])) or f"device {i['peer_device_id']}", f"Ethernet{i.get('peer_port_id')}")
-        if peer == (ln.get("switch"), ln.get("sw_port")):
+        if peer == (ln.get("switch"), ln.get("sw_port")) and ln.get("kind") == "miscabled":
+            # the IFCP peer confirms this switch end, but the GPU port at the far end is not the one the description
+            # names (linkdiag.mark_described_elsewhere): the cable is not where the cabling plan says
+            ln["cable"] = (f"miscabled: the cable of this switch port reaches {ln.get('tray')} {ln.get('bdf')} port "
+                           f"{ln.get('gpu_port')} (its IFCP peer is this switch port), not the GPU port the description names")
+            n["miscabled"] += 1
+            if len(n["examples"]) < 20:
+                n["examples"].append(f"{ln.get('switch')} {ln.get('sw_port')}: reaches {ln.get('tray')} {ln.get('bdf')} "
+                                     f"port {ln.get('gpu_port')}, described as '{ln.get('desc')}'")
+        elif peer == (ln.get("switch"), ln.get("sw_port")):
             ln["cable"] = "confirmed"
             n["confirmed"] += 1
         else:

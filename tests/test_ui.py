@@ -312,6 +312,10 @@ def test_afm_names_and_ifcp_cabling(tmp_path):
     assert "cable" not in links[2]
     assert links[0]["ifcp"] == {"ll": "yes", "pe": None, "err": False} and "ifcp" not in links[2]   # Topology IFCP view; no IFCP data = none
     assert server.ifcp_cabling(links[:1], trays, {})["unconfirmed"] == 1     # IFCP naming not learned: no verdict
+    # IFCP confirms the switch end, but the checker found the far end is not the GPU port the description names
+    links[0]["kind"] = "miscabled"
+    n = server.ifcp_cabling(links[:1], trays, {"device": {"st1": "1"}, "port_is_ethernet": True})
+    assert n["miscabled"] == 1 and links[0]["cable"].startswith("miscabled: the cable of this switch port reaches ct01")
 
 
 def test_live_start_duration_choices(ui, monkeypatch):

@@ -203,6 +203,8 @@ def _link_facts(ev: Evidence, ln: dict, names: dict, source: str) -> None:
         ev.add(f"The checker's suggested next step: {ln['action']}", source)
     ev.add(f"Switch port: admin {ln.get('sw_admin') or '?'}, oper {ln.get('sw_oper') or '?'}"
            + (f", MTU {ln['mtu']}" if ln.get("mtu") else "")
+           + (f", flap count {ln['flap_count']}" + (f", last down {ln['last_down_time']}" if ln.get("last_down_time") else "")
+              if ln.get("flap_count") is not None else "")
            + (f"; transceiver presence {ln['presence']}" if ln.get("presence") else ""), source)
     i = ln.get("ifcp") or {}
     if i:

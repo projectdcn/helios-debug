@@ -241,3 +241,85 @@ def test_command_log_records_every_command_and_trims_the_html():
     assert "Command log: <b>st1</b> (1 commands, 3 lines)" in h and "1 more lines" in h
     assert "AuthenticationException" in h and "1 failed" in h
     assert "$ show interfaces status" in log.text()
+
+
+def _rack(descs: dict, macs: dict):
+    """One switch ASIC with ports {EthernetN: description} and static entries {EthernetN: (slot, gpu, port)}; two trays
+    (slot 0 / 1) with 2 GPUs x ports 1..3 whose MACs encode (slot, gpu, port)."""
+    mac = lambda s, g, p: f"02:00:00:{s:02x}:{g:02x}:{p:02x}"  # noqa: E731
+    a = {"status": {p: {"Interface": p, "Oper": "up", "Admin": "up"} for p in descs}, "desc": dict(descs),
+         "fdb": [{"Vlan": "100", "MacAddress": mac(*macs[p]), "Port": p, "Type": "Static"} for p in macs],
+         "counters": {}, "fec": {}, "presence": {}}
+    trays = [{"name": f"ct0{s + 1}", "host": "x", "slot": None, "error": None, "gpus": [
+        {"bdf": f"000{g + 1}:01:00.1", "accelerator": str(s * 4 + g), "config_phase": "ACTIVE", "ports": [
+            {"port": p, "station": p // 2, "mac": mac(s, g, p), "admin": "enabled", "link": "LINK_UP", "fault": "no",
+             "up_ms": 1000, "down_ms": 0, "ifcp": {"ll_up": "yes", "peer_enabled": "yes", "in_error": "no",
+                                                   "peer_in_error": "no"}} for p in (1, 2, 3)]} for g in (0, 1)]}
+        for s in (0, 1)]
+    return {"name": "st1", "asics": {"asic0": a}, "error": None}, trays
+
+
+def _cabled(off=0):
+    """Every (slot, gpu, port) on its own port, described as cabled (acc number shifted by ``off``)."""
+    descs, macs, n = {}, {}, 0
+    for s in (0, 1):
+        for g in (0, 1):
+            for p in (1, 2, 3):
+                descs[f"Ethernet{n}"] = f"To ComputeTray Slot{s}/GPU{g}[{s * 4 + g + off}]/Port{p}"
+                macs[f"Ethernet{n}"] = (s, g, p)
+                n += 1
+    return descs, macs
+
+
+def test_description_naming_another_gpu_or_port_is_miscabled():
+    descs, macs = _cabled()
+    # two cables of one GPU port number swapped between trays, and two ports of one GPU swapped (other port number)
+    descs["Ethernet0"], descs["Ethernet6"] = descs["Ethernet6"], descs["Ethernet0"]      # ct01 GPU0 p1 <-> ct02 GPU0 p1
+    descs["Ethernet3"], descs["Ethernet4"] = descs["Ethernet4"], descs["Ethernet3"]      # ct01 GPU1 p1 <-> GPU1 p2
+    sw, trays = _rack(descs, macs)
+    links, learned = ld.join([sw], trays)
+    by = {ln.sw_port: ld.diagnose(ln, {t["name"]: t for t in trays}, False, 30) for ln in links}
+    bad = sorted(p for p, ln in by.items() if ln.state != "ok")
+    assert bad == ["Ethernet0", "Ethernet3", "Ethernet4", "Ethernet6"]
+    e0 = by["Ethernet0"]
+    assert e0.kind == "miscabled" and e0.tray == "ct01" and e0.matched_by == "mac"
+    assert "Slot1/GPU0/Port1" in e0.cause and "ct01 (slot 0) GPU0" in e0.cause and "st1 Ethernet6" in e0.cause
+    e3 = by["Ethernet3"]                    # holds GPU1 port 1's cable, described as port 2
+    assert e3.gpu_port == 1 and "Slot0/GPU1/Port2" in e3.cause and "port 1" in e3.cause and "st1 Ethernet4" in e3.cause
+    assert learned["gpu_map"] == {"ct01:GPU0": "0001:01:00.1", "ct01:GPU1": "0002:01:00.1",       # swap outvoted
+                                  "ct02:GPU0": "0001:01:00.1", "ct02:GPU1": "0002:01:00.1"}
+
+
+def test_accelerator_number_alone_is_not_miscabled():
+    """g02-g17 describes AFM acc 0 as acc 3 (and the vrack fault desc_acc_off_by_one shifts it by one): only the
+    slot / GPU / port of a description are compared with the cable."""
+    descs, macs = _cabled(off=1)
+    sw, trays = _rack(descs, macs)
+    links, _ = ld.join([sw], trays)
+    assert all(ld.diagnose(ln, {t["name"]: t for t in trays}, False, 30).state == "ok" for ln in links)
+
+
+def test_numbering_convention_on_most_links_is_not_reported_as_cabling():
+    descs, macs = _cabled()
+    for k, p in enumerate(descs):          # every description names the other GPU: a convention, not 12 bad cables
+        descs[p] = descs[p].replace("/GPU0[", "/GPUx[").replace("/GPU1[", "/GPU0[").replace("/GPUx[", "/GPU1[")
+    sw, trays = _rack(descs, macs)
+    links, _ = ld.join([sw], trays)
+    assert all(not getattr(ln, "_desc_off", None) for ln in links)
+
+
+def test_flap_counts_read_per_asic_and_shown_on_the_link():
+    class Sw:
+        def sh(self, cmd, **kw):
+            assert "APPL_DB keys 'PORT_TABLE:Ethernet*'" in cmd and kw.get("sudo")
+            return ("Ethernet25|{'admin_status': 'up', 'flap_count': '9', 'last_down_time': 'Sat Oct 25 08:55:15 2026'}\n"
+                    "Ethernet26|{'admin_status': 'up'}\n")
+    fl = ld.read_flaps(Sw(), "asic0")
+    assert fl == {"Ethernet25": (9, "Sat Oct 25 08:55:15 2026"), "Ethernet26": (None, None)}
+    sw = _switch()
+    sw["asics"]["asic0"]["flaps"] = fl
+    ln, _ = _one(sw, _tray())
+    assert (ln.flap_count, ln.state) == (9, "ok") and "flap count 9, last down Sat Oct 25 08:55:15 2026" in ln.evidence[0]
+    from heliosdbg import ai
+    ev, _ = ai.link_context({"links": [ld.link_dict(ln)]}, "st3 Ethernet25")
+    assert any("Switch port: admin up, oper up, flap count 9, last down Sat Oct 25" in x["text"] for x in ev.items)
