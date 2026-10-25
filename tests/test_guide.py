@@ -100,7 +100,7 @@ def test_docsearch_and_chat_context(tmp_path, monkeypatch):
                                   docs=idx)
     txt = ev.block()
     assert subject == "the rack (chat)" and "pod-1-5-SwitchTray (st6): 1 links" in txt and "up without an IFCP session" in txt
-    assert "Ethernet170 <-> ct02" in txt and "Live change t1" in txt and "[D1] sonic: BCM shell" in txt
+    assert "Ethernet170 <-> ct02" in txt and "Live change t1" in txt and "[D1] BCM - BCM shell" in txt
     msgs = ai.build_messages(ev, subject, "q")
     assert "open chat" in msgs[0]["content"] and "### Problem" not in msgs[0]["content"].split("open chat")[1][:50]
     r = ai.review("See [E1] and [D1], not [D7].", ev)

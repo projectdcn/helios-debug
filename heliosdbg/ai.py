@@ -163,7 +163,8 @@ class Evidence:
         if docs is None:
             docs = self.docs = []
         if len(docs) < 5:
-            docs.append({"ref": f"D{len(docs) + 1}", "title": f"{d.get('source') or 'docs'}: {d.get('section') or d.get('title')}",
+            t, s = str(d.get("title") or d.get("source") or "docs"), str(d.get("section") or "")
+            docs.append({"ref": f"D{len(docs) + 1}", "title": t if not s or s == t else f"{t} - {s}",
                          "text": re.sub(r"\s+", " ", str(d.get("text") or ""))[:1200], "url": d.get("url") or ""})
 
     def block(self) -> str:
