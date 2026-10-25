@@ -458,6 +458,19 @@ def test_ai_status_and_ask_with_a_stand_in_model(ui, monkeypatch):
         last = json.loads((tmp / "results" / "ai" / "resolutions.jsonl").read_text().splitlines()[-1])
         assert not any(x["source"] == "resolution" for x in last["evidence"])
         assert call(base, "/api/ai/resolution", {"cause": "no path and no subject"})[0] == 400
+        # 👍 / 👎: the exact prompt behind the answer is stored with the rating and the correction
+        replies.append("It is the optic [E1].")
+        a = json.loads(call(base, "/api/ai/ask", {"path": rel, "link": "st1 Ethernet8"})[1])
+        assert a["answer_id"]
+        code, body = call(base, "/api/ai/feedback", {"answer_id": a["answer_id"], "rating": "down", "correction": "It is the cable.",
+                                                     "path": rel, "link": "st1 Ethernet8"})
+        assert code == 200 and json.loads(body)["corrections"] == 1
+        fb = json.loads((tmp / "results" / "ai" / "feedback.jsonl").read_text().splitlines()[-1])
+        assert fb["answer"] == "It is the optic [E1]." and fb["correction"] == "It is the cable." and fb["messages"][0]["role"] == "system"
+        assert "Ethernet8" in fb["messages"][-1]["content"]
+        assert call(base, "/api/ai/feedback", {"answer_id": "nope", "rating": "up"})[0] == 400
+        assert call(base, "/api/ai/feedback", {"answer_id": a["answer_id"], "rating": "meh"})[0] == 400
+        assert json.loads(call(base, "/api/ai/feedback")[1])["ratings"] == 1
         monkeypatch.setenv("HELIOS_AI_URL", "off")
         assert "turned off" in json.loads(call(base, "/api/ai/ask", {"path": "link-check/lab/scan-20261024-000000"})[1])["error"]
         # a rack-map lookup still answers without a model: the exact lines, no explanation

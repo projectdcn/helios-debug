@@ -971,8 +971,8 @@ function aiPanel(box,ctx){
         ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
         (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+" - treat those claims with care.</div>":"")+
         '<details style="margin-top:6px"><summary class="mut">Evidence given to the model ('+a.evidence.length+") · "+esc(String(a.model).split("/").pop())+" · "+a.seconds+" s</summary>"+
-        a.evidence.map(function(x){return '<div style="font-size:12px"><span class="cite">'+x.ref+"</span> "+esc(x.text)+"</div>"}).join("")+"</details>";
-      out.appendChild(d);form.classList.remove("hide");
+        a.evidence.map(function(x){return '<div style="font-size:12px"><span class="cite">'+x.ref+"</span> "+esc(x.text)+"</div>"}).join("")+"</details><div class=\"fb\"></div>";
+      out.appendChild(d);form.classList.remove("hide");fbWire(d.querySelector(".fb"),a,ctx);
     }).catch(function(e){wait.className="err";wait.textContent=e.message}).then(function(){go.disabled=!aiState.ok;go.textContent="Ask again"});
   }
   go.addEventListener("click",function(){run("")});
@@ -1046,6 +1046,27 @@ function resolutionForm(el,ctx,extra){
     }).catch(function(e){msg.innerHTML='<p class="err">'+esc(e.message)+"</p>"}).then(function(){b.disabled=false});
   });
 }
+/* 👍 / 👎 on one AI answer; 👎 asks for the right answer - the prompt, the answer and the correction become training data */
+function fbWire(el,a,ctx){
+  if(!el||!a||!a.answer_id){if(el)el.remove();return}
+  el.innerHTML='<div class="row" style="margin:4px 0 0;align-items:center;gap:6px"><span class="mut" style="font-size:12px">Was this right?</span>'+
+    '<button class="sec fb-up" title="right - the model learns to answer like this">👍</button><button class="sec fb-down" title="wrong - say what is right">👎</button><span class="fb-msg mut" style="font-size:12px"></span></div><div class="fb-form"></div>';
+  var msg=el.querySelector(".fb-msg"),form=el.querySelector(".fb-form");
+  function send(rating,correction,comment){
+    return api("/api/ai/feedback",{answer_id:a.answer_id,rating:rating,correction:correction||"",comment:comment||"",by:lsGet("hd-res-by"),
+      rack:(ctx.path||"").split("/")[1]||"",path:ctx.path||"",link:ctx.link||""}).then(function(r){
+      el.querySelectorAll("button").forEach(function(b){b.disabled=true});form.innerHTML="";
+      msg.textContent=(rating==="up"?"Thanks - saved as a good answer.":"Thanks - saved"+(correction?" with your correction.":".")) +" ("+r.ratings+" ratings on this machine)";
+    }).catch(function(e){msg.textContent=e.message});
+  }
+  el.querySelector(".fb-up").addEventListener("click",function(){send("up")});
+  el.querySelector(".fb-down").addEventListener("click",function(){
+    form.innerHTML='<textarea class="fb-c" maxlength="6000" placeholder="What is the right answer? Write it as the AI should have (root cause, why, what to check, who fixes it). This is what it learns from." style="width:100%;height:90px;margin-top:4px"></textarea>'+
+      '<div class="row" style="margin:4px 0 0"><input class="fb-n" maxlength="1000" placeholder="what was wrong (optional): e.g. said failed, it was PARTIAL" style="flex:1;min-width:160px"><button class="go fb-s">Save</button></div>';
+    form.querySelector(".fb-s").addEventListener("click",function(){send("down",form.querySelector(".fb-c").value,form.querySelector(".fb-n").value)});
+    form.querySelector(".fb-c").focus();
+  });
+}
 /* a ticket for one audience: facts from the check, summary / request drafted by the AI */
 function ticketWrite(el,ctx,aud,btn){
   btn.disabled=true;el.innerHTML='<p class="mut">writing the ticket ...</p>';
@@ -1115,8 +1136,9 @@ function chatSend(q){
       '<details style="margin-top:4px"><summary class="mut" style="font-size:12px">'+(a.evidence||[]).length+" evidence items"+((a.docs||[]).length?", "+a.docs.length+" doc passages":"")+" · "+esc(String(a.model).split("/").pop())+" · "+a.seconds+" s</summary>"+
       (a.evidence||[]).map(function(x){return '<div style="font-size:12px"><span class="cite">'+x.ref+"</span> "+esc(x.text)+"</div>"}).join("")+
       (a.docs||[]).map(function(d){return '<div style="font-size:12px"><span class="cite">'+d.ref+"</span> <b>"+esc(d.title)+"</b>"+(d.url&&/^https?:/.test(d.url)?' <a href="'+esc(d.url)+'" target="_blank" rel="noopener">open</a>':"")+" - "+esc(d.text.slice(0,300))+"</div>"}).join("")+
-      '</details><div class="row" style="margin:6px 0 0"><button class="sec ch-guide">Investigate step by step</button><button class="sec ch-res">Record the resolution</button></div><div class="ch-g"></div><div class="ch-r"></div>';
+      '</details><div class="row" style="margin:6px 0 0"><button class="sec ch-guide">Investigate step by step</button><button class="sec ch-res">Record the resolution</button></div><div class="ch-fb"></div><div class="ch-g"></div><div class="ch-r"></div>';
     var ctx={path:a.context.path,link:a.context.link||""};
+    fbWire(ad.querySelector(".ch-fb"),a,ctx);
     ad.querySelector(".ch-guide").addEventListener("click",function(){guideStart(ad.querySelector(".ch-g"),ctx)});
     ad.querySelector(".ch-res").addEventListener("click",function(){resolutionForm(ad.querySelector(".ch-r"),ctx,function(){
       return {answer:"Q: "+q+"\n\n"+a.answer,steps:ad.querySelector(".ch-g")._steps||[]}})});

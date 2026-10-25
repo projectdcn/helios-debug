@@ -272,7 +272,7 @@ def _result_file(state: State, rel: str) -> Path:
 
 
 LINK_KEYS = ("switch", "asic", "sw_port", "desc", "sw_oper", "sw_admin", "tray", "bdf", "gpu_port", "state", "kind",
-             "cause", "owner", "action", "afm_port", "matched_by", "vlans")
+             "cause", "owner", "action", "afm_port", "matched_by", "vlans", "mtu")
 
 
 def overview(state: State) -> list[dict]:
@@ -1007,6 +1007,9 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/ai/status":
                 from heliosdbg import ai, docsearch
                 return self._json(200, ai.status() | {"docs": docsearch.sources()})
+            if u.path == "/api/ai/feedback":
+                from heliosdbg import feedback
+                return self._json(200, feedback.stats(st.results_dir))
             if u.path == "/api/ai/resolutions":
                 from heliosdbg import resolutions
                 rack = (q.get("rack") or [""])[0]
@@ -1145,6 +1148,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, ai_ask(self.state, req))
             if u.path == "/api/ai/resolution":
                 return self._json(200, ai_resolution(self.state, req))
+            if u.path == "/api/ai/feedback":
+                from heliosdbg import ai, feedback
+                try:
+                    r = feedback.record(self.state.results_dir, req, ai.RECENT)
+                except feedback.FeedbackError as e:
+                    raise BadRequest(str(e)) from None
+                return self._json(200, {"saved": r["id"], "rating": r["rating"], **feedback.stats(self.state.results_dir)})
             if u.path == "/api/config":
                 return self._json(200, node_config(self.state, req))
             if u.path == "/api/term/open":

@@ -196,6 +196,7 @@ def _link_facts(ev: Evidence, ln: dict, names: dict, source: str) -> None:
     if ln.get("action"):
         ev.add(f"The checker's suggested next step: {ln['action']}", source)
     ev.add(f"Switch port: admin {ln.get('sw_admin') or '?'}, oper {ln.get('sw_oper') or '?'}"
+           + (f", MTU {ln['mtu']}" if ln.get("mtu") else "")
            + (f"; transceiver presence {ln['presence']}" if ln.get("presence") else ""), source)
     i = ln.get("ifcp") or {}
     if i:
@@ -511,12 +512,28 @@ def review(text: str, ev: Evidence) -> dict:
             "cited": [c for c in cited if c in refs], "unknown_citations": [c for c in cited if c not in refs]}
 
 
+# the exact messages behind the newest answers, by answer id: a 👍 / 👎 on an answer stores the prompt it came from
+# (heliosdbg/feedback.py), so a correction becomes an exact (prompt, better answer, worse answer) training pair
+RECENT: "dict[str, dict]" = {}
+RECENT_MAX = 300
+
+
+def remember(msgs: list[dict], text: str, model: str, subject: str) -> str:
+    import uuid
+    aid = uuid.uuid4().hex[:16]
+    RECENT[aid] = {"messages": msgs, "answer": text, "model": model, "subject": subject, "time": time.time()}
+    while len(RECENT) > RECENT_MAX:
+        RECENT.pop(next(iter(RECENT)))
+    return aid
+
+
 def ask(ev: Evidence, subject: str, question: str = "", history: list | None = None, env=None) -> dict:
-    """{answer, model, evidence, unsafe, wrong_device, cited, unknown_citations, seconds, subject}."""
+    """{answer, answer_id, model, evidence, unsafe, wrong_device, cited, unknown_citations, seconds, subject}."""
     msgs = build_messages(ev, subject, question, history)
     t0 = time.time()
     text, model = chat(msgs, env)
-    return {"answer": text, "model": model, "evidence": ev.items, "docs": getattr(ev, "docs", None) or [],
+    return {"answer": text, "answer_id": remember(msgs, text, model, subject), "model": model, "evidence": ev.items,
+            "docs": getattr(ev, "docs", None) or [],
             "map_facts": getattr(ev, "map_facts", None) or [], "plan_facts": getattr(ev, "plan_facts", None) or [],
             **review(text, ev),
             "seconds": round(time.time() - t0, 1), "subject": subject}

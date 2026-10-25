@@ -258,6 +258,7 @@ class Link:
     action: str = ""
     afm_port: str | None = None         # AFM gpu-info port oper-state (with the AFM view)
     vlans: list | None = None           # [[Vlan100, tagging_mode], ...] of the switch port (None = VLANs not read)
+    mtu: str | None = None              # switch port MTU ('show interfaces status'; the fabric uses 9100)
 
 
 def join(switches: list[dict], trays: list[dict], quarantined: dict | None = None) -> tuple[list[Link], dict]:
@@ -281,7 +282,8 @@ def join(switches: list[dict], trays: list[dict], quarantined: dict | None = Non
                 if not cab:
                     continue
                 st = a["status"].get(port, {})
-                ln = Link(s["name"], ns, port, desc, st.get("Oper"), st.get("Admin"), presence=a["presence"].get(port, ""))
+                ln = Link(s["name"], ns, port, desc, st.get("Oper"), st.get("Admin"), presence=a["presence"].get(port, ""),
+                          mtu=str(st.get("MTU") or "") or None)
                 vl = a.get("vlan") or {}
                 ln.vlans = None if vl.get("error") or "members" not in vl else vl["members"].get(port, [])
                 ln.fdb_static = bool(static.get(port))
@@ -394,7 +396,8 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
     """Set state / cause / evidence / owner / action. First matching rule wins (bottom layer first)."""
     up = lambda v: str(v or "").lower() == "up"  # noqa: E731
     g, ev = ln.gpu, ln.evidence
-    ev.append(f"switch {ln.switch} {ln.asic or ''} {ln.sw_port}: admin {ln.sw_admin}, oper {ln.sw_oper}; described as '{ln.desc}'")
+    ev.append(f"switch {ln.switch} {ln.asic or ''} {ln.sw_port}: admin {ln.sw_admin}, oper {ln.sw_oper}"
+              + (f", MTU {ln.mtu}" if ln.mtu else "") + f"; described as '{ln.desc}'")
     t = trays.get(ln.tray) if ln.tray else None
     if g:
         ev.append(f"GPU {ln.tray} {ln.bdf} port {ln.gpu_port}: admin {g['admin']}, link {g['link']}, fault {g['fault']}, "
