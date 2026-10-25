@@ -24,7 +24,7 @@ import urllib.request
 
 DEFAULT_URL = "http://127.0.0.1:8090/v1"
 
-SYSTEM = (
+SYSTEM_BASE = (
     "You are the debugging assistant of helios-debug, a read-only link checker for an AMD Helios scale-up GPU rack "
     "(UALink-style fabric). Facts about this rack: switch trays run SONiC with 2 switch chips (ASICs) each; AFM "
     "(the fabric manager) names them pod-1-<n>-SwitchTray / pod-1-<n>-ComputeTray, numbered from 0 (st1 = "
@@ -51,6 +51,9 @@ SYSTEM = (
     "There is no `show mac` or SONiC CLI on a compute tray and no afmctl on a switch tray.\n"
     "Answer ONLY from the evidence items [E1].. you are given - cite them like [E3]; if the evidence does not say, "
     "say what is missing and which read-only command would show it. Never invent port numbers, MACs or commands.\n"
+    ""
+)
+FORMAT = (
     "Write short sections with these headings exactly:\n"
     "### Root cause\n(one or two sentences: the most likely cause, and how sure you are)\n"
     "### Why\n(the evidence that points there, with citations)\n"
@@ -59,6 +62,7 @@ SYSTEM = (
     "mark any step that changes the rack with 'CHANGES THE RACK:' and say what it disturbs\n"
     "Keep it under 300 words. Prefer the simplest explanation that covers all the evidence."
 )
+SYSTEM = SYSTEM_BASE + FORMAT
 
 UNSAFE = re.compile(
     r"\b((?:flap|bounce|toggle)\s+(?:the\s+|a\s+|its\s+)?(?:fabric\s+)?(?:port|link|interface|ethernet\d+)\w*|"
@@ -153,8 +157,21 @@ class Evidence:
         if t and not any(x["text"] == t for x in self.items) and len(self.items) < 60:
             self.items.append({"ref": f"E{len(self.items) + 1}", "text": t[:600], "source": source})
 
+    def add_doc(self, d: dict) -> None:
+        """A documentation passage [D1].. (how things should work; the [E] items say what is)."""
+        docs = getattr(self, "docs", None)
+        if docs is None:
+            docs = self.docs = []
+        if len(docs) < 5:
+            docs.append({"ref": f"D{len(docs) + 1}", "title": f"{d.get('source') or 'docs'}: {d.get('section') or d.get('title')}",
+                         "text": re.sub(r"\s+", " ", str(d.get("text") or ""))[:1200], "url": d.get("url") or ""})
+
     def block(self) -> str:
-        return "\n".join(f"[{x['ref']}] {x['text']}" for x in self.items)
+        b = "\n".join(f"[{x['ref']}] {x['text']}" for x in self.items)
+        docs = getattr(self, "docs", None) or []
+        if docs:
+            b += "\n\nDocumentation passages:\n" + "\n".join(f"[{d['ref']}] {d['title']}: {d['text']}" for d in docs)
+        return b
 
 
 def _names(scan: dict) -> dict:
@@ -351,16 +368,78 @@ CHECK_MODE = ("The evidence lists separate problems as [Problem N: ...]. Treat t
               "'Root cause:', 'Debug next (read-only):' (one or two commands, on the right device), 'Remediation (who):'. "
               "Then '### Order' - which problem to fix first and why. Under 350 words.")
 
-WRONG_DEVICE = [
-    (re.compile(r"afmctl[^\n]{0,80}\b(?:on\s+)?(?:st\d|switch(?:\s+tray)?)\b|\b(?:on\s+)(?:st\d|the\s+switch)[^\n]{0,20}afmctl", re.I),
+WRONG_DEVICE = [   # a command placed ON the wrong kind of node (a mention of the other kind nearby is not enough)
+    (re.compile(r"afmctl[^\n`]{0,60}`?[^.\n;]{0,15}\bon\s+(?:[\w-]+\s+and\s+)?(?:the\s+)?(?:st\d+|switch\s+trays?)\b|"
+                r"\bon\s+(?:the\s+)?(?:st\d+|switch\s+tray)\s*:\s*`?(?:sudo\s+)?afmctl", re.I),
      "afmctl runs on compute trays, not on switch trays"),
-    (re.compile(r"\b(?:show\s+(?:mac|vlan|interfaces)|sonic-db-cli)\b[^\n]{0,60}\bon\s+ct\d", re.I),
+    (re.compile(r"\b(?:show\s+(?:mac|vlan|interfaces)|sonic-db-cli)\b[^\n`]{0,60}`?[^.\n;]{0,15}\bon\s+(?:[\w-]+\s+and\s+)?"
+                r"(?:the\s+)?(?:ct\d+|compute\s+trays?)\b|\bon\s+(?:the\s+)?(?:ct\d+|compute\s+tray)\s*:\s*`?(?:sudo\s+)?(?:show|sonic-db-cli)", re.I),
      "SONiC commands (show mac / show vlan / sonic-db-cli) run on switch trays, not on compute trays"),
 ]
 
 
 def wrong_device(text: str) -> list[str]:
     return [why for rx, why in WRONG_DEVICE if rx.search(text or "")]
+
+
+CHAT_MODE = ("This is an open chat about the rack. Answer the question directly and briefly (under 220 words) in plain "
+             "sentences or a short list; use the Root cause / Why / Debug next / Remediation headings only when the question "
+             "asks what is wrong or how to fix it. Documentation passages [D1].. say how things should work and which "
+             "commands exist - cite them when you use them; the [E] evidence says what this rack is doing. If neither "
+             "answers the question, say so and name the read-only command or UI view that would.")
+
+HOWTO_RX = re.compile(r"^\s*(how\s+(do|can|to|does|should)|what\s+(does|is|are|do)\b|which\s+command|explain|where\s+(do|can|is)|"
+                      r"is\s+there\s+a\s+(command|way))", re.I)
+PROBLEM_RX = re.compile(r"\b(wrong|problems?|faults?|failing|failed|broken|down|issues?|fix|why|order|cause|degraded|"
+                        r"not\s+working|errors?|changed)\b", re.I)
+_NODE_RX = re.compile(r"\b(st\d+|ct\d{2}|c\d+|pod-\d+-\d+-(?:Switch|Compute)Tray|Ethernet\d+|asic\d)\b", re.I)
+
+
+def chat_context(scan: dict, question: str, link: str = "", live: list | None = None, docs=None) -> tuple[Evidence, str]:
+    """Evidence for one chat question: the open link (or the whole check), facts about the nodes / ports the question
+    names, the newest Live changes, and documentation passages that match the question."""
+    howto = bool(HOWTO_RX.search(question or "")) and not PROBLEM_RX.search(question or "") and not link
+    if howto:                                  # 'how do I / what does / which command': documentation first
+        ev, subject = Evidence(), ""
+        ls0 = scan.get("links") or []
+        ev.add(f"Rack {scan.get('rack')}, check of {scan.get('time_utc')} (UTC): {len(ls0)} GPU links checked", "check")
+    else:
+        ev, subject = (link_context(scan, link) if link else check_context(scan))
+    names = scan.get("afm_names") or {}
+    rev = {v.lower(): k for k, v in names.items()}
+    ls = scan.get("links") or []
+    asked = {m.group(1) for m in _NODE_RX.finditer(question or "")}
+    nodes = {rev.get(a.lower(), a) for a in asked if not a.lower().startswith(("ethernet", "asic"))}
+    ports = {a for a in asked if a.lower().startswith("ethernet")}
+    asics = {a.lower() for a in asked if a.lower().startswith("asic")}
+    for n in sorted(nodes):
+        mine = [x for x in ls if n in (x.get("switch"), x.get("tray")) and (not asics or (x.get("asic") or "").lower() in asics)]
+        if not mine:
+            ev.add(f"{_nm(n, names)}: no link of it in this check", "chat")
+            continue
+        c: dict = {}
+        for x in mine:
+            k = x.get("state") + (f"/{x['kind']}" if x.get("kind") else "")
+            c[k] = c.get(k, 0) + 1
+        nosess = sum(1 for x in mine if (x.get("ifcp") or {}).get("ll") == "no" and x.get("state") != "down")
+        ev.add(f"{_nm(n, names)}{' ' + '/'.join(sorted(asics)) if asics else ''}: {len(mine)} links - "
+               + ", ".join(f"{v} {k}" for k, v in sorted(c.items())) + (f"; {nosess} up without an IFCP session" if nosess else ""), "chat")
+        bad = [x for x in mine if x.get("state") != "ok"][:8]
+        for x in bad:
+            ev.add(f"  {x['switch']} {x.get('asic') or ''} {x['sw_port']} <-> {x.get('tray') or '?'} {x.get('bdf') or '?'} port "
+                   f"{x.get('gpu_port')}: {x.get('state')} {x.get('kind') or ''} - {str(x.get('cause') or '')[:140]}", "chat")
+    for pt in sorted(ports):
+        for x in [x for x in ls if x.get("sw_port") == pt and (not nodes or x.get("switch") in nodes)][:3]:
+            ev.add(f"{x['switch']} {x.get('asic') or ''} {pt} <-> {x.get('tray') or '?'} {x.get('bdf') or '?'} port {x.get('gpu_port')}: "
+                   f"{x.get('state')} {x.get('kind') or ''}; IFCP {((x.get('ifcp') or {}).get('ll'))}; VLAN "
+                   + (", ".join(v for v, _m in x["vlans"]) if x.get("vlans") else "?"), "chat")
+    for ch in (live or [])[-12:]:
+        ev.add(f"Live change {ch.get('t')}: {ch.get('link') or ''} {ch.get('what')}: {ch.get('from')} -> {ch.get('to')} "
+               f"[{ch.get('source')}]", "live")
+    if docs is not None:
+        for d in docs.search(question or "", k=5 if howto else 3):
+            ev.add_doc(d)
+    return ev, (f"link {link}" if link else "the rack") + " (chat)"
 
 
 def build_messages(ev: Evidence, subject: str, question: str = "", history: list | None = None) -> list[dict]:
@@ -373,9 +452,11 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
         q = f"What is the root cause of {subject}, how do I confirm it, and how is it fixed?"
     turns = [m for h in (history or [])[-6:] if isinstance(h, dict) and h.get("q") and h.get("a")
              for m in ({"role": "user", "content": str(h["q"])[:2000]}, {"role": "assistant", "content": str(h["a"])[:4000]})]
-    system = SYSTEM + ("\n" + CHECK_MODE if subject == "this check of the rack" and not turns else "")
+    chat_mode = subject.endswith("(chat)")
+    system = (SYSTEM_BASE + CHAT_MODE if chat_mode else
+              SYSTEM + ("\n" + CHECK_MODE if subject == "this check of the rack" and not turns else ""))
     if turns:          # a follow-up: the evidence once, the earlier turns, then the new question
-        return [{"role": "system", "content": SYSTEM},
+        return [{"role": "system", "content": SYSTEM_BASE + CHAT_MODE if chat_mode else SYSTEM},
                 {"role": "user", "content": f"Evidence about {subject}:\n{ev.block()}"},
                 {"role": "assistant", "content": "Understood - I will answer from these evidence items."},
                 *turns, {"role": "user", "content": f"Question: {q}"}]
@@ -385,11 +466,10 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
 
 def review(text: str, ev: Evidence) -> dict:
     """The checks on an answer: a step that changes the rack, a command on the wrong kind of node, citations."""
-    refs = {x["ref"] for x in ev.items}
-    cited = sorted(set(re.findall(r"\bE(\d+)\b", text)), key=int)
+    refs = {x["ref"] for x in ev.items} | {d["ref"] for d in getattr(ev, "docs", None) or []}
+    cited = sorted(set(re.findall(r"\b([ED]\d+)\b", text)), key=lambda x: (x[0], int(x[1:])))
     return {"unsafe": unsafe_text(text), "wrong_device": wrong_device(text),
-            "cited": [f"E{n}" for n in cited if f"E{n}" in refs],
-            "unknown_citations": [f"E{n}" for n in cited if f"E{n}" not in refs]}
+            "cited": [c for c in cited if c in refs], "unknown_citations": [c for c in cited if c not in refs]}
 
 
 def ask(ev: Evidence, subject: str, question: str = "", history: list | None = None, env=None) -> dict:
@@ -397,5 +477,5 @@ def ask(ev: Evidence, subject: str, question: str = "", history: list | None = N
     msgs = build_messages(ev, subject, question, history)
     t0 = time.time()
     text, model = chat(msgs, env)
-    return {"answer": text, "model": model, "evidence": ev.items, **review(text, ev),
+    return {"answer": text, "model": model, "evidence": ev.items, "docs": getattr(ev, "docs", None) or [], **review(text, ev),
             "seconds": round(time.time() - t0, 1), "subject": subject}

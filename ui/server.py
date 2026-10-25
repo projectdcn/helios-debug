@@ -600,6 +600,44 @@ def ai_ticket(state: State, req: dict) -> dict:
             "ai": bool(text), "unsafe": (text or {}).get("unsafe"), "audience": audience}
 
 
+def ai_chat(state: State, req: dict) -> dict:
+    """One chat question about a rack: its check (the one shown, else the newest full one), the open link if any, the
+    newest Live changes when Live runs for that rack, and matching documentation passages."""
+    from heliosdbg import ai, docsearch
+    name = str(req.get("inventory") or "")
+    f, inv = state.inventory(name)
+    rack = inv.rack or f.stem
+    q = str(req.get("question") or "").strip()[:2000]
+    if not q:
+        raise BadRequest("type a question")
+    rel = str(req.get("path") or "").strip("/")
+    if not re.fullmatch(rf"link-check/{re.escape(rack)}/scan-[0-9]{{8}}-[0-9]{{6}}", rel):
+        runs = sorted((state.results_dir / "link-check" / rack).glob("scan-*/link_check.json"), reverse=True)
+        lf = latest_full(rack, runs, len(inv.computes)).get("latest_full")
+        if not lf:
+            raise BadRequest(f"no check of {rack} yet - run Check all links first")
+        rel = lf
+    scan = scan_view(state, rel)
+    live = []
+    with state.lock:
+        lv, lv_inv = state.live, state.live_inventory
+    if lv is not None and lv_inv == name:
+        try:
+            live = [c for c in lv.status(0).get("changes") or [] if c.get("what") != "note"][-12:]
+        except Exception:  # noqa: BLE001 - the chat works without it
+            live = []
+    link = str(req.get("link") or "").strip()
+    try:
+        ev, subject = ai.chat_context(scan, q, link if link and any(
+            f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load())
+        hist = req.get("history") or []
+        out = ai.ask(ev, subject, q, hist if isinstance(hist, list) else [])
+    except ai.AIError as e:
+        raise BadRequest(str(e)) from None
+    return out | {"context": {"rack": rack, "path": rel, "time_utc": scan.get("time_utc"), "link": link or None,
+                              "live_changes": len(live)}}
+
+
 def node_config(state: State, req: dict) -> dict:
     """The read-only configuration of one switch / compute tray (Config tab): SONiC CONFIG_DB per ASIC, or afmctl's
     GPU and port configuration. Read live, over the same transport as the checks."""
@@ -889,8 +927,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"data": base64.b64encode(r["data"]).decode(), "next": r["next"],
                                         "closed": r["closed"], "dropped": r["dropped"]})
             if u.path == "/api/ai/status":
-                from heliosdbg import ai
-                return self._json(200, ai.status())
+                from heliosdbg import ai, docsearch
+                return self._json(200, ai.status() | {"docs": docsearch.sources()})
             if u.path == "/api/term/list":
                 return self._json(200, {"terminals": st.terms.list()})
             if u.path.startswith("/static/vendor/"):          # the bundled terminal emulator (xterm.js), nothing else
@@ -1012,6 +1050,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, discover_rack(dict(req, afm_password=pw)))
             if u.path == "/api/inventory/save":
                 return self._json(200, save_inventory(self.state, req))
+            if u.path == "/api/ai/chat":
+                return self._json(200, ai_chat(self.state, req))
             if u.path == "/api/ai/guide":
                 return self._json(200, ai_guide(self.state, req))
             if u.path == "/api/ai/run":

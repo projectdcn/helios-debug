@@ -94,6 +94,20 @@ nav button.exp{border-style:dashed}
 .ai h4{margin:10px 0 4px;font-size:.95rem}.ai .ans p{margin:4px 0}.ai .ans ol,.ai .ans ul{margin:4px 0 6px 20px;padding:0}
 .ai .cite{display:inline-block;font-size:11px;font-weight:600;padding:0 5px;border-radius:5px;background:var(--code);cursor:help}
 .ai .cite.bad{color:var(--down)}.ai .warn{color:var(--down);font-weight:600;margin-top:6px}
+/* the chat drawer: on the right, kept while moving between tabs */
+#chat{position:fixed;top:0;right:0;width:min(460px,100vw);height:100vh;background:var(--card);border-left:1px solid var(--rule);
+  box-shadow:-6px 0 24px rgba(0,0,0,.12);z-index:60;display:flex;flex-direction:column;margin:0;padding:0;border-radius:0;border-width:0 0 0 1px}
+#chat .ch-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--rule)}
+#chat .ch-ctx{font-size:12px;color:var(--mut);padding:6px 12px;border-bottom:1px solid var(--rule)}
+#chat .ch-log{flex:1;overflow-y:auto;padding:10px 12px}
+#chat .ch-q{margin:10px 0 4px auto;max-width:85%;width:fit-content;background:var(--code);padding:6px 10px;border-radius:10px 10px 2px 10px;white-space:pre-wrap}
+#chat .ch-a{margin:4px 0 12px;padding:8px 10px;border:1px solid var(--rule);border-radius:8px}
+#chat .ch-a h4{margin:8px 0 2px;font-size:.92rem}#chat .ch-a p{margin:4px 0}
+#chat form{display:flex;gap:6px;padding:10px 12px;border-top:1px solid var(--rule)}
+#chat textarea{flex:1;resize:none;min-height:38px;max-height:140px;font:inherit;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--bg);color:var(--fg)}
+#chat .sg{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--rule);background:var(--card);cursor:pointer;margin:0 4px 6px 0}
+body.chat-open main{margin-right:min(460px,100vw)}
+@media (max-width:1100px){body.chat-open main{margin-right:0}}
 .live-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 12px;border:1px solid var(--rule);border-radius:8px;margin:8px 0}
 .live-bar.on{border-color:var(--ok);background:var(--okbg)}.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:var(--mut)}
 .live-bar.on .dot,#live-ind .dot{background:var(--ok);animation:pulse 1.6s infinite}@keyframes pulse{50%{opacity:.35}}
@@ -110,6 +124,7 @@ nav button.exp{border-style:dashed}
   <div><h1>Helios link debug</h1><div class="mut" id="where">checks of the links between the GPUs and the switch trays</div></div>
   <div class="hdr-right">
     <div style="min-width:240px"><label for="inv">Rack</label><select id="inv"></select></div>
+    <button class="sec" id="chat-open" title="ask the AI anything about this rack">Chat</button>
     <span id="ai-ind" class="aibadge" title="the AI model for root cause / debug / remediation advice" style="cursor:default">AI: checking</span>
     <span id="live-ind" class="hide" title="Live mode is on - click to open the rack map"><span class="dot"></span><span id="live-ind-t">Live</span></span>
     <div><label>Mode</label><div class="mode" role="group" aria-label="Mode"><button id="m-simple" aria-pressed="true" title="The main tasks only">Simple</button><button id="m-expert" aria-pressed="false" title="Every tool, including the disruptive one">Expert</button></div></div>
@@ -421,6 +436,13 @@ nav button.exp{border-style:dashed}
     <details id="logbox" class="hide"><summary>Technical output</summary><pre id="log" aria-live="polite"></pre></details>
   </section>
 </main>
+<aside id="chat" class="hide ai" aria-label="AI chat">
+  <div class="ch-head"><b>Chat</b><span class="mut" style="font-size:12px">advisory - it reads the saved check, changes nothing</span><span style="flex:1"></span>
+    <button class="sec" id="chat-new" title="start over">New</button><button class="sec" id="chat-copy" title="copy the conversation">Copy</button><button class="sec" id="chat-close" aria-label="close">×</button></div>
+  <div class="ch-ctx" id="chat-ctx"></div>
+  <div class="ch-log" id="chat-log"></div>
+  <form id="chat-form"><textarea id="chat-q" rows="1" maxlength="2000" placeholder="Ask about this rack, a link, a log line, a command ... (Enter to send, Shift+Enter for a new line)"></textarea><button class="go" id="chat-send">Ask</button></form>
+</aside>
 <dialog id="glossary" aria-labelledby="gl-h">
   <h2 id="gl-h" style="margin-top:0">Glossary</h2>
   <dl>
@@ -906,7 +928,7 @@ var accData=null;
 /* ---------------------------------------------------------------- AI: root cause, debug next, remediation (advisory) */
 var aiState={ok:false,model:"",error:""};
 function aiStatus(){
-  api("/api/ai/status").then(function(st){aiState={ok:!!st.reachable,model:st.model||"",error:st.error||""}}).catch(function(e){aiState={ok:false,model:"",error:e.message}})
+  api("/api/ai/status").then(function(st){aiState={ok:!!st.reachable,model:st.model||"",error:st.error||""};aiDocs=st.docs||[]}).catch(function(e){aiState={ok:false,model:"",error:e.message}})
   .then(function(){var b=$("ai-ind");b.textContent=aiState.ok?"AI: "+String(aiState.model).split("/").pop():"AI: not connected";
     b.className="aibadge "+(aiState.ok?"ok":"off");b.title=aiState.ok?"advice from "+aiState.model:aiState.error;
     document.querySelectorAll(".ai-go").forEach(function(x){x.disabled=!aiState.ok;x.title=aiState.ok?"":aiState.error});
@@ -996,6 +1018,59 @@ function ticketWrite(el,ctx,aud,btn){
       a.download="ticket-"+ctx.path.split("/").slice(1).join("-")+"-"+aud+".md";a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},2000)});
   }).catch(function(e){el.innerHTML='<p class="err">'+esc(e.message)+"</p>"}).then(function(){btn.disabled=false});
 }
+
+/* ---------------------------------------------------------------- chat: free questions about the rack */
+var chat={hist:[],inv:null,link:null,keepLink:true};
+var CHAT_SUGGEST=["What is wrong with this rack, and in what order should it be fixed?","Which links on st6 asic0 have no IFCP session, and why?",
+  "What do the forwarding entries without a switch port on st4 mean?","How do I read the IFCP state of a GPU port?","What changed since the previous check?"];
+function chatCtx(){
+  var i=inv(),el=$("chat-ctx");if(!el)return;
+  if(chat.inv!==(i&&i.file)){chat.inv=i&&i.file;chat.hist=[];$("chat-log").innerHTML="";chatEmpty()}
+  var lk=chat.keepLink&&chat.link;
+  el.innerHTML="About: <b>"+esc(i?i.rack:"no rack")+"</b> - "+(mapData&&i&&mapData.rack===i.rack?"the check of "+esc(stampLocal(mapData.time_utc)):"its newest full check")+
+    (lk?' · link <b>'+esc(lk)+'</b> <a href="#" id="chat-droplink" title="ask about the whole rack instead">(drop)</a>':"")+
+    (liveMine()?" · Live on":"")+(aiState.ok?"":' · <span class="err">AI not connected: '+esc(aiState.error)+"</span>");
+  var d=$("chat-droplink");if(d)d.addEventListener("click",function(e){e.preventDefault();chat.keepLink=false;chatCtx()});
+}
+function chatEmpty(){
+  if(chat.hist.length||$("chat-log").children.length)return;
+  $("chat-log").innerHTML='<p class="mut" style="font-size:13px">Ask anything about this rack. The answer comes from its check (and the link you have open, Live changes, the debug guide'+
+    (aiDocs.some(function(d){return d.source!=="debug guide"})?" and "+esc(aiDocs.filter(function(d){return d.source!=="debug guide"}).map(function(d){return d.source}).join(", "))+" docs":"")+'), with citations.</p>'+
+    CHAT_SUGGEST.map(function(q){return '<button class="sg" data-q="'+esc(q)+'">'+esc(q)+"</button>"}).join("");
+  $("chat-log").querySelectorAll(".sg").forEach(function(b){b.addEventListener("click",function(){chatSend(b.dataset.q)})});
+}
+var aiDocs=[];
+function chatOpen(){$("chat").classList.remove("hide");document.body.classList.add("chat-open");chatCtx();chatEmpty();$("chat-q").focus()}
+function chatClose(){$("chat").classList.add("hide");document.body.classList.remove("chat-open")}
+function chatSend(q){
+  q=(q||"").trim();var i=inv();if(!q||!i)return;
+  var log=$("chat-log");if(!chat.hist.length)log.innerHTML="";
+  var qd=document.createElement("div");qd.className="ch-q";qd.textContent=q;log.appendChild(qd);
+  var ad=document.createElement("div");ad.className="ch-a";ad.innerHTML='<p class="mut">reading the check'+(chat.keepLink&&chat.link?" and link "+esc(chat.link):"")+" ...</p>";log.appendChild(ad);log.scrollTop=log.scrollHeight;
+  $("chat-send").disabled=true;
+  var lk=chat.keepLink?chat.link:null;
+  api("/api/ai/chat",{inventory:i.file,path:mapData&&mapData.rack===i.rack?mapData.path:"",link:lk||"",question:q,history:chat.hist}).then(function(a){
+    chat.hist.push({q:q,a:a.answer});
+    var refs=(a.evidence||[]).concat((a.docs||[]).map(function(d){return {ref:d.ref,text:d.title+": "+d.text}}));
+    ad.innerHTML=aiMd(a.answer,refs)+
+      (a.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(a.unsafe)+'") - only with a go-ahead.</div>':"")+
+      ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
+      (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+".</div>":"")+
+      '<details style="margin-top:4px"><summary class="mut" style="font-size:12px">'+(a.evidence||[]).length+" evidence items"+((a.docs||[]).length?", "+a.docs.length+" doc passages":"")+" · "+esc(String(a.model).split("/").pop())+" · "+a.seconds+" s</summary>"+
+      (a.evidence||[]).map(function(x){return '<div style="font-size:12px"><span class="cite">'+x.ref+"</span> "+esc(x.text)+"</div>"}).join("")+
+      (a.docs||[]).map(function(d){return '<div style="font-size:12px"><span class="cite">'+d.ref+"</span> <b>"+esc(d.title)+"</b>"+(d.url&&/^https?:/.test(d.url)?' <a href="'+esc(d.url)+'" target="_blank" rel="noopener">open</a>':"")+" - "+esc(d.text.slice(0,300))+"</div>"}).join("")+
+      '</details><div class="row" style="margin:6px 0 0"><button class="sec ch-guide">Investigate step by step</button></div><div class="ch-g"></div>';
+    var ctx={path:a.context.path,link:a.context.link||""};
+    ad.querySelector(".ch-guide").addEventListener("click",function(){guideStart(ad.querySelector(".ch-g"),ctx)});
+    log.scrollTop=log.scrollHeight;
+  }).catch(function(e){ad.innerHTML='<p class="err">'+esc(e.message)+"</p>"}).then(function(){$("chat-send").disabled=false});
+}
+$("chat-open").addEventListener("click",function(){$("chat").classList.contains("hide")?chatOpen():chatClose()});
+$("chat-close").addEventListener("click",chatClose);
+$("chat-new").addEventListener("click",function(){chat.hist=[];chat.keepLink=true;$("chat-log").innerHTML="";chatCtx();chatEmpty()});
+$("chat-copy").addEventListener("click",function(){var t=chat.hist.map(function(h){return "Q: "+h.q+"\n\n"+h.a}).join("\n\n---\n\n");try{navigator.clipboard.writeText(t)}catch(e){}});
+$("chat-form").addEventListener("submit",function(e){e.preventDefault();var v=$("chat-q").value;$("chat-q").value="";chatSend(v)});
+$("chat-q").addEventListener("keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("chat-form").requestSubmit()}});
 
 /* ---------------------------------------------------------------- node pickers (terminal, config) */
 function nodeLabel(n){var a=((mapData&&mapData.afm_names)||{})[n];return a?a+" ("+n+")":n}
@@ -1779,6 +1854,7 @@ function mapDetail(k){
   $("map-diag").addEventListener("click",function(){$("link-target").value=tgt;tab("link");run("link")});
   $("map-copy").addEventListener("click",function(){try{navigator.clipboard.writeText(tgt)}catch(e){}});
   $("map-watch").addEventListener("click",function(){var ta=$("watch-targets");if(ta.value.indexOf(tgt)<0)ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+tgt;tab("watch")});
+  chat.link=k;chat.keepLink=true;if(!$("chat").classList.contains("hide"))chatCtx();
   wireCrumbs();portExtra(k);aiPanel($("ai-link"),{path:mapData.path,link:k,label:"link "+k});$("map-detail").scrollIntoView({block:"nearest"});
 }
 ["map-scan","map-prev"].forEach(function(id){$(id).addEventListener("change",mapFetch)});
