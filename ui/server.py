@@ -608,6 +608,24 @@ def ai_ticket(state: State, req: dict) -> dict:
             "ai": bool(text), "unsafe": (text or {}).get("unsafe"), "audience": audience}
 
 
+def push_to_hub(kind: str, record: dict) -> None:
+    """HELIOS_TRAIN_HUB (helios-slm's web UI, e.g. http://127.0.0.1:8770): the new resolution / rating also goes into
+    its training review queue, in the background; the local results/ai/*.jsonl stays the record either way."""
+    url = os.environ.get("HELIOS_TRAIN_HUB", "").rstrip("/")
+    if not url:
+        return
+
+    def go():
+        import urllib.request
+        try:
+            req = urllib.request.Request(url + "/api/hub/push", data=json.dumps({kind: record}).encode(),
+                                         headers={"Content-Type": "application/json", "X-Helios-SLM": "1"})
+            urllib.request.urlopen(req, timeout=30).read()
+        except Exception as e:  # noqa: BLE001 - the hub being away never breaks the UI; import picks the file up later
+            print(f"train hub: {kind} {record.get('id')} not pushed ({type(e).__name__}: {str(e)[:120]})", flush=True)
+    threading.Thread(target=go, daemon=True).start()
+
+
 def ai_resolution(state: State, req: dict) -> dict:
     """Record what a problem turned out to be and what fixed it (written by a person) - with the evidence of the
     check / link / Diagnose result it is about, as the AI sees it. Changes nothing on the rack."""
@@ -622,6 +640,7 @@ def ai_resolution(state: State, req: dict) -> dict:
         raise BadRequest("path (a check / Diagnose result), or rack + subject (e.g. a test case id)")
     try:
         r = resolutions.record(state.results_dir, req, ev, subject)
+        push_to_hub("resolution", r)
     except resolutions.ResolutionError as e:
         raise BadRequest(str(e)) from None
     return {"saved": r["id"], "resolution": r | {"evidence": len(r["evidence"])}, "count": len(resolutions.load(state.results_dir))}
@@ -1161,6 +1180,7 @@ class Handler(BaseHTTPRequestHandler):
                 from heliosdbg import ai, feedback
                 try:
                     r = feedback.record(self.state.results_dir, req, ai.RECENT)
+                    push_to_hub("feedback", r)
                 except feedback.FeedbackError as e:
                     raise BadRequest(str(e)) from None
                 return self._json(200, {"saved": r["id"], "rating": r["rating"], **feedback.stats(self.state.results_dir)})
