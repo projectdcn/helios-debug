@@ -510,9 +510,6 @@ def ai_ask(state: State, req: dict) -> dict:
     """Ask the AI about a check (path = link-check/<rack>/scan-...), one link of it (+ link = 'st6 Ethernet170') or a
     Diagnose result (path = link-check/<rack>/link-...). The evidence is built from the saved result, not the rack."""
     from heliosdbg import ai
-    rel = str(req.get("path") or "").strip("/")
-    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", rel):
-        raise BadRequest("path: link-check/<rack>/scan-... or link-...")
     q, hist = str(req.get("question") or "")[:2000], req.get("history") or []
     if not isinstance(hist, list):
         raise BadRequest("history: a list of {q, a}")
@@ -526,10 +523,19 @@ def ai_ask(state: State, req: dict) -> dict:
 def _ai_subject(state: State, req: dict, past: bool = False):
     """(evidence, subject, rack) for a request naming a check / a link of it / a Diagnose result (+ past=True: the
     most similar resolutions people recorded)."""
-    from heliosdbg import ai
+    from heliosdbg import ai, cases
+    spec = cases.spec_of(req)
+    if spec is not None:                 # any problem: a tool report, a helios-tests result, outputs collected by hand
+        try:
+            ev, subject, rack = cases.context(spec, state.results_dir)
+        except ai.AIError as e:
+            raise BadRequest(str(e)) from None
+        if past and rack:
+            add_past_resolutions(state, ev, rack, "", str(req.get("question") or "") + " " + " ".join(x["text"] for x in ev.items[:8]))
+        return ev, subject, rack
     rel = str(req.get("path") or "").strip("/")
     if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", rel):
-        raise BadRequest("path: link-check/<rack>/scan-... or link-...")
+        raise BadRequest("path: a saved result (link-check/<rack>/<tool>-...), test {run, tc_id}, or blocks [{node, command, output}]")
     rack = rel.split("/")[1]
     try:
         if "/link-" in rel:
@@ -558,6 +564,8 @@ def ai_guide(state: State, req: dict) -> dict:
     """The next step of a guided investigation (proposed by the AI, checked against the read-only allow-list)."""
     from heliosdbg import ai, guide
     ev, subject, rack = _ai_subject(state, req, past=True)
+    if not rack:
+        raise BadRequest("step by step needs the rack (its nodes are where the commands run) - pick one")
     _inv, roles = _rack_nodes(state, rack)
     steps = [s for s in (req.get("steps") or []) if isinstance(s, dict)][:12]
     try:
@@ -571,9 +579,13 @@ def ai_run(state: State, req: dict) -> dict:
     from heliosdbg import guide
     from heliosdbg.transport import make_transport
     rel = str(req.get("path") or "").strip("/")
-    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", rel):
-        raise BadRequest("path: link-check/<rack>/scan-... or link-...")
-    inv, roles = _rack_nodes(state, rel.split("/")[1])
+    if re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/[a-z]+-[0-9]{8}-[0-9]{6}", rel):
+        rack = rel.split("/")[1]
+    elif re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", str(req.get("rack") or "")):
+        rack = str(req["rack"])
+    else:
+        raise BadRequest("path (a saved result) or rack")
+    inv, roles = _rack_nodes(state, rack)
     node = str(req.get("node") or "")
     host = next((h for h in inv.all_switches + inv.all_computes if h.name == node), None)
     if host is None:
@@ -630,11 +642,12 @@ def ai_resolution(state: State, req: dict) -> dict:
     """Record what a problem turned out to be and what fixed it (written by a person) - with the evidence of the
     check / link / Diagnose result it is about, as the AI sees it. Changes nothing on the rack."""
     from heliosdbg import resolutions
+    from heliosdbg import cases
     rel = str(req.get("path") or "").strip("/")
     ev, subject = None, ""
-    if rel:
+    if rel or cases.spec_of(req) is not None:
         ev, subject, rack = _ai_subject(state, req)
-        req = dict(req, rack=rack)
+        req = dict(req, rack=rack or str(req.get("rack") or ""))
         ev.items = [x for x in ev.items if x.get("source") != "resolution"]   # not earlier resolutions: no copying
     elif not str(req.get("rack") or "").strip() or not str(req.get("subject") or "").strip():
         raise BadRequest("path (a check / Diagnose result), or rack + subject (e.g. a test case id)")
@@ -1038,6 +1051,23 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/ai/feedback":
                 from heliosdbg import feedback
                 return self._json(200, feedback.stats(st.results_dir))
+            if u.path == "/api/cases/tests":          # helios-tests results to ask about (any part of the rack)
+                from heliosdbg import cases
+                g = (lambda k: (q.get(k) or [""])[0][:120])
+                rows = cases.tests(int((q.get("limit") or ["400"])[0] or 400), g("outcome"), g("rack"), g("q"))
+                return self._json(200, {"tests": rows, "dir": str(cases.tests_results())})
+            if u.path == "/api/cases/reports":        # saved tool results other than link checks / Diagnose
+                from heliosdbg import cases
+                return self._json(200, {"reports": cases.reports(st.results_dir)})
+            if u.path == "/api/cases/racks":          # the racks this machine has an inventory for (nodes for step by step)
+                racks = []
+                for f in sorted(st.inventory_dir.glob("*.yaml")):
+                    try:
+                        inv = load_inventory(f)
+                        racks.append({"rack": inv.rack or f.stem, "nodes": [h.name for h in inv.all_switches + inv.all_computes]})
+                    except Exception:  # noqa: BLE001
+                        continue
+                return self._json(200, {"racks": racks})
             if u.path == "/api/ai/resolutions":
                 from heliosdbg import resolutions
                 rack = (q.get("rack") or [""])[0]

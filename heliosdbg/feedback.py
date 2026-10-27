@@ -34,6 +34,11 @@ def record(results_dir: Path, req: dict, recent: dict) -> dict:
     if not src:
         raise FeedbackError("that answer is no longer known to this UI (it was restarted) - ask again, then rate it")
     correction = str(req.get("correction") or "").strip()[:6000]
+    guided = any("guiding an investigation step by step" in str(m.get("content") or "") for m in src.get("messages") or []
+                 if m.get("role") == "system")
+    if guided and correction and not correction.lstrip().startswith("{"):   # a step-by-step conclusion is answered in JSON
+        cause, _, nxt = correction.partition("\nNext:")
+        correction = json.dumps({"done": True, "conclusion": cause.strip(), "next": nxt.strip()})
     now = time.time()
     out = {
         "id": time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)) + f"-{int(now * 1000) % 1000:03d}",

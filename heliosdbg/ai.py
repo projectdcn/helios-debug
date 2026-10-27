@@ -66,6 +66,15 @@ FORMAT = (
     "Keep it under 300 words. Prefer the simplest explanation that covers all the evidence."
 )
 SYSTEM = SYSTEM_BASE + FORMAT
+GENERAL_MODE = (
+    "This question is not only about links: the evidence can be any part of the rack - GPUs (amd-smi / rocm-smi), AFM, "
+    "RDMA / RCCL, the BMC (ipmitool, Redfish), power, cooling, firmware, the OS (dmesg, journalctl), a helios-tests "
+    "result and its log, a helios-debug tool's report, or outputs a person collected by hand. Reason from what the "
+    "outputs say: name the node and the component, separate the first failure from what follows from it, and say "
+    "when the evidence is not enough. A test outcome PARTIAL passed where it could run; SKIPPED / BLOCKED mean it did "
+    "not run (say why), not that the rack is broken.\n"
+)
+SYSTEM_GENERAL = SYSTEM_BASE + GENERAL_MODE + FORMAT
 
 UNSAFE = re.compile(
     r"\b((?:flap|bounce|toggle)\s+(?:the\s+|a\s+|its\s+)?(?:fabric\s+)?(?:port|link|interface|ethernet\d+)\w*|"
@@ -516,10 +525,11 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
         q += ("\n(From the test plan, exactly: " + " | ".join(ev.plan_facts) + ". Start the answer with that LATEST status "
               "word as it is - PARTIAL is not a failure: it passed where it could run. Anything after 'OLDER runs' is history "
               "that the latest run superseded; mention it only as history.)")
-    system = (SYSTEM_BASE + CHAT_MODE if chat_mode else
+    general = getattr(ev, "mode", "") == "general"          # cases.py: a test result, a tool report, pasted outputs
+    system = (SYSTEM_BASE + CHAT_MODE if chat_mode else SYSTEM_GENERAL if general else
               SYSTEM + ("\n" + CHECK_MODE if subject == "this check of the rack" and not turns else ""))
     if turns:          # a follow-up: the evidence once, the earlier turns, then the new question
-        return [{"role": "system", "content": SYSTEM_BASE + CHAT_MODE if chat_mode else SYSTEM},
+        return [{"role": "system", "content": SYSTEM_BASE + CHAT_MODE if chat_mode else SYSTEM_GENERAL if general else SYSTEM},
                 {"role": "user", "content": f"Evidence about {subject}:\n{ev.block()}"},
                 {"role": "assistant", "content": "Understood - I will answer from these evidence items."},
                 *turns, {"role": "user", "content": f"Question: {q}"}]

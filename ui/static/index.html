@@ -139,6 +139,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
     <button role="tab" data-t="scan">Check all links</button>
     <button role="tab" data-t="map">Rack map</button>
     <button role="tab" data-t="link">Diagnose a link</button>
+    <button role="tab" data-t="anyprob" title="a helios-tests result, a tool report or outputs you collected - any part of the rack">Any problem</button>
     <button role="tab" data-t="history">Earlier results</button>
     <button role="tab" data-t="access">Access to the rack</button>
     <button role="tab" data-t="config">Config</button>
@@ -363,6 +364,32 @@ body.chat-open main{margin-right:min(460px,100vw)}
     <div class="row"><button class="go" data-run="isolate" style="background:var(--down)">Take it down and back</button></div>
   </section>
 
+  <section class="card hide" data-p="anyprob">
+    <h2>Ask about any problem</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>The AI on anything wrong with the rack, not only links: a helios-tests result (GPU, RDMA, BMC, AFM, power ... with its log), a saved report of a tool here (Switch signal, GPU-to-GPU path, Ping map, Watch, Cabling), or command outputs and logs you collected yourself on any node.</dd><dt>When</dt><dd>A test failed, a node misbehaves, or you found something by hand and want a second opinion - and to teach the AI (👍 / 👎 with the right answer, or Record the resolution).</dd><dt>How long</dt><dd>Seconds per answer.</dd><dt>Safe?</dt><dd>Yes - it reads saved results and what you paste; step by step runs only read-only commands, each on your click.</dd></dl></details>
+    <div class="row" role="radiogroup" aria-label="what to ask about" style="gap:14px;align-items:center">
+      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="ap-src" value="test" checked style="width:auto;margin:0">A helios-tests result</label>
+      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="ap-src" value="paste" style="width:auto;margin:0">Outputs / logs I collected</label>
+      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="ap-src" value="report" style="width:auto;margin:0">A saved tool report</label>
+    </div>
+    <div id="ap-test">
+      <div class="row"><select id="ap-t-out" style="width:auto"><option value="">any outcome</option><option value="failed" selected>failed</option><option value="error">error</option><option value="blocked">blocked</option><option value="partial">partial</option><option value="skipped">skipped</option><option value="passed">passed</option></select>
+        <select id="ap-t-rack" style="width:auto"><option value="">any rack</option></select>
+        <input id="ap-t-q" placeholder="search: TC-GPU-012, rccl, bmc, st3 ..." style="flex:1;min-width:200px"><button class="sec" id="ap-t-go">Search</button></div>
+      <div class="wrap" style="max-height:38vh;overflow:auto"><table><thead><tr><th>Started</th><th>Rack</th><th>Case</th><th>Outcome</th><th>Message</th></tr></thead><tbody id="ap-tests"></tbody></table></div>
+      <p class="mut" id="ap-t-note" style="font-size:12px"></p>
+    </div>
+    <div id="ap-paste" class="hide">
+      <div class="row"><label style="margin:0">Rack <select id="ap-p-rack" style="width:auto"><option value="">(none - no step by step)</option></select></label>
+        <input id="ap-p-subj" maxlength="160" placeholder="what it is about, e.g. ct07 GPU2 resets during RCCL all-reduce" style="flex:1;min-width:240px"></div>
+      <div id="ap-blocks"></div>
+      <div class="row"><button class="sec" id="ap-p-add">+ another output</button><span style="flex:1"></span><button class="go" id="ap-p-use">Use these outputs</button></div>
+    </div>
+    <div id="ap-report" class="hide"><div class="wrap" style="max-height:38vh;overflow:auto"><table><thead><tr><th>When</th><th>Rack</th><th>Tool</th><th>First line</th></tr></thead><tbody id="ap-reports"></tbody></table></div></div>
+    <div id="ap-sel" class="mut" style="margin-top:8px"></div>
+    <div id="ap-ai"></div>
+  </section>
+
   <section class="card hide" data-p="history">
     <h2>Earlier runs</h2>
     <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Every earlier run on this machine, with its reports and an evidence bundle (zip) to attach to a ticket.</dd><dt>When</dt><dd>To find or share an earlier result.</dd><dt>How long</dt><dd>Instant.</dd><dt>Safe?</dt><dd>Yes.</dd></dl></details>
@@ -503,6 +530,7 @@ function tab(t){
   document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===t)});
   document.querySelectorAll("section[data-p]").forEach(function(s){s.classList.toggle("hide",s.dataset.p!==t)});
   if(t==="history")loadHistory();
+  if(t==="anyprob")anyProb();
   if(t==="map"){placeDetail("map");loadMap();liveBar();liveList();livePoll()}
   if(t==="access"){fillNodePick("term-node");termFit();termOrphans()}
   if(t==="config")fillNodePick("cfg-node");
@@ -950,7 +978,10 @@ function aiMd(t,ev){
   return out.join("").replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
     .replace(/\[?\b([ED]\d+)\b\]?/g,function(all,ref){return '<span class="cite'+(refs[ref]?"":" bad")+'" title="'+esc(refs[ref]||"not one of the evidence items given")+'">'+ref+"</span>"});
 }
-/* an "Ask the AI" panel in box: ctx {path, link?, label} */
+/* what an AI request says it is about: a saved check / link / Diagnose (path, link), or any problem (ctx.spec: a
+   helios-tests result {test}, outputs collected by hand {blocks, subject, rack}, a tool report {path}) */
+function aiReq(ctx,extra){return Object.assign({path:ctx.path||"",link:ctx.link||""},ctx.spec||{},extra||{})}
+/* an "Ask the AI" panel in box: ctx {path, link?, label} or {spec, rack, label} */
 function aiPanel(box,ctx){
   if(!box)return;var hist=[];
   box.innerHTML='<div class="ai"><div class="row" style="margin:0;align-items:center"><b>AI: root cause, how to debug, what to do</b><span class="mut" style="font-size:12px">advisory - check its claims against the evidence; it changes nothing</span>'+
@@ -959,11 +990,11 @@ function aiPanel(box,ctx){
     '<button class="sec ai-res-go" title="what it turned out to be and what fixed it - the AI learns from these">Record the resolution</button>'+
     '<button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div><div class="ai-guide"></div><div class="ai-ticket"></div><div class="ai-res"></div>'+
     '<form class="row ai-more hide" style="margin:6px 0 0"><input class="ai-q" placeholder="Follow-up question (e.g. which command shows the IFCP state on the switch?)" style="flex:1;min-width:240px" maxlength="2000"><button class="sec">Ask</button></form></div>';
-  var out=box.querySelector(".ai-out"),go=box.querySelector(".ai-go"),form=box.querySelector(".ai-more");
+  var out=box.querySelector(".ai-out"),go=box.querySelector("button.go.ai-go"),form=box.querySelector(".ai-more");
   if(!aiState.ok)go.title=aiState.error;
   function run(q){
     go.disabled=true;var wait=document.createElement("p");wait.className="mut";wait.textContent="the model is reading the evidence"+(q?" ("+q+")":"")+" ...";out.appendChild(wait);
-    api("/api/ai/ask",{path:ctx.path,link:ctx.link||"",question:q||"",history:hist}).then(function(a){
+    api("/api/ai/ask",aiReq(ctx,{question:q||"",history:hist})).then(function(a){
       wait.remove();hist.push({q:q||"root cause / debug / fix of "+(ctx.label||a.subject),a:a.answer});
       var d=document.createElement("div");d.className="ans";
       d.innerHTML=(q?'<p class="mut"><b>Q:</b> '+esc(q)+"</p>":"")+aiMd(a.answer,a.evidence)+
@@ -983,6 +1014,66 @@ function aiPanel(box,ctx){
   form.addEventListener("submit",function(e){e.preventDefault();var q=form.querySelector(".ai-q").value.trim();if(q){form.querySelector(".ai-q").value="";run(q)}});
 }
 
+/* ---------------------------------------------------------------- any problem: a test result, a tool report, outputs collected by hand */
+var apRacks=null;
+function anyProb(){
+  if(!apRacks){apRacks=[];api("/api/cases/racks").then(function(d){apRacks=d.racks||[];
+    var o=apRacks.map(function(r){return '<option value="'+esc(r.rack)+'">'+esc(r.rack)+"</option>"}).join("");
+    $("ap-p-rack").insertAdjacentHTML("beforeend",o);$("ap-t-rack").insertAdjacentHTML("beforeend",o);
+    var cur=inv();if(cur&&cur.rack){$("ap-p-rack").value=cur.rack}}).catch(function(){});
+    document.querySelectorAll('input[name="ap-src"]').forEach(function(r){r.addEventListener("change",apSrc)});
+    $("ap-t-go").addEventListener("click",apTests);$("ap-t-q").addEventListener("keydown",function(e){if(e.key==="Enter")apTests()});
+    $("ap-t-out").addEventListener("change",apTests);$("ap-t-rack").addEventListener("change",apTests);
+    $("ap-p-add").addEventListener("click",function(){apBlock()});$("ap-p-use").addEventListener("click",apUsePaste);
+    apBlock();apTests();
+  }
+}
+function apSrc(){
+  var v=document.querySelector('input[name="ap-src"]:checked').value;
+  ["test","paste","report"].forEach(function(k){$("ap-"+k).classList.toggle("hide",k!==v)});
+  if(v==="report"&&!$("ap-reports").children.length)apReports();
+}
+function apAsk(ctx,label){
+  $("ap-sel").innerHTML="<b>Asking about:</b> "+esc(label);
+  aiPanel($("ap-ai"),ctx);$("ap-ai").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+function apTests(){
+  var u="/api/cases/tests?limit=400&outcome="+encodeURIComponent($("ap-t-out").value)+"&rack="+encodeURIComponent($("ap-t-rack").value)+"&q="+encodeURIComponent($("ap-t-q").value.trim());
+  $("ap-tests").innerHTML='<tr><td colspan="5" class="mut">loading ...</td></tr>';
+  api(u).then(function(d){
+    var ts=d.tests||[];
+    $("ap-t-note").textContent=ts.length?ts.length+(ts.length>=400?"+":"")+" result(s) from "+d.dir+" - click one to ask the AI about it":"no helios-tests results match (looked in "+d.dir+"; HELIOS_TESTS_RESULTS sets another folder)";
+    $("ap-tests").innerHTML=ts.map(function(t,i){return '<tr data-i="'+i+'" style="cursor:pointer"><td>'+esc(String(t.started).slice(0,16))+"</td><td>"+esc(t.rack)+"</td><td><b>"+esc(t.tc_id)+"</b> "+esc(t.test)+'</td><td class="'+(t.outcome==="passed"?"":"err")+'">'+esc(t.outcome)+'</td><td class="mut" style="font-size:12px">'+esc(String(t.message).slice(0,140))+"</td></tr>"}).join("");
+    $("ap-tests").querySelectorAll("tr[data-i]").forEach(function(tr){tr.addEventListener("click",function(){
+      var t=ts[+tr.dataset.i];apAsk({spec:{test:{run:t.run,tc_id:t.tc_id,test:t.test}},rack:t.rack,label:t.tc_id},t.tc_id+" "+t.test+" ("+t.outcome+", "+t.rack+", "+String(t.started).slice(0,16)+")")})});
+  }).catch(function(e){$("ap-tests").innerHTML='<tr><td colspan="5" class="err">'+esc(e.message)+"</td></tr>"});
+}
+function apBlock(){
+  var d=document.createElement("div");d.className="ai ap-b";d.style.background="var(--bg)";
+  d.innerHTML='<div class="row" style="margin:0"><input class="ap-node" maxlength="80" placeholder="node, e.g. ct07 / st3 / ct07-bmc" style="width:200px"><input class="ap-cmd" maxlength="300" placeholder="command, e.g. sudo amd-smi metric -g 2 (or: dmesg, BMC SEL, test log ...)" style="flex:1;min-width:220px"><button class="sec ap-x" title="remove this output">✕</button></div>'+
+    '<textarea class="ap-out" maxlength="200000" placeholder="paste the output or the log here" style="width:100%;height:120px;margin-top:4px;font-family:var(--mono,monospace);font-size:12px"></textarea>'+
+    '<div class="row" style="margin:2px 0 0"><label class="mut" style="font-size:12px;margin:0">or a file <input type="file" class="ap-file" style="width:auto"></label></div>';
+  $("ap-blocks").appendChild(d);
+  d.querySelector(".ap-x").addEventListener("click",function(){if($("ap-blocks").children.length>1)d.remove()});
+  d.querySelector(".ap-file").addEventListener("change",function(e){var f=e.target.files[0];if(!f)return;
+    if(f.size>2e6){alert("larger than 2 MB - paste the part that matters");return}
+    f.text().then(function(t){d.querySelector(".ap-out").value=t;if(!d.querySelector(".ap-cmd").value)d.querySelector(".ap-cmd").value=f.name})});
+}
+function apUsePaste(){
+  var bs=Array.prototype.map.call($("ap-blocks").querySelectorAll(".ap-b"),function(d){return {node:d.querySelector(".ap-node").value.trim(),command:d.querySelector(".ap-cmd").value.trim(),output:d.querySelector(".ap-out").value}})
+    .filter(function(b){return b.output.trim()});
+  if(!bs.length){$("ap-sel").innerHTML='<span class="err">Paste at least one output first.</span>';return}
+  var rack=$("ap-p-rack").value,subj=$("ap-p-subj").value.trim();
+  apAsk({spec:{blocks:bs,subject:subj,rack:rack},rack:rack,label:subj||"these outputs"},(subj||"the outputs you collected")+" - "+bs.length+" output(s)"+(rack?" on "+rack:""));
+}
+function apReports(){
+  api("/api/cases/reports").then(function(d){
+    var rs=d.reports||[];
+    $("ap-reports").innerHTML=rs.length?rs.map(function(r,i){return '<tr data-i="'+i+'" style="cursor:pointer"><td>'+esc(r.when)+"</td><td>"+esc(r.rack)+"</td><td>"+esc(r.tool)+'</td><td class="mut" style="font-size:12px">'+esc(r.summary)+"</td></tr>"}).join(""):'<tr><td colspan="4" class="mut">no saved tool reports yet</td></tr>';
+    $("ap-reports").querySelectorAll("tr[data-i]").forEach(function(tr){tr.addEventListener("click",function(){var r=rs[+tr.dataset.i];
+      apAsk({spec:{path:r.path},path:r.path,rack:r.rack,label:r.tool+" "+r.name},r.tool+" result "+r.name+" ("+r.rack+")")})});
+  }).catch(function(e){$("ap-reports").innerHTML='<tr><td colspan="4" class="err">'+esc(e.message)+"</td></tr>"});
+}
 /* guided debugging: the AI proposes one read-only command at a time; nothing runs without a click */
 function guideStart(el,ctx){
   var steps=[];el._steps=steps;          // a resolution recorded afterwards keeps the commands run and their output
@@ -990,14 +1081,15 @@ function guideStart(el,ctx){
   var list=el.querySelector(".g-steps"),nx=el.querySelector(".g-next");
   function ask(){
     nx.innerHTML='<p class="mut">the AI is choosing the next step ...</p>';
-    api("/api/ai/guide",{path:ctx.path,link:ctx.link||"",steps:steps}).then(function(p){
-      if(p.done){nx.innerHTML='<div class="verdict ok"><h3>Conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+'<div class="mut" style="font-size:12px">'+steps.length+" step(s) run · advisory - check it against the outputs above</div></div>";return}
+    api("/api/ai/guide",aiReq(ctx,{steps:steps})).then(function(p){
+      if(p.done){nx.innerHTML='<div class="verdict ok"><h3>Conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+'<div class="mut" style="font-size:12px">'+steps.length+" step(s) run · advisory - check it against the outputs above</div><div class=\"fb\"></div></div>";
+        fbWire(nx.querySelector(".fb"),p,ctx,"The right conclusion, citing the step outputs [S1].. and evidence [E1].. - then a line starting 'Next:' with what to do and who. This teaches the step-by-step mode.");return}
       var bad=!p.allowed;
       nx.innerHTML='<div class="verdict '+(bad?"degraded":"")+'"><h3>Step '+(steps.length+1)+": on "+esc(nodeLabel(p.node||"?"))+"</h3><p><code>"+esc(p.command||"")+"</code></p><p class=\"mut\">"+esc(p.why||"")+"</p>"+
         (bad?'<p class="err">Not run: '+esc(p.refused||"not allowed")+"</p>":"")+
         '<div class="row" style="margin:6px 0 0">'+(bad?"":'<button class="go g-run">Run</button>')+'<button class="sec g-other">Another step</button><button class="sec g-stop">Stop</button></div></div>';
       var rb=nx.querySelector(".g-run");if(rb)rb.addEventListener("click",function(){rb.disabled=true;rb.textContent="running ...";
-        api("/api/ai/run",{path:ctx.path,node:p.node,command:p.command}).then(function(o){
+        api("/api/ai/run",{path:ctx.path||"",rack:ctx.rack||"",node:p.node,command:p.command}).then(function(o){
           steps.push({node:o.node,command:o.command,rc:o.rc,output:o.output});
           var d=document.createElement("details");d.open=steps.length===1;
           d.innerHTML='<summary><b>S'+steps.length+"</b> "+esc(nodeLabel(o.node))+": <code>"+esc(o.command)+"</code> "+(o.rc===0?'<span class="mut">ok</span>':'<span class="err">exit '+esc(o.rc)+"</span>")+' <span class="mut">'+o.seconds+" s</span></summary><pre style=\"max-height:40vh\">"+esc(o.output||"(no output)")+"</pre>";
@@ -1038,30 +1130,30 @@ function resolutionForm(el,ctx,extra){
   f.addEventListener("submit",function(e){
     e.preventDefault();var b=f.querySelector("button.go");b.disabled=true;var x=(extra&&extra())||{};
     lsSet("hd-res-by",f.querySelector(".r-by").value.trim());
-    api("/api/ai/resolution",{path:ctx.path||"",link:ctx.link||"",rack:rack,subject:ctx.subject||"",category:f.querySelector(".r-cat").value,
+    api("/api/ai/resolution",aiReq(ctx,{rack:rack,subject:(ctx.spec&&ctx.spec.subject)||ctx.subject||"",category:f.querySelector(".r-cat").value,
       cause:f.querySelector(".r-cause").value,fix:f.querySelector(".r-fix").value,confirmed:f.querySelector(".r-ok").checked,
-      by:f.querySelector(".r-by").value,ai_answer:x.answer||"",steps:x.steps||[]}).then(function(r){
+      by:f.querySelector(".r-by").value,ai_answer:x.answer||"",steps:x.steps||[]})).then(function(r){
       msg.innerHTML='<div class="verdict ok" style="font-size:12px">Saved ('+r.resolution.evidence+" evidence items kept with it; "+r.count+" resolution(s) on this machine). The AI is shown it when a similar problem comes up.</div>";
       f.querySelector(".r-cause").value="";f.querySelector(".r-fix").value="";list();
     }).catch(function(e){msg.innerHTML='<p class="err">'+esc(e.message)+"</p>"}).then(function(){b.disabled=false});
   });
 }
 /* 👍 / 👎 on one AI answer; 👎 asks for the right answer - the prompt, the answer and the correction become training data */
-function fbWire(el,a,ctx){
+function fbWire(el,a,ctx,hint){
   if(!el||!a||!a.answer_id){if(el)el.remove();return}
   el.innerHTML='<div class="row" style="margin:4px 0 0;align-items:center;gap:6px"><span class="mut" style="font-size:12px">Was this right?</span>'+
     '<button class="sec fb-up" title="right - the model learns to answer like this">👍</button><button class="sec fb-down" title="wrong - say what is right">👎</button><span class="fb-msg mut" style="font-size:12px"></span></div><div class="fb-form"></div>';
   var msg=el.querySelector(".fb-msg"),form=el.querySelector(".fb-form");
   function send(rating,correction,comment){
     return api("/api/ai/feedback",{answer_id:a.answer_id,rating:rating,correction:correction||"",comment:comment||"",by:lsGet("hd-res-by"),
-      rack:(ctx.path||"").split("/")[1]||"",path:ctx.path||"",link:ctx.link||""}).then(function(r){
+      rack:(ctx.path||"").split("/")[1]||ctx.rack||"",path:ctx.path||"",link:ctx.link||""}).then(function(r){
       el.querySelectorAll("button").forEach(function(b){b.disabled=true});form.innerHTML="";
       msg.textContent=(rating==="up"?"Thanks - saved as a good answer.":"Thanks - saved"+(correction?" with your correction.":".")) +" ("+r.ratings+" ratings on this machine)";
     }).catch(function(e){msg.textContent=e.message});
   }
   el.querySelector(".fb-up").addEventListener("click",function(){send("up")});
   el.querySelector(".fb-down").addEventListener("click",function(){
-    form.innerHTML='<textarea class="fb-c" maxlength="6000" placeholder="What is the right answer? Write it as the AI should have (root cause, why, what to check, who fixes it). This is what it learns from." style="width:100%;height:90px;margin-top:4px"></textarea>'+
+    form.innerHTML='<textarea class="fb-c" maxlength="6000" placeholder="'+esc(hint||"What is the right answer? Write it as the AI should have (root cause, why, what to check, who fixes it). This is what it learns from.")+'" style="width:100%;height:90px;margin-top:4px"></textarea>'+
       '<div class="row" style="margin:4px 0 0"><input class="fb-n" maxlength="1000" placeholder="what was wrong (optional): e.g. said failed, it was PARTIAL" style="flex:1;min-width:160px"><button class="go fb-s">Save</button></div>';
     form.querySelector(".fb-s").addEventListener("click",function(){send("down",form.querySelector(".fb-c").value,form.querySelector(".fb-n").value)});
     form.querySelector(".fb-c").focus();

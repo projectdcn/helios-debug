@@ -27,7 +27,10 @@ SWITCH_RO = [   # (pattern, needs sudo)
      rf"{_NS}(?:\s+-d\s+all)?(?:\s+-i)?(?:\s+Ethernet\d+)?", False),
     (rf"show\s+mac{_NS}(?:\s+-p\s+Ethernet\d+|\s+-v\s+\d+)?", True),
     (rf"show\s+vlan\s+brief{_NS}", False),
-    (r"show\s+(?:version|platform\s+summary|system-memory|processes\s+summary|uptime|services)", False),
+    (r"show\s+(?:version|platform\s+(?:summary|psustatus|fan|temperature|syseeprom|firmware\s+status)|system-memory|"
+     r"processes\s+summary|uptime|services|environment|reboot-cause)", False),
+    (rf"show\s+(?:pfc\s+counters|queue\s+counters|pfcwd\s+stats|buffer_pool\s+watermark){_NS}", False),
+    (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?", False),
     (r"show\s+logging(?:\s+-f)?", True),
     (rf"show\s+lldp\s+(?:table|neighbors){_NS}", False),
     (rf"sonic-db-cli{_NS}\s+(?:APPL_DB|ASIC_DB|CONFIG_DB|STATE_DB|COUNTERS_DB)\s+(?:keys|hgetall|hget|exists|scan)\s+{_WORD}(?:\s+{_WORD})?", True),
@@ -40,7 +43,15 @@ COMPUTE_RO = [
     (r"ip\s+-br\s+(?:link|addr)", False),
     (r"uptime|free\s+-[mh]|df\s+-h|uname\s+-a", False),
     (r"lspci(?:\s+-[nvkD]+)?(?:\s+-s\s+[0-9a-f:.]+)?", False),
-    (r"journalctl\s+-k(?:\s+-n\s+\d+)?(?:\s+--no-pager)?", True),
+    (r"journalctl\s+(?:-k|-u\s+[A-Za-z0-9@_.-]+)(?:\s+-n\s+\d+)?(?:\s+--no-pager)?", True),
+    # any part of the tray, read-only: GPUs, RDMA NICs, the BMC through the host, services
+    (r"amd-smi\s+(?:list|static|metric|firmware|topology|xgmi|process|bad-pages|ras)(?:\s+-[A-Za-z]+|\s+--[a-z-]+|\s+-g\s+\d+)*", True),
+    (r"rocm-smi(?:\s+--show[a-z]+|\s+-[itucfPa]|\s+--json)*", True),
+    (r"ibv_devinfo(?:\s+-[vl])?(?:\s+-d\s+[A-Za-z0-9_]+)?|rdma\s+(?:link|dev)(?:\s+show)?", False),
+    (r"ipmitool\s+(?:sel\s+(?:list|elist|info)|sdr(?:\s+list|\s+elist)?|fru(?:\s+print)?|sensor(?:\s+list)?|"
+     r"chassis\s+status|mc\s+info|lan\s+print)", True),
+    (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?|systemctl\s+--failed(?:\s+--no-pager)?", False),
+    (r"lsmod|sensors|nvme\s+list|ethtool(?:\s+-[Sim])?\s+[A-Za-z0-9_.-]+", False),
 ]
 FORBIDDEN = re.compile(r"[;&`$<>\n\r\\]|\|\|")
 
@@ -72,7 +83,8 @@ GUIDE_SYSTEM_ADD = (
     'or, when the evidence (including the outputs of earlier steps [S1]..) is enough:\n'
     '{"done": true, "conclusion": "<root cause in two sentences, citing [E..] / [S..]>", "next": "<what to do and who>"}\n'
     "Each command must be read-only and exist on that node (switch trays: show ..., sudo sonic-db-cli ..., docker ps; "
-    "compute trays: sudo afmctl show ..., dmesg, ip -br link). One command, no ; && pipes except '| grep X' or '| tail -N'. "
+    "compute trays: sudo afmctl show ..., dmesg, ip -br link, sudo amd-smi metric / static, sudo ipmitool sel list, "
+    "ibv_devinfo, systemctl status <unit>). One command, no ; && pipes except '| grep X' or '| tail -N'. "
     "Do not repeat a command already run. At most 6 steps; conclude earlier when you can."
 )
 
@@ -152,8 +164,9 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None) -> d
     text, model = ai.chat(msgs, env, max_tokens=500)
     st = parse_step(text)
     st["model"] = model
-    if st.get("done"):
-        return {"done": True, "conclusion": str(st.get("conclusion") or ""), "next": str(st.get("next") or ""), "model": model}
+    if st.get("done"):          # remembered: a 👍 / 👎 on the conclusion teaches the guided mode (helios-slm)
+        return {"done": True, "conclusion": str(st.get("conclusion") or ""), "next": str(st.get("next") or ""), "model": model,
+                "answer_id": ai.remember(msgs, text, model, subject + " (step by step)")}
     node = str(st.get("node") or "").strip()
     out = {"done": False, "node": node, "command": str(st.get("command") or "").strip(), "why": str(st.get("why") or ""),
            "model": model, "allowed": False, "refused": None}
