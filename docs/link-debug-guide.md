@@ -437,7 +437,7 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | SNR | signal-to-noise ratio | `RX_SNR` per lane in the Broadcom shell; compare with healthy ports |
 | SONiC | Software for Open Networking in the Cloud | The switch operating system |
 | SSH | Secure Shell | Remote login to switches, trays and the jump host |
-| st1 to st6 | switch tray 1 to 6 | The six switches, 10.255.4.71 to 10.255.4.76 |
+| st1 to st6 | switch tray 1 to 6 | The six switches, 10.0.4.71 to 10.0.4.76 |
 | station | IFoE station | Two GPU ports that belong together: ports 2k and 2k + 1 form station k |
 | TC- / HC- | test case / health check | Case IDs in `full_rack_testplan.xlsx` |
 | UTC | Coordinated Universal Time | All times in this guide and in the logs |

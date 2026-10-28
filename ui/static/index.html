@@ -439,11 +439,11 @@ body.chat-open main{margin-right:min(460px,100vw)}
       names and addresses), and drafts the inventory. Check it, fill in what it could not know, save. Then the SSH access tab.</p>
     <div class="grid">
       <div><label for="nr-rack">Rack name</label><input id="nr-rack" placeholder="mr4"></div>
-      <div><label for="nr-sw">Switch tray address(es)</label><input id="nr-sw" placeholder="10.153.80.52"></div>
+      <div><label for="nr-sw">Switch tray address(es)</label><input id="nr-sw" placeholder="10.0.80.52"></div>
       <div><label for="nr-us">Switch user</label><input id="nr-us" value="admin"></div>
       <div><label for="nr-uc">Compute tray user</label><input id="nr-uc" placeholder="hpeadmin1"></div>
       <div><label for="nr-key">SSH key file (empty = this machine's default)</label><input id="nr-key" placeholder="~/.ssh/id_ed25519"></div>
-      <div><label for="nr-afm">AFM URL (empty = https://first switch)</label><input id="nr-afm" placeholder="https://10.153.80.52"></div>
+      <div><label for="nr-afm">AFM URL (empty = https://first switch)</label><input id="nr-afm" placeholder="https://10.0.80.52"></div>
       <div class="checks" style="align-items:end"><label><input type="checkbox" id="nr-useafm">ask AFM for tray names / addresses</label></div>
       <div id="nr-pw-box" class="hide"><label for="nr-afmpw">AFM password (this request only)</label><input id="nr-afmpw" type="password" autocomplete="off"></div>
     </div>

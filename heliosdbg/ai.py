@@ -6,7 +6,7 @@ The model is any OpenAI-compatible chat server (helios-slm's mlx_lm.server on a 
     HELIOS_AI_KEY    optional bearer key
     HELIOS_AI_NO_THINK  1: add Qwen3's '/no_think' (a hybrid reasoning model such as Qwen3-8B answers directly)
 The UI on the jump host reaches a model on your Mac through the same SSH session as the UI tunnel:
-    ssh -N -L 8780:localhost:8780 -R 8090:127.0.0.1:8090 -p 8059 tenant-hpe@<jump host>
+    ssh -N -L 8780:localhost:8780 -R 8090:127.0.0.1:8090 -p <port> <user>@<jump host>
 
 What the model sees is built here from the saved check (never from the rack live): the link's verdict, cause, evidence
 lines, its IFCP / VLAN / cable state, the chip's and switch's state, switch problems (forwarding entries without a

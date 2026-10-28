@@ -6,7 +6,7 @@ header, sent back). Only GETs follow. The password comes from the environment va
 
 Inventory (same block as helios-tests):
     afm:
-      url: https://10.153.80.52
+      url: https://10.0.80.52
       verify_tls: false          # self-signed controller certificate
       auth: {username: admin, password_env: HELIOS_AFM_PASSWORD, tenant: default}
 """
