@@ -51,3 +51,4 @@ def test_unsafe_reads_are_not_steps():
     assert ai.unsafe_text("find why it rebooted (log, PSUs)") is None
     assert ai.unsafe_text("2. reboot the switch") == "reboot"
     assert ai.unsafe_text("2. config reload") == "config reload"
+    assert ai.unsafe_text("1. config save (on st5)") == "config save"
