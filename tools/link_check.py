@@ -41,6 +41,7 @@ from heliosdbg.afmctl import Afmctl, parse_port_description  # noqa: E402
 from heliosdbg.inventory import load_inventory  # noqa: E402
 from heliosdbg.linkdiag import GPU_LEVEL  # noqa: E402
 from heliosdbg.parsers import parse_table  # noqa: E402
+from heliosdbg import reach  # noqa: E402
 from heliosdbg.rack import Rack, fan_out  # noqa: E402
 
 COUNTERS = ("RX_ERR", "RX_DRP", "RX_OVR", "TX_ERR", "TX_DRP", "TX_OVR")
@@ -324,6 +325,9 @@ def _not_checked(res) -> list[tuple[str, str, str, str]]:
     read means none of its links were checked (MR2 18 Oct: every login refused and the report said 'All links ok')."""
     def hint(err: str) -> str:
         e = err.lower()
+        acc = reach.classify(err)
+        if acc and acc["kind"] not in ("login_refused", "sudo"):
+            return f"{acc['what']}: {acc['next']}"
         if "authentication" in e or "permission denied" in e:
             return ("login refused: install your SSH key on it (ssh-copy-id) and set key_file, or export the "
                     "password_env variable the inventory names in this shell")
@@ -1370,9 +1374,18 @@ def health_cmd(a) -> int:
     print(f"node health of {inv.rack}: {len(sws)} switch(es), {len(trs)} compute tray(s) - read-only", flush=True)
     raw, nodes, findings, unreachable = {}, {}, [], []
 
+    def node_of(role, name):
+        return rack.switches[name] if role == "switch" else rack.computes[name]
+
+    def node_user(role, name):
+        return getattr(getattr(node_of(role, name), "host", None), "user", "") or ""
+
+    def node_host(role, name):
+        return getattr(getattr(node_of(role, name), "host", None), "host", "") or ""
+
     def one(item):
         role, name = item
-        node = rack.switches[name] if role == "switch" else rack.computes[name]
+        node = node_of(role, name)
         outs = health.collect_switch(node, drift=not a.no_drift) if role == "switch" else health.collect_compute(node)
         if all(health.missing(r) for r in outs.values()):     # SSH failed (rc 255 / exception) on every command
             raise RuntimeError(next((r.get("err") for r in outs.values() if r.get("err")), "") or "no answer over SSH")
@@ -1383,12 +1396,18 @@ def health_cmd(a) -> int:
             if err is not None:
                 unreachable.append(name)
                 nodes[name] = {"role": role, "error": str(err)[:300], "not_run": []}
+                acc = reach.classify(str(err), node_user(role, name), node_host(role, name))
+                nodes[name]["access"] = acc
                 findings.append(health.finding(name, role, "reach", "switch" if role == "switch" else "compute",
-                                               health.CRITICAL, f"{name} could not be checked: {str(err)[:160]}",
-                                               "the node did not answer over SSH (down, powered off, or no access)",
+                                               health.CRITICAL, f"{name} could not be checked: "
+                                               + (acc["what"] if acc else str(err)[:160]),
+                                               f"{acc['what']} ({acc['line']})" if acc else "the node did not answer "
+                                               "over SSH (down, powered off, or no access)", acc["next"] if acc else
                                                "ping it and check its BMC / console; the SSH access tab for keys",
                                                [str(err)[:300]]))
-                print(f"  {name}: NOT REACHED - {str(err)[:120]}", flush=True)
+                if acc:
+                    findings[-1]["owner"] = acc["owner"]
+                print(f"  {name}: NOT REACHED - {acc['what'] if acc else str(err)[:120]}", flush=True)
                 continue
             outs, fs = res
             raw[name] = outs

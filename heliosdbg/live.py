@@ -27,6 +27,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import reach
 from .afmctl import Afmctl
 from .transport import build_command, is_local
 
@@ -57,6 +58,13 @@ def wrap(cmd: str, max_s: float) -> str:
              f"trap 'kill -- -$P 2>/dev/null; kill $P 2>/dev/null' EXIT HUP TERM INT; read -r _")   # also on a hang-up
     return build_command(guard, sudo=True)
 
+
+
+def _why(e: Exception) -> dict:
+    """A follower's error: the access reason when SSH failed (login refused / no route ...), else the exception."""
+    acc = reach.classify(str(e))
+    return {"error": (f"{acc['what']}: {acc['line']}" if acc else f"{type(e).__name__}: {str(e)[:160]}"),
+            "access": acc}
 
 class Stream:
     """A command whose output is read line by line: locally (Popen, stdin a pipe we hold) or over the node's SSH
@@ -233,7 +241,7 @@ class LiveRack:
                 if not self.stop_ev.is_set():
                     raise RuntimeError("stream ended")
             except Exception as e:  # noqa: BLE001 - reported, retried
-                f.update(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}")
+                f.update(ok=False, **_why(e))
             finally:
                 if st is not None:
                     st.close()
@@ -257,7 +265,7 @@ class LiveRack:
                             self._set(k, "sw_admin", str(r.get("Admin", "")).lower() or None, source)
                     self.followers.setdefault(f"{name} re-read", {"kind": "re-read"}).update(ok=True, error=None)
                 except Exception as e:  # noqa: BLE001
-                    self.followers.setdefault(f"{name} re-read", {"kind": "re-read"}).update(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}")
+                    self.followers.setdefault(f"{name} re-read", {"kind": "re-read"}).update(ok=False, **_why(e))
         for (tray, bdf) in list(self.by_gpu):
             if tray not in self.rack.computes:
                 continue
@@ -265,7 +273,7 @@ class LiveRack:
                 self._read_gpu(tray, bdf, source)
                 self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=True, error=None)
             except Exception as e:  # noqa: BLE001
-                self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}")
+                self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=False, **_why(e))
         self.reconciles += 1
 
     def _loop(self) -> None:
@@ -300,7 +308,7 @@ class LiveRack:
                             self.note(f"{e.get('type')}: {e.get('message')}", "afm")
                     self.followers.setdefault("afm events", {"kind": "afm"}).update(ok=True, error=None)
                 except Exception as e:  # noqa: BLE001
-                    self.followers.setdefault("afm events", {"kind": "afm"}).update(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}")
+                    self.followers.setdefault("afm events", {"kind": "afm"}).update(ok=False, **_why(e))
             self.stop_ev.wait(1)
 
     def start(self) -> None:

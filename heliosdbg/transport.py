@@ -114,11 +114,23 @@ class CmdResult:
     def tail(self, n: int = 600) -> str:
         return (self.stderr.strip() or self.stdout.strip())[-n:]
 
+    @property
+    def access(self) -> dict | None:
+        """Why the node could not be reached (reach.classify) when ssh itself failed (rc 255), else None."""
+        if self.rc != 255:
+            return None
+        from .reach import classify
+        return classify(self.stderr)
+
 
 class CommandError(RuntimeError):
     def __init__(self, result: CmdResult):
         self.result = result
-        super().__init__(f"[{result.host}] rc={result.rc}: {result.cmd}\n{result.tail()}")
+        acc = result.access
+        if acc:
+            super().__init__(f"[{result.host}] {acc['what']}: {acc['line']}\n(rc={result.rc}: {result.cmd})")
+        else:
+            super().__init__(f"[{result.host}] rc={result.rc}: {result.cmd}\n{result.tail()}")
 
 
 class CommandTimeout(RuntimeError):
@@ -240,7 +252,9 @@ class SshTransport:
         if self.via_exec:
             h = self.host
             target = f"{h.user}@{h.host}" if h.user else h.host
-            remote = ("ssh -q -o BatchMode=yes -o ControlMaster=auto -o ControlPath=~/.ssh/helios-cm-%C "
+            # LogLevel=ERROR, not -q: -q also hides why a login failed (Permission denied / No route to host), which
+            # left only 'rc=255' to show (g02-g17 2 Nov); reach.classify() reads that message
+            remote = ("ssh -o LogLevel=ERROR -o BatchMode=yes -o ControlMaster=auto -o ControlPath=~/.ssh/helios-cm-%C "
                       f"-o ControlPersist=600 -o ConnectTimeout={int(self.connect_timeout)} -p {h.port} "
                       f"{shlex.quote(target)} {shlex.quote(remote)}")
         log.debug("[%s] $ %s", self.host.name, full)

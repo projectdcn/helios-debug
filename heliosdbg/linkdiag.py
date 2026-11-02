@@ -11,6 +11,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 
+from . import reach
 from .afmctl import Afmctl, parse_port_description
 from .parsers import parse_table
 from .rack import fan_out
@@ -483,7 +484,12 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
             return set_("down", "tray_unreachable", f"compute tray {ln.tray}: login refused (this machine's SSH key is not "
                         f"installed there)", OPERATOR, "Install the key on the tray (debug UI: SSH access tab - Check all, "
                         "the tray's password, Install key; or ssh-copy-id) and scan again. The links themselves are not judged.")
-        return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH", SITE,
+        acc = reach.classify(t["error"])
+        if acc and acc["kind"] in ("host_key", "sudo", "dns", "jump_session"):   # an access problem, not the tray
+            return set_("down", "tray_unreachable", f"compute tray {ln.tray}: {acc['what']}", OPERATOR,
+                        acc["next"][:1].upper() + acc["next"][1:] + ". The links themselves are not judged.")
+        return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH"
+                    + (f" ({acc['what']})" if acc else ""), SITE,
                     "Check the tray's power and BMC; every link of the tray is affected (one root cause).")
     if not ln.tray and getattr(ln, "_quarantined", None):
         name, reason = ln._quarantined
