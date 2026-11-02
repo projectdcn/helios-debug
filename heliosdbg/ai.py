@@ -92,7 +92,7 @@ SYSTEM_HEALTH = SYSTEM_BASE + GENERAL_MODE + HEALTH_MODE + FORMAT
 UNSAFE = re.compile(
     r"\b((?:flap|bounce|toggle)\s+(?:the\s+|a\s+|its\s+)?(?:fabric\s+)?(?:port|link|interface|ethernet\d+)\w*|"
     r"shut\s*(?:down)?\s+(?:the\s+)?(?:port|interface|link)s?|config\s+interface\s+\S+\s+(?:shutdown|startup)|"
-    r"ip\s+link\s+set\s+\S+\s+down|reboot\w*|power[\s-]*cycle\w*|config\s+(?:reload|load)\b|"
+    r"ip\s+link\s+set\s+\S+\s+down|reboot(?!ed\b|-cause)\w*|power[\s-]*cycle\w*|config\s+(?:reload|load)\b|"
     r"systemctl\s+(?:stop|restart|disable)|docker\s+(?:stop|restart|rm)|rm\s+-rf|sonic-clear\s+fdb|"
     r"(?:clear|flush)\s+(?:the\s+)?fdb|decommission\w*|afmctl\s+(?:reset|idle|disable)\w*|sonic-db-cli\s+\S+\s+del\b)\b",
     re.I)

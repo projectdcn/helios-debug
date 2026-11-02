@@ -43,3 +43,11 @@ def test_live_follower_error_carries_the_reason():
     from heliosdbg.live import _why
     w = _why(RuntimeError("[ct12] no route to host: off the network: ssh: connect to host 10.0.0.58 port 22: No route to host"))
     assert w["access"]["kind"] == "no_route" and w["error"].startswith("no route to host")
+
+
+def test_unsafe_reads_are_not_steps():
+    from heliosdbg import ai
+    assert ai.unsafe_text("1. show reboot-cause history (on st4)") is None
+    assert ai.unsafe_text("find why it rebooted (log, PSUs)") is None
+    assert ai.unsafe_text("2. reboot the switch") == "reboot"
+    assert ai.unsafe_text("2. config reload") == "config reload"
