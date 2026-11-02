@@ -421,6 +421,56 @@ Run on the compute tray. The amd-smi and afmctl commands need sudo.
 | Agent certificates | `openssl x509 -noout -enddate -in <pem>` for each `/opt/amd/afm/agent/sysconfig/config*/*.pem` | more than 30 days left | as above |
 | AFM's view of the compute nodes | AFM API, only when the AFM password is given for the run | every compute node admitted and healthy | AFM sees the node as not healthy (its agent, its GPUs or its admission): open the node in AFM and read its node agent's log on the switch that serves it |
 
+## When a node does not answer
+
+A node health check (or a link check, or Live) that cannot log in to a node names why, from the SSH error itself:
+
+| What it says | Means | Next |
+| --- | --- | --- |
+| login refused for &lt;user&gt; | the node answers but rejects the key for that user: the key was removed, the account changed, or the inventory names the wrong user | install the key again (Access to the rack: Install key) or set the right user in the inventory |
+| no route to host: off the network | the node is not on the network: powered off, OS down, or its management link | its BMC (below), then the management cable / switch port |
+| no answer (timed out) | nothing answered: powered off, hung, or a firewall | its BMC |
+| SSH refused | it answers, SSH is not listening: booting, or sshd stopped | wait, else the console on the BMC |
+| host key changed | reinstalled? the host key differs from the one known | `ssh-keygen -R <host>` on the machine that logs in (the jump host with via: exec) |
+| the jump host did not open a session | usually its limit on sessions at once (retried) | run large checks on the jump host itself |
+
+**Through the BMC.** A tray (or switch) that SSH cannot reach is asked through its BMC over Redfish (read-only GETs):
+the BMC runs on standby power and answers on its own network. Without the BMC password health only asks whether the
+BMC answers; with it (Node health: BMC view, this run only) it reads the power state, health, sensors and the event log:
+
+| BMC | Node over SSH | Means |
+| --- | --- | --- |
+| does not answer | does not answer | no power to the tray (feed, power shelf, PSUs) or its management network |
+| answers, power Off | does not answer | powered off - by someone, a power fault or a protective shutdown; the event log says which. Powering on CHANGES THE RACK |
+| answers, power On | does not answer | the OS hung, is booting, or its network is down: open the console on the BMC |
+| answers, login refused | - | the BMC user / password of the run is wrong |
+
+Inventory: `bmc:` (address) and `bmc_user:` per node or under `defaults:`. The password is typed per run, never stored.
+
+## Scale-out NICs (RDMA)
+
+The compute tray's RDMA NICs (AMD Pensando `ionic` on g02-g17) are checked by health too, read-only:
+
+| Check | Command | Healthy | If not |
+| --- | --- | --- | --- |
+| Port state | `rdma link show` | every port `ACTIVE` / `LINK_UP` (administratively disabled ports are ignored) | the NIC's own reason below |
+| Why a port is down | `sudo nicctl show port -b <card> -j` (each card; the tool reads them all in one session) | oper UP | `Transceiver removed` (optic state REMOVED): no optic or cable plugged in - site, not a NIC fault; no light / signal: the optic or cable, then the leaf switch port |
+| Link flaps, optics | the same | link-down events 3 or fewer, optic below its warning temperature | a marginal optic, cable or leaf port; airflow |
+| Drops / errors | `ethtool -S <netdev>` (hw_rx/tx_dropped, rx_over / missed errors, tx_aborted, rx_csum) | 0 | counters since boot: read again in a few minutes - growing means a live problem (congestion without PFC / ECN, a bad link) |
+| Firmware | `nicctl show port` (the card list) | one version per kind of NIC on a tray, the same on every tray | the NIC owner updates them to one version (CHANGES THE TRAY) |
+
+## Health over time and the incident brain
+
+- Each health run is compared with the rack's previous one: **new**, **gone**, and **grew** (the same finding with a
+  bigger number: ECC count, disk %, CRM %), per node and only over nodes checked both times. The report, the UI and
+  `health-history.jsonl` keep it.
+- `link_check.py health --every 30` repeats the check every 30 minutes; `--keep 48` (default) keeps older runs as their
+  health.json only.
+- `--incidents http://10.83.2.15:8443` sends the new findings to the AIOps incident API (the incident brain explains,
+  groups and keeps them); the same finding sent again replaces its incident.
+- Each finding in the UI has a **ticket** for its owner (facts only) and an **evidence.zip** (the ticket, the finding and
+  that node's raw outputs).
+
 ## Debug a node with the AI
 
 For a problem the health check does not name, use **Debug a node** in the web UI (or the **Debug &lt;node&gt;** button on a health finding): describe the symptom and the node, and the helios model proposes one read-only command at a time. You click Run, the output goes back to the model, and it proposes the next command until it names the cause.
@@ -431,17 +481,21 @@ For a problem the health check does not name, use **Debug a node** in the web UI
 
 ## Known node issues on g02-g17
 
-From the read-only health check of 2 Nov 2026. Check here first: a finding on this list is not new.
+From the read-only health checks of 2 Nov 2026. Check here first: a finding on this list is not new.
 
 | Where | Finding | Status |
 | --- | --- | --- |
-| CT15 | not reachable (no ping, no SSH) | tray down; site to check power and BMC |
+| CT15 | not reachable (no ping, no SSH) in the morning check | answered again at 18:40 UTC (see below) |
 | CT16 | amd-smi cannot read the GPUs | open: driver / amd-smi state on the tray |
 | 16 of 17 reachable trays | corrected machine-check errors in the kernel log | rack-wide, corrected only: watch for uncorrected ones |
 | CT10 to CT13, CT16 to CT18 | RDMA NIC ports `POLLING` (no link) | scale-out cabling or leaf ports; not the scale-up fabric |
 | CT08, CT09 | GPUs in use (alltoall\_perf) | a test workload, not a fault; expect it to affect timings |
 | st1 | hardware watchdog not armed | switch owner to decide |
 | switches | orchagent PHY `TEMP_LIST` syslog messages repeated | known noisy message; grouped as a warning |
+| st1 to st6 | new SSH logins as `tenant_hpe` refused (2 Nov ~17:10 UTC; `admin` works) | key or account changed on the switches: who changed it? until then switch checks fail with "login refused for tenant_hpe" |
+| CT12, CT15 | no route to host at ~17:10 UTC 2 Nov, BMCs answering; both answered again at 18:40 UTC | came back - CT12 then had 2 failed units (sc-munged, sc-palsd) |
+| CT10 to CT13, CT15 to CT18 | AI NIC ports POLLING: the NIC says `Transceiver removed` on every one | no optics in the scale-out ports - cabling not done; site |
+| 10 of 17 trays | AI NICs on two firmware versions on the same tray (1.130.5-a-7 and 1.130.8-a-5, four each); 6 trays all 1.130.8-a-5 | NIC owner to pick one version |
 
 ## Known link issues on g02-g17
 
@@ -514,6 +568,7 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | ASIC | application-specific integrated circuit | A switch chip; each switch has two, `asic0` and `asic1`, each its own SONiC namespace |
 | bcmcmd, bsh, LTSW / SDKLT | Broadcom shell, its logical-table shell, the SDK generation of these chips | Read the ASIC's port state directly (`lt <TABLE> lookup`) |
 | BDF | bus:device.function (PCI address, with domain) | A GPU's PCI address on the tray, e.g. `0004:01:00.1` |
+| BMC | baseboard management controller | A node's own management chip on standby power, with its own network address |
 | CONFIG\_DB | SONiC configuration database | Holds port descriptions and VLANs; read with `sonic-db-cli` |
 | CRM | critical resource monitor | SONiC's count of the ASIC tables (routes, FDB, ACL, next hops): used and available |
 | CT | compute tray | CT01 to CT18; CT n is AFM slot n - 1 (CT05 = slot 4) |
@@ -531,6 +586,7 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | MCE | machine-check exception | The CPU reporting a hardware error (`[Hardware Error]` in the kernel log), corrected or not |
 | PAM4 | 4-level pulse amplitude modulation | The line coding of these 400G lanes; it has three eyes, hence three `EYE_UP` values |
 | pmon | platform monitor (container) | Runs the platform daemons: psud (PSUs), thermalctld, xcvrd (transceivers), ledd, syseepromd, pcied |
+| Redfish | the DMTF BMC API (HTTPS, JSON) | How health reads a BMC: power state, health, sensors, event log - GETs only |
 | PSU | power supply unit | Two or more per switch, for redundancy |
 | PCI | Peripheral Component Interconnect (Express) | The bus the GPUs sit on |
 | PCS | physical coding sublayer | Above the SerDes: alignment, FEC framing; reports local / remote faults |
@@ -539,6 +595,7 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | RAS | reliability, availability, serviceability | The GPU's error reporting (`amd-smi ras`) |
 | RDMA | remote direct memory access | The scale-out NICs on the compute trays (`rdma link show`), not the scale-up fabric |
 | Rx / Tx, RX\_ERR / TX\_ERR | receive / transmit, and their error counters | Port counters in `show interfaces counters` |
+| SEL | system event log | The BMC's log of hardware events (power, thermal, memory, PCIe) |
 | SerDes | serializer / deserializer | The ASIC's high-speed transmitter and receiver per lane |
 | SNR | signal-to-noise ratio | `RX_SNR` per lane in the Broadcom shell; compare with healthy ports |
 | SONiC | Software for Open Networking in the Cloud | The switch operating system |

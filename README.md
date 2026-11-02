@@ -15,6 +15,14 @@ Debug tools for AMD Helios racks - the scale-up fabric, SONiC switch trays, comp
   the password, AFM's view of the compute nodes). One finding per problem - area, owner, next step, evidence - and the
   same finding on many nodes as one rack-wide finding; a check whose command is missing or fails is listed as not
   checked, never as healthy. Read-only.
+  Platforms (`heliosdbg/platforms/`): what is checked on a kind of node is one module - `sonic`, `afm` (switch + tray +
+  AFM's API view), `amd_gpu`, `linux`, `rdma` (scale-out NICs: why a port is down from the NIC's own `nicctl`, optics,
+  flaps, drop counters, firmware mixed on a tray or different between trays). A node gets its role's defaults or the
+  inventory's `platforms: [linux, rdma]`; a new GPU vendor or switch OS is a new module. The core is `heliosdbg/checks.py`.
+  A node SSH cannot reach is asked through its **BMC** (Redfish, `heliosdbg/bmc.py`): powered off with the event log,
+  on but the OS silent, or the BMC silent too (no power / management network). Every access failure says why
+  (`heliosdbg/reach.py`): login refused for the user, no route, timed out, SSH refused, host key changed, the jump host's
+  session limit.
 - **Debug a node** (web UI): describe a symptom on any node; the AI proposes one read-only command at a time (allow-list
   per kind of node, including the health commands), you click Run, it reads the output - until it names the cause.
 - **Debug guide** (`docs/link-debug-guide.md`, `docs/link-debug-guide.html` to share; regenerate with `python3 tools/md_to_html.py docs/link-debug-guide.md`): how to isolate a link problem by hand, layer by layer, with every
@@ -59,11 +67,25 @@ password in the file. Rack behind a bastion: `transport.jump`. The compute tray 
 .venv/bin/python tools/link_check.py path --inventory inv.yaml --src ct03 --src-bdf 0004:01:00.1 --dst-acc 8 --ports 25,26
 .venv/bin/python tools/link_check.py bcm --inventory inv.yaml --switch st6 --ports Ethernet257,Ethernet261
 .venv/bin/python tools/link_check.py health --inventory inv.yaml [--only switches|trays] [--switches st1] [--trays ct07] [--no-drift]
+.venv/bin/python tools/link_check.py health --inventory inv.yaml --every 30 --incidents http://10.83.2.15:8443
 ```
 
 - `health`: report.html / report.txt / health.json + raw/outputs.json.gz under `results/link-check/<rack>/health-<time>/`;
   exit 1 when there are findings. Thresholds: `thresholds: {health: {disk_warn: 85, crm_warn: 85, gpu_hot: 100, ...}}`
-  in the inventory. The AI (Ask / step by step) reads a health result as evidence, for the whole rack or one node.
+  in the inventory. The AI (Ask / step by step) reads a health result as evidence, for the whole rack or one node, with
+  a health prompt (each finding in its own area, the health commands).
+  - BMC view: inventory `bmc:` (address) and `bmc_user:` per node or under `defaults:`; the password from
+    `$HELIOS_BMC_PASSWORD` (or `_<NODE>`; the UI's BMC view field, this run only) - never in the inventory. Through a
+    jump host `curl` runs there with the login on stdin. Without the password only the BMCs of nodes SSH did not reach
+    are asked whether they answer. `--no-bmc` skips it.
+  - Over time: each run is compared with the rack's previous one (new / gone / grew, per node, over nodes checked both
+    times) in report.txt, report.html and the UI; `health-history.jsonl` keeps one line per run. `--every 30
+    [--count N]` repeats it; `--keep 48` (default) thins older runs to their health.json - mind a small disk.
+  - `--incidents http://10.83.2.15:8443` sends the new findings (critical first, `--incidents-max 10`, or all with
+    `--incidents-all`) to the AIOps incident API (helios-slm): the finding as the alert, its outputs as evidence, an id
+    from the rack and the finding so the next run replaces it.
+  - Per finding in the UI: **ticket** (Markdown for its owner, every fact from the check) and **evidence.zip** (the
+    ticket, the finding, its node's raw outputs only, report.html); `/api/health/ticket`, `/api/bundle?finding=N`.
 
 - `scan`: every link; counters sampled twice (`--interval`, 30 s) so only growing errors count; patterns across
   problem links (several on one GPU, the same GPU position on many trays, adjacent ports on one ASIC); cabling checked
@@ -148,7 +170,10 @@ On your own machine: `python3 -m ui` in this repo (inventories from `inventory/`
 ## Layout
 
 ```
-heliosdbg/   linkdiag.py (join + root cause), bcm.py (Broadcom shell view), sonic.py / afmctl.py / parsers.py (read and parse), inventory.py,
+heliosdbg/   health.py (node health) over checks.py (core) and platforms/ (sonic, afm, amd_gpu, linux, rdma), bmc.py (Redfish),
+             reach.py (why a node could not be reached), history.py (health over time), incidents.py (to the incident API),
+             ticket.py / bundle.py (tickets and evidence zips),
+             linkdiag.py (join + root cause), bcm.py (Broadcom shell view), sonic.py / afmctl.py / parsers.py (read and parse), inventory.py,
              transport.py (SSH, jump host), rack.py, compute.py, afm.py (read-only AFM client, standard library),
              live.py (live mode), term.py (browser terminals), config_view.py (Config tab), ai.py (AI advice)
 ui/          server.py (web UI, standard library), access.py, static/index.html, static/vendor/xterm/ (terminal emulator)
