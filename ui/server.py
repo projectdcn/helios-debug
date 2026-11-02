@@ -1123,10 +1123,29 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(404, {"error": "the debug guide is not installed"})
                 return self._send(200, g.read_bytes(), "text/html; charset=utf-8",
                                   {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'"})
+            if u.path == "/api/health/ticket":
+                from heliosdbg import ticket
+                run = _result_dir(st, (q.get("path") or [""])[0])
+                if not (run / "health.json").is_file():
+                    raise BadRequest("not a node health run")
+                try:
+                    md = ticket.health_finding(json.loads((run / "health.json").read_text()), int((q.get("i") or ["-1"])[0]),
+                                               f"results/{run.relative_to(st.results_dir)}/report.html")
+                except (IndexError, ValueError) as e:
+                    raise BadRequest(str(e)) from None
+                return self._send(200, md.encode(), "text/markdown; charset=utf-8")
             if u.path == "/api/bundle":
                 from heliosdbg import bundle
                 rel = (q.get("path") or [""])[0]
                 run = _result_dir(st, rel)
+                if (q.get("finding") or [""])[0].isdigit() and (run / "health.json").is_file():
+                    i = int(q["finding"][0])
+                    try:
+                        data, _stats = bundle.build_finding(run, i)
+                    except IndexError:
+                        raise BadRequest(f"finding {i}: not in this check") from None
+                    return self._send(200, data, "application/zip",
+                                      {"Content-Disposition": f'attachment; filename="{run.parent.name}-{run.name}-finding-{i + 1}.zip"'})
                 data, _stats = bundle.build(run)
                 return self._send(200, data, "application/zip",
                                   {"Content-Disposition": f'attachment; filename="{run.parent.name}-{run.name}.zip"'})

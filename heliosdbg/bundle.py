@@ -27,6 +27,22 @@ def redact(text: str) -> tuple[str, int]:
     return SECRET.sub(sub, text), n
 
 
+def _redact_json(data: bytes) -> tuple[bytes, int]:
+    """Redact inside each string of a JSON file - the text pattern would eat the closing quotes and break it."""
+    count = 0
+
+    def clean(v):
+        nonlocal count
+        if isinstance(v, str):
+            t, n = redact(v)
+            count += n
+            return t
+        if isinstance(v, dict):
+            return {k: clean(x) for k, x in v.items()}
+        return [clean(x) for x in v] if isinstance(v, list) else v
+    return json.dumps(clean(json.loads(data)), indent=1).encode(), count
+
+
 def ticket(run: Path) -> str:
     tool = run.name.split("-", 1)[0]
     lines = [f"Helios scale-up link debug - {tool} on rack {run.parent.name}, {run.name.split('-', 1)[-1]} UTC", ""]
@@ -61,6 +77,13 @@ def build(run: Path) -> tuple[bytes, dict]:
                     data, stats["redacted"] = gzip.compress(txt.encode()), stats["redacted"] + n
                 except OSError:
                     pass
+            elif f.suffix == ".json":
+                try:
+                    data, n = _redact_json(data)
+                except ValueError:                       # not JSON after all: as text
+                    txt, n = redact(data.decode("utf-8", "replace"))
+                    data = txt.encode()
+                stats["redacted"] += n
             elif f.suffix in TEXT:
                 txt, n = redact(data.decode("utf-8", "replace"))
                 data, stats["redacted"] = txt.encode(), stats["redacted"] + n
@@ -70,4 +93,40 @@ def build(run: Path) -> tuple[bytes, dict]:
         z.writestr(f"{root}/BUNDLE_INFO.json", json.dumps({"run": root, "rack": run.parent.name,
                                                            "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                                                            **stats}, indent=1))
+    return buf.getvalue(), stats
+
+
+def build_finding(run: Path, i: int) -> tuple[bytes, dict]:
+    """(zip bytes, stats) for one finding of a node health run: ticket.md, the finding, the raw outputs of its node(s)
+    only, report.html - what its owner needs and nothing about the other nodes."""
+    from .ticket import health_finding
+    res = json.loads((run / "health.json").read_text())
+    f = (res.get("findings") or [])[i]
+    nodes = set(f.get("nodes") or [f["node"]])
+    buf, stats = io.BytesIO(), {"files": 0, "redacted": 0}
+    root = f"{run.name}-finding-{i + 1}"
+
+    def put(name, text, raw=False):
+        txt, n = (text, 0) if raw else redact(text)
+        z.writestr(f"{root}/{name}", txt)
+        stats["files"] += 1
+        stats["redacted"] += n
+
+    def clean(v):                 # redact inside each string, so the JSON stays JSON
+        if isinstance(v, str):
+            t, n = redact(v)
+            stats["redacted"] += n
+            return t
+        if isinstance(v, dict):
+            return {k: clean(x) for k, x in v.items()}
+        return [clean(x) for x in v] if isinstance(v, list) else v
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        put("ticket.md", health_finding(res, i, "report.html"))
+        put("finding.json", json.dumps(clean(f), indent=1), raw=True)
+        raw = run / "raw" / "outputs.json.gz"
+        if raw.is_file():
+            outs = json.loads(gzip.decompress(raw.read_bytes()))
+            put("outputs.json", json.dumps(clean({n: outs[n] for n in sorted(nodes) if n in outs}), indent=1), raw=True)
+        if (run / "report.html").is_file():
+            put("report.html", (run / "report.html").read_text(errors="replace"))
     return buf.getvalue(), stats

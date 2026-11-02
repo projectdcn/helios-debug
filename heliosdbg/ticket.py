@@ -158,3 +158,48 @@ def ai_paragraphs(ai, scan: dict, audience: str, probs: list[dict], env=None) ->
         summary, asks = re.sub(r"\s+", " ", text).strip()[:1200], []
     ask = "\n".join(f"- {x.lstrip('-* ').strip()}" for x in asks[:6])
     return {"summary": summary, "ask": ask, "model": model, "unsafe": ai.unsafe_text(summary + " " + ask)}
+
+
+# ------------------------------------------------------------------ node health: one finding, for its owner
+HEALTH_OWNERS = {"network": "the switch / SONiC owner (network team)", "hardware": "hardware (HPE switch / AMD tray)",
+                 "AFM": "AMD (AFM team)", "compute": "the compute tray / GPU owner", "site": "site / cabling",
+                 "operator": "the rack operator", "jump host": "the jump host's owner"}
+
+
+def health_finding(res: dict, i: int, report_url: str = "") -> str:
+    """One health finding as a ticket (Markdown), every fact from the check: what, where, the evidence lines and the
+    command that showed them, the rule's cause and next step, what changed since the previous check, what on that
+    node could not be checked. Nothing here is written by a model."""
+    fs = res.get("findings") or []
+    if not 0 <= i < len(fs):
+        raise IndexError(f"finding {i}: the check has {len(fs)}")
+    f = fs[i]
+    nodes = f.get("nodes") or [f["node"]]
+    ch = res.get("changes") or {}
+    new = any(x.get("node") in nodes and x.get("check") == f["check"] for x in ch.get("new") or [])
+    grew = [g for g in ch.get("grew") or [] if g.get("node") in nodes and g.get("check") == f["check"]]
+    L = [f"# [{res.get('rack')}] {f['node']}: {f['what']}", "",
+         f"For: {HEALTH_OWNERS.get(f['owner'], f['owner'])}  ",
+         f"Rack: {res.get('rack')} - node health check of {res.get('time')} UTC (read only)  ",
+         f"Severity: {f['severity']} - area: {f['area']} - check: {f['check']}", "",
+         "## What was found", f["what"], "", "## Likely cause (from the check's rule)", f["cause"], "",
+         "## Evidence", f"Command: `{f.get('command') or f['check']}`" + (f" on {', '.join(nodes)}" if nodes else ""), "", "```"]
+    L += [str(x) for x in f.get("evidence") or []] + ["```", ""]
+    L += ["## Next step", f["next"], ""]
+    if ch.get("since"):
+        compared = ch.get("compared")
+        seen = compared is None or all(n in compared for n in nodes)
+        L += ["## Since the previous check", f"Previous check: {ch['since']} UTC - "
+              + ("this finding is NEW since then" if new else "this finding was there already" if seen
+                 else "these nodes were not part of it (not compared)")]
+        L += [f"- grew on {g['node']}: {g['before']} -> {g['now']}" for g in grew]
+        L += [""]
+    skipped = {n: (res.get("nodes") or {}).get(n, {}).get("not_run") for n in nodes}
+    skipped = {n: v for n, v in skipped.items() if v}
+    if skipped:
+        L += ["## Not checked on these nodes (command missing or failed)"] + [f"- {n}: {', '.join(v)}" for n, v in skipped.items()] + [""]
+    if report_url:
+        L += [f"Full report: {report_url}", ""]
+    L += [f"_Written {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())} by helios-debug from the check's own outputs; "
+          "nothing on the rack was changed._"]
+    return "\n".join(L) + "\n"

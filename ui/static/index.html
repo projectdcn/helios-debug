@@ -879,11 +879,18 @@ function renderHealth(box,d,out){
     "</td><td><b>"+esc(f.what)+'</b><div class="mut" style="font-size:12px">'+esc(f.cause)+'</div><div style="font-size:12px">Next: '+esc(f.next)+
     '</div><details><summary class="mut" style="font-size:12px">evidence</summary><pre style="max-height:24vh">'+esc((f.evidence||[]).join("\n"))+"</pre>"+
     '<div class="mut" style="font-size:11px">'+esc(f.command||"")+"</div></details></td><td>"+esc(f.owner)+
-    '</td><td><button class="sec h-ask" data-i="'+i+'" title="the AI on this node\'s findings: root cause, how to debug, step by step">Debug '+esc(f.node.replace(/^AFM /,""))+"</button></td></tr>"}).join("");
+    '</td><td><button class="sec h-ask" data-i="'+i+'" title="the AI on this node\'s findings: root cause, how to debug, step by step">Debug '+esc(f.node.replace(/^AFM /,""))+"</button>"+
+    '<div style="font-size:12px;margin-top:4px"><a href="#" class="h-tk" data-i="'+i+'" title="a ticket for '+esc(f.owner)+': the facts of this finding, ready to paste">ticket</a> · '+
+    '<a href="/api/bundle?path='+encodeURIComponent(out)+"&finding="+i+'" title="ticket, this finding, its node\'s raw outputs, report">evidence.zip</a></div></td></tr>'}).join("");
   var nr=Object.keys(d.nodes||{}).filter(function(n){return (d.nodes[n].not_run||[]).length}).map(function(n){return esc(n)+": "+esc(d.nodes[n].not_run.join(", "))});
   box.innerHTML=head+(fs.length?'<div class="wrap"><table><thead><tr><th>Severity</th><th>Node</th><th>Area</th><th>Finding</th><th>Owner</th><th></th></tr></thead><tbody>'+rows+"</tbody></table></div>":"")+
     (nr.length?'<p class="mut" style="font-size:12px">Not checked (command missing or failed on the node): '+nr.join("; ")+"</p>":"")+'<div id="h-ai"></div>';
   aiPanel($("h-ai"),{path:out,rack:rack,label:"node health "+out.split("/").pop()});
+  box.querySelectorAll(".h-tk").forEach(function(a){a.addEventListener("click",function(ev){ev.preventDefault();
+    fetch("/api/health/ticket?path="+encodeURIComponent(out)+"&i="+a.dataset.i).then(function(r){return r.text()}).then(function(md){
+      $("h-ai").innerHTML='<p><b>Ticket</b> (facts from the check; copy and paste) <button class="sec" id="h-tk-copy">Copy</button></p><textarea id="h-tk-text" rows="18" style="width:100%;font:12px monospace"></textarea>';
+      $("h-tk-text").value=md;$("h-tk-copy").addEventListener("click",function(){$("h-tk-text").select();try{navigator.clipboard.writeText(md)}catch(e){}});
+      $("h-ai").scrollIntoView({behavior:"smooth",block:"nearest"})})})});
   box.querySelectorAll(".h-ask").forEach(function(b){b.addEventListener("click",function(){var f=fs[+b.dataset.i],node=f.node;
     aiPanel($("h-ai"),{path:out,rack:rack,spec:{path:out,node:node},label:"the health of "+node});$("h-ai").scrollIntoView({behavior:"smooth",block:"nearest"})})});
 }

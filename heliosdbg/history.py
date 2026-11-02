@@ -61,7 +61,7 @@ def compare(prev: dict | None, res: dict) -> dict:
     return {"since": prev.get("time"), "since_dir": prev.get("_dir"),
             "new": [now[k] for k in now.keys() - before.keys()],
             "gone": [before[k] for k in before.keys() - now.keys() if before[k].get("node") not in unreached],
-            "grew": grew, "same": len(now.keys() & before.keys()),
+            "grew": grew, "same": len(now.keys() & before.keys()), "compared": sorted(both),
             "not_compared": len(now_all) - len(now)}
 
 
