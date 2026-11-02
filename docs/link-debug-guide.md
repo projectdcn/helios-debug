@@ -1,6 +1,6 @@
 # Helios Debug Guide
 
-18 Oct 2026
+2 Nov 2026
 
 A scale-up link has three ends to check: the switch ASIC port, the cable and optics between, and the GPU's IFoE port on the compute tray, with AFM and IFCP layered on top. Work from the bottom up: physical link on both ends, then the IFCP session, then what AFM reports, then an L2 ping. Stop at the first layer that disagrees. Abbreviations are explained at the end, under Abbreviations and terms.
 
@@ -12,6 +12,8 @@ A scale-up link has three ends to check: the switch ASIC port, the cable and opt
 4. **Does an L2 ping pass on every port?** No: Data path.
 
 Each question is one section below; a "no" sends you to the layer at fault, and only a link that passes all four is healthy.
+
+When the problem is not one link (many links, a whole switch or tray, a failure with every link up), check the nodes first: Node health, then SONiC switch OS, Switch platform, Compute trays and GPUs, and AFM health below.
 
 ## Run the link check tool first
 
@@ -344,6 +346,103 @@ When the layer checks pass and traffic still fails, or a fault comes and goes, t
 | Swap the cable or cartridge | move it to a known-good port pair (on site) | the fault follows the part, or stays with the port |
 | GPU-side loopback | `afmctl show device` reports `loopback_mode`; ask AMD how to use it | isolates the GPU and tray from the cable and switch |
 
+## Node health: beyond the links
+
+A link can be fine while the node around it is not: a SONiC container that stopped, a full ASIC table, a failed fan, a GPU the OS cannot see, an expired AFM certificate. Check node health when a problem is not one link (several links, a whole switch or tray, a test that fails with every link up), or before you trust a rack for a run.
+
+```
+python tools/link_check.py health --inventory <inventory>
+python tools/link_check.py health --inventory <inventory> --switches st1,st2 --trays ct13
+python tools/link_check.py health --inventory <inventory> --only switches --no-drift
+```
+
+It runs the read-only commands of the four sections below on every switch tray and compute tray (`--only switches|trays` to limit it, `--no-drift` to skip the running-vs-saved configuration compare, `--no-afm` to skip AFM's view), and writes `health.json`, `report.txt`, `report.html` and the raw outputs to `results/link-check/<rack>/health-<UTC time>/`. It exits 1 when it has findings. In the web UI it is the **Node health** tab.
+
+How to read the report:
+
+- **One finding per problem:** node, area, severity (critical / warning), what is wrong, the likely cause, the owner (network, hardware, compute, AFM), the next read-only step, the evidence lines and the command that showed them.
+- **Rack-wide findings:** the same finding on 3 or more nodes (and at least a fifth of that kind of node) is reported once for the rack, with the nodes listed: it is a shared cause (an image, a setting, AFM), not that many separate faults.
+- **Not checked is not healthy:** a command that is missing on that node, refused, or fails without output is listed under *not checked*, never counted as passing. A node where nothing could run is listed as *not reached*.
+- **Thresholds:** disk 85 % warning / 95 % critical, memory available below 10 % / 5 %, CRM tables 85 % / 98 %, GPU hotspot 100 C, certificates expiring within 30 days. The inventory's `thresholds: health:` block overrides them.
+
+Every command below is what the tool runs, so you can run the same one by hand on the node to look closer.
+
+## SONiC switch OS
+
+Run on the switch tray (`ssh admin@<switch>`). Commands with `-n asicN` take each ASIC namespace (`asic0`, `asic1`).
+
+| Check | Command | Healthy | If not |
+| --- | --- | --- | --- |
+| System health | `sudo show system-health summary` | `System status summary ... OK` | read `sudo show system-health detail` for the item it names; the other findings on the switch usually say why |
+| Containers | `sudo docker ps -a --format '{{.Names}}\t{{.Status}}'` | every critical container (pmon, database, swss, syncd, lldp, bgp, teamd, radv, snmp, gnmi / telemetry, per ASIC where numbered) `Up` | a container `Exited` or `Restarting`: `sudo docker logs --tail 100 <name>`; what it serves is stale (swss / syncd: no new routes, FDB or port changes) |
+| Restarts | `sudo docker inspect -f '{{.Name}} {{.RestartCount}} {{.State.StartedAt}}' $(sudo docker ps -q)` | restart count 0, started at boot | a container that started after the switch booted crashed or was restarted: match the time in the syslog |
+| Critical processes | `sudo docker exec <container> sh -c 'cat /etc/supervisor/critical_processes; echo ===; supervisorctl status'` | every critical program `RUNNING`; in pmon the platform daemons (psud, thermalctld, xcvrd, ledd, syseepromd, pcied ...) running | a program `EXITED`, `FATAL` or `BACKOFF`: what it serves goes stale or N/A (psud: PSU status N/A, thermalctld: temperatures, xcvrd: transceivers, orchagent: no new ASIC programming) |
+| CRM tables | `sudo crm show resources all` | every table well below full | a table at 85 % or more: new entries (routes, FDB, ACL, next hops) fail with `SAI_STATUS_TABLE_FULL`; find what fills it before adding more |
+| Disk | `df -P / /var/log /host` | below 85 % | `sudo du -xh <mount> --max-depth=2 \| sort -h \| tail`; a full `/var/log` stops logging, a full `/host` blocks image installs |
+| Memory | `grep -E '^(MemTotal\|MemAvailable):' /proc/meminfo` | 10 % or more available | a process leaks or the switch is overloaded: `top -o %MEM` |
+| Core files | `sudo ls -1 /var/core` | empty | a process crashed (the file name says which and when): match the time with the reboot history and syslog; attach the core to a SONiC issue |
+| Reboot cause | `show reboot-cause` and `show reboot-cause history` | user issued, warm / fast reboot, config reload | kernel panic, watchdog, power loss, hardware, thermal or unknown: the switch rebooted by itself; read the syslog before that time, and for a power loss the PSUs |
+| Syslog | `sudo grep -hE ' (ERR\|CRIT\|ALERT\|EMERG) ' /var/log/syslog.1 /var/log/syslog \| tail -n 400` | few error lines | the tool groups the lines by message: orchagent / SAI errors, syncd failures, out of memory, platform daemon errors, platform alarms, hardware / disk errors. Crashes, `TABLE_FULL`, out-of-memory and kernel panics are critical; a repeated benign message is a warning |
+| Configuration drift | `sonic-cfggen -n asicN -d --print-data` against `sonic-cfggen -n asicN -j /etc/sonic/config_dbN.json --print-data` | PORT, VLAN, VLAN\_MEMBER, PORT\_QOS\_MAP, PFC\_WD, BUFFER\_PG, BUFFER\_QUEUE the same | someone changed the running configuration and did not save it (lost on the next reload), or saved without applying; ask who changed it before saving or reloading |
+
+## Switch platform
+
+| Check | Command | Healthy | If not |
+| --- | --- | --- | --- |
+| Power supplies | `show platform psustatus` | every PSU `OK` | `NOT OK` / `NOT PRESENT`: a PSU failed, is unplugged or lost its input, and the switch runs without redundancy (hardware owner, on site). `N/A` on every PSU is usually psud stopped in pmon, not the PSUs |
+| Fans | `show platform fan` | every fan present and `OK` | replace or reseat the fan on site; watch the temperatures meanwhile |
+| Temperatures | `show platform temperature` | every sensor below its high threshold | above high: airflow, a fan, or the room; at critical the switch protects itself by shutting down |
+| Voltages | `show platform voltage` | every rail within its thresholds | a PSU or the board's regulator: read `show platform psustatus`; hardware owner |
+| Hardware watchdog | `sudo watchdogutil status` | `Armed` | not armed: if the switch OS hangs, nothing restarts it. Read `systemctl status watchdog-control` (or the platform's watchdog service); arming it is a change for the switch owner |
+
+## Compute trays and GPUs
+
+Run on the compute tray. The amd-smi and afmctl commands need sudo.
+
+| Check | Command | Healthy | If not |
+| --- | --- | --- | --- |
+| GPUs visible | `sudo amd-smi list --json` | every GPU of the tray listed (four on these trays) | amd-smi fails: the amdgpu driver is not loaded, the GPUs are not initialised, or amd-smi does not match the driver (`sudo dmesg \| grep -i amdgpu`). Fewer GPUs: one is not seated, failed or lost on the PCIe bus (`sudo lspci -d 1002:`, then the BMC event log) |
+| GPU memory ECC | `sudo amd-smi metric --ecc --json` | no uncorrectable errors, correctable not growing | uncorrectable: jobs on that GPU crash, pages may be retired (`sudo amd-smi bad-pages -g <n>`, `sudo amd-smi ras`); the GPU owner decides on a replacement. Many correctable: watch whether it grows |
+| PCIe link | `sudo amd-smi metric --pcie --json` | width and speed at their maximum | trained below its maximum: a riser, seating or the slot (`sudo lspci -vv -s <bdf> \| grep -i lnk`); hardware owner reseats |
+| Use, power, temperature | `sudo amd-smi metric --usage --power --temperature --mem-usage --json` | hotspot below 100 C | hot: airflow, a fan or cooling; read the tray's BMC thermal sensors |
+| Processes | `sudo amd-smi process --json` | no process when the GPUs should be idle | a workload is on the GPUs: tests and jobs share them, so results and timings are affected; find its owner before a test run |
+| AFM state on the tray | `sudo afmctl show device --json` | every GPU `config_phase` ACTIVE | not ACTIVE: AFM has not programmed it (not in a vPOD, or the node agent did not apply it); check its vPOD in AFM |
+| Kernel errors | `sudo journalctl -k -p err --since '-60 min' --no-pager -q` | none | grouped as: uncorrected machine checks (critical), corrected machine checks (CPU / cache / memory), GPU driver errors, PCIe (AER) errors, disk / filesystem errors, RDMA NIC errors, out of memory |
+| RDMA NIC ports | `rdma link show` | every port `ACTIVE` / `LINK_UP` (ports administratively disabled are ignored) | a scale-out NIC port is down or `POLLING`: its cable, the leaf switch port or the NIC (`ip -br link`, then the leaf port) |
+| Disk, memory | `df -P /`, `grep -E '^(MemTotal\|MemAvailable):' /proc/meminfo` | below 85 %, 10 % or more available | as for the switch |
+| Failed services | `systemctl --failed --no-pager --plain --no-legend` | none (`systemd-networkd-wait-online` is ignored: it fails on any server with an unplugged port) | `systemctl status <unit>` and `journalctl -u <unit> -n 50` |
+
+## AFM health
+
+| Check | Where | Healthy | If not |
+| --- | --- | --- | --- |
+| AFM agent | `systemctl is-active afm-agent` on each switch | `active` | AFM loses this switch and its node agents: `systemctl status afm-agent`, `sudo docker logs --tail 100 afm-agent`; starting it again is a change for the AFM owner |
+| Controller certificate | `echo \| openssl s_client -connect 127.0.0.1:443 2>/dev/null \| openssl x509 -noout -enddate` on the AFM nodes | more than 30 days left | expiring or expired: TLS between AFM, its agents and the API fails when it expires; renew it before |
+| Agent certificates | `openssl x509 -noout -enddate -in <pem>` for each `/opt/amd/afm/agent/sysconfig/config*/*.pem` | more than 30 days left | as above |
+| AFM's view of the compute nodes | AFM API, only when the AFM password is given for the run | every compute node admitted and healthy | AFM sees the node as not healthy (its agent, its GPUs or its admission): open the node in AFM and read its node agent's log on the switch that serves it |
+
+## Debug a node with the AI
+
+For a problem the health check does not name, use **Debug a node** in the web UI (or the **Debug &lt;node&gt;** button on a health finding): describe the symptom and the node, and the helios model proposes one read-only command at a time. You click Run, the output goes back to the model, and it proposes the next command until it names the cause.
+
+- Only commands on the read-only allow-list for that kind of node run: the commands of this guide (show ..., system-health, crm show, watchdogutil, `docker exec <c> supervisorctl status`, `docker logs --tail N`, journalctl -p err, df, rdma link show, lspci -d 1002:, systemctl is-active, amd-smi, afmctl show ...). A command that is not on it is refused with the reason, and the model is asked once more for a read-only one.
+- Nothing that changes the node runs from there; a fix is for the owner the answer names.
+- The model sees only the outputs of the commands you ran, so check its conclusion against them.
+
+## Known node issues on g02-g17
+
+From the read-only health check of 2 Nov 2026. Check here first: a finding on this list is not new.
+
+| Where | Finding | Status |
+| --- | --- | --- |
+| CT15 | not reachable (no ping, no SSH) | tray down; site to check power and BMC |
+| CT16 | amd-smi cannot read the GPUs | open: driver / amd-smi state on the tray |
+| 16 of 17 reachable trays | corrected machine-check errors in the kernel log | rack-wide, corrected only: watch for uncorrected ones |
+| CT10 to CT13, CT16 to CT18 | RDMA NIC ports `POLLING` (no link) | scale-out cabling or leaf ports; not the scale-up fabric |
+| CT08, CT09 | GPUs in use (alltoall\_perf) | a test workload, not a fault; expect it to affect timings |
+| st1 | hardware watchdog not armed | switch owner to decide |
+| switches | orchagent PHY `TEMP_LIST` syslog messages repeated | known noisy message; grouped as a warning |
+
 ## Known link issues on g02-g17
 
 Check this list first: these are already known, so a new symptom on one of them is not a new fault.
@@ -416,8 +515,10 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | bcmcmd, bsh, LTSW / SDKLT | Broadcom shell, its logical-table shell, the SDK generation of these chips | Read the ASIC's port state directly (`lt <TABLE> lookup`) |
 | BDF | bus:device.function (PCI address, with domain) | A GPU's PCI address on the tray, e.g. `0004:01:00.1` |
 | CONFIG\_DB | SONiC configuration database | Holds port descriptions and VLANs; read with `sonic-db-cli` |
+| CRM | critical resource monitor | SONiC's count of the ASIC tables (routes, FDB, ACL, next hops): used and available |
 | CT | compute tray | CT01 to CT18; CT n is AFM slot n - 1 (CT05 = slot 4) |
 | DOM | digital optical monitoring | The optic's live readings: Rx / Tx power, temperature, voltage |
+| ECC | error-correcting code | GPU memory error correction; corrected errors are counted, uncorrectable ones lose data |
 | FDB | forwarding database | The switch's MAC address table |
 | FEC | forward error correction | Corrects bit errors on the link; a growing uncorrectable count means a bad link |
 | GPU | graphics processing unit | The accelerator; each tray has four |
@@ -427,11 +528,16 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | L1 / L2 | layer 1 / layer 2 | Physical link / Ethernet frames (the L2 ping) |
 | LINK\_UP, NO\_PHY\_LINK | afmctl link states | GPU port has a link / no physical link at all |
 | ll\_up | link layer up | IFCP field: the link-layer handshake completed |
+| MCE | machine-check exception | The CPU reporting a hardware error (`[Hardware Error]` in the kernel log), corrected or not |
 | PAM4 | 4-level pulse amplitude modulation | The line coding of these 400G lanes; it has three eyes, hence three `EYE_UP` values |
+| pmon | platform monitor (container) | Runs the platform daemons: psud (PSUs), thermalctld, xcvrd (transceivers), ledd, syseepromd, pcied |
+| PSU | power supply unit | Two or more per switch, for redundancy |
 | PCI | Peripheral Component Interconnect (Express) | The bus the GPUs sit on |
 | PCS | physical coding sublayer | Above the SerDes: alignment, FEC framing; reports local / remote faults |
 | PMD | physical medium dependent (sublayer) | The SerDes receiver; `PMD_RX_LOCK` = it locked on the incoming signal |
 | PortReady, PortFailed | AFM port states | Port usable / port down as AFM sees it |
+| RAS | reliability, availability, serviceability | The GPU's error reporting (`amd-smi ras`) |
+| RDMA | remote direct memory access | The scale-out NICs on the compute trays (`rdma link show`), not the scale-up fabric |
 | Rx / Tx, RX\_ERR / TX\_ERR | receive / transmit, and their error counters | Port counters in `show interfaces counters` |
 | SerDes | serializer / deserializer | The ASIC's high-speed transmitter and receiver per lane |
 | SNR | signal-to-noise ratio | `RX_SNR` per lane in the Broadcom shell; compare with healthy ports |
@@ -439,6 +545,7 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 | SSH | Secure Shell | Remote login to switches, trays and the jump host |
 | st1 to st6 | switch tray 1 to 6 | The six switches, 10.0.4.71 to 10.0.4.76 |
 | station | IFoE station | Two GPU ports that belong together: ports 2k and 2k + 1 form station k |
+| swss, syncd | switch state service, ASIC sync daemon | SONiC containers: swss (orchagent) turns configuration into ASIC programming, syncd talks to the ASIC SDK |
 | TC- / HC- | test case / health check | Case IDs in `full_rack_testplan.xlsx` |
 | UTC | Coordinated Universal Time | All times in this guide and in the logs |
 | VLAN | virtual local area network | AFM puts each vPOD's switch ports in its own VLANs |
