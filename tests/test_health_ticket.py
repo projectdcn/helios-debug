@@ -53,3 +53,15 @@ def test_run_bundle_json_stays_json_after_redaction(tmp_path):
     z = zipfile.ZipFile(io.BytesIO(data))
     assert json.loads(z.read("scan-20261102-180000/link_check.json")) == {"x": "token: <REDACTED>", "y": [1, 2]}
     assert b"abc" not in z.read("scan-20261102-180000/notes.json") and stats["redacted"] == 2
+
+
+def test_health_results_get_the_health_prompt(tmp_path):
+    from heliosdbg import ai, cases
+    d = tmp_path / "health-20261102-183758"
+    d.mkdir()
+    (d / "health.json").write_text(json.dumps(RES))
+    ev, subject, _rack = cases.health_context(d, "lab", d.name, "ct12")
+    system = ai.build_messages(ev, subject)[0]["content"]
+    assert "This is a node health result" in system and "sudo amd-smi metric --ecc --json" in system
+    other = cases.general(ai.Evidence())
+    assert "This is a node health result" not in ai.build_messages(other, "a test result")[0]["content"]

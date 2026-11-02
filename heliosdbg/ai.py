@@ -75,6 +75,19 @@ GENERAL_MODE = (
     "not run (say why), not that the rack is broken.\n"
 )
 SYSTEM_GENERAL = SYSTEM_BASE + GENERAL_MODE + FORMAT
+HEALTH_MODE = (
+    "This is a node health result: each finding names a node, its area (sonic, switch, power, thermal, bmc, afm, gpu, "
+    "compute, os, rdma) and owner. Explain each in its own area - a failed service, a full ASIC table, a GPU memory "
+    "error or a NIC without optics is not a link problem: do not blame cables, IFCP or switch ports unless the finding is "
+    "about them. Lead with the most severe finding; a finding 'on N of M trays' has one common cause to look for. "
+    "Read-only commands for health - switch tray: show system-health detail; crm show resources all; sudo docker exec "
+    "<container> supervisorctl status; sudo docker logs --tail 100 <container>; show reboot-cause history; show platform "
+    "psustatus / fan / temperature; watchdogutil status; show logging | tail -200. Compute tray: sudo amd-smi list; "
+    "sudo amd-smi metric --ecc --json; sudo amd-smi bad-pages -g <n>; sudo journalctl -k -p err -n 200 --no-pager; "
+    "systemctl status <unit>; rdma link show; sudo nicctl show port -b <card> -j; df -h. A node that does not answer: "
+    "its BMC (power state, event log).\n"
+)
+SYSTEM_HEALTH = SYSTEM_BASE + GENERAL_MODE + HEALTH_MODE + FORMAT
 
 UNSAFE = re.compile(
     r"\b((?:flap|bounce|toggle)\s+(?:the\s+|a\s+|its\s+)?(?:fabric\s+)?(?:port|link|interface|ethernet\d+)\w*|"
@@ -526,10 +539,11 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
               "word as it is - PARTIAL is not a failure: it passed where it could run. Anything after 'OLDER runs' is history "
               "that the latest run superseded; mention it only as history.)")
     general = getattr(ev, "mode", "") == "general"          # cases.py: a test result, a tool report, pasted outputs
-    system = (SYSTEM_BASE + CHAT_MODE if chat_mode else SYSTEM_GENERAL if general else
+    gen_sys = SYSTEM_HEALTH if getattr(ev, "kind", "") == "health" else SYSTEM_GENERAL
+    system = (SYSTEM_BASE + CHAT_MODE if chat_mode else gen_sys if general else
               SYSTEM + ("\n" + CHECK_MODE if subject == "this check of the rack" and not turns else ""))
     if turns:          # a follow-up: the evidence once, the earlier turns, then the new question
-        return [{"role": "system", "content": SYSTEM_BASE + CHAT_MODE if chat_mode else SYSTEM_GENERAL if general else SYSTEM},
+        return [{"role": "system", "content": SYSTEM_BASE + CHAT_MODE if chat_mode else gen_sys if general else SYSTEM},
                 {"role": "user", "content": f"Evidence about {subject}:\n{ev.block()}"},
                 {"role": "assistant", "content": "Understood - I will answer from these evidence items."},
                 *turns, {"role": "user", "content": f"Question: {q}"}]

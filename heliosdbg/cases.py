@@ -95,6 +95,7 @@ def health_context(d: Path, rack: str, name: str, node: str = "") -> tuple[Evide
     res = json.loads((d / "health.json").read_text())
     fs = [f for f in res.get("findings") or [] if not node or f["node"] == node]
     ev = general(Evidence())
+    ev.kind = "health"                     # ai.build_messages: the health prompt (areas, health commands)
     s = res.get("summary") or {}
     ev.add(f"Rack {rack}: helios-debug node health of {_when(name)}" + (f", node {node}" if node else "") +
            f": {s.get('critical', 0)} critical, {s.get('warning', 0)} warning on {len(res.get('nodes') or {})} node(s)"
