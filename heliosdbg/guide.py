@@ -17,56 +17,14 @@ import shlex
 import time
 from pathlib import Path
 
+from . import platforms
+from .checks import _NS, _WORD  # noqa: F401
+
 OUTPUT_MAX = 6000
-_NS = r"(?:\s+-n\s+asic\d)?"
-_WORD = r"[A-Za-z0-9_.:/\[\]*'\"-]+"
 _TAIL = rf"(?:\s*\|\s*(?:grep(?:\s+-[iwEFv]+)*\s+{_WORD}|tail\s+-n?\s*\d+|head\s+-n?\s*\d+))?"
 
-SWITCH_RO = [   # (pattern, needs sudo)
-    (rf"show\s+interfaces\s+(?:status|description|counters(?:\s+fec-stats|\s+errors|\s+rates)?|transceiver\s+(?:presence|eeprom|lpmode))"
-     rf"{_NS}(?:\s+-d\s+all)?(?:\s+-i)?(?:\s+Ethernet\d+)?", False),
-    (rf"show\s+mac{_NS}(?:\s+-p\s+Ethernet\d+|\s+-v\s+\d+)?", True),
-    (rf"show\s+vlan\s+brief{_NS}", False),
-    (r"show\s+(?:version|platform\s+(?:summary|psustatus|fan|temperature|syseeprom|firmware\s+status)|system-memory|"
-     r"processes\s+summary|uptime|services|environment|reboot-cause)", False),
-    (rf"show\s+(?:pfc\s+counters|queue\s+counters|pfcwd\s+stats|buffer_pool\s+watermark){_NS}", False),
-    (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?", False),
-    (r"show\s+logging(?:\s+-f)?", True),
-    (rf"show\s+lldp\s+(?:table|neighbors){_NS}", False),
-    (rf"sonic-db-cli{_NS}\s+(?:APPL_DB|ASIC_DB|CONFIG_DB|STATE_DB|COUNTERS_DB)\s+(?:keys|hgetall|hget|exists|scan)\s+{_WORD}(?:\s+{_WORD})?", True),
-    (r"docker\s+ps(?:\s+-a)?", True),
-    (r"uptime|free\s+-[mh]|df\s+-h", False),
-    # SONiC and switch platform health, read-only (heliosdbg/health.py and its follow-ups)
-    (r"show\s+(?:system-health\s+(?:summary|detail|monitor-list|sysready-status)|platform\s+(?:voltage|current|ssdhealth)|"
-     r"reboot-cause(?:\s+history)?|feature\s+status|interfaces\s+counters\s+errors|ip\s+interfaces|ndp|arp)", False),
-    (r"crm\s+show\s+(?:resources\s+(?:all|fdb|ipv4\s+route|ipv6\s+route|nexthop|neighbor|acl\s+table|acl\s+group)|thresholds\s+all|summary)", True),
-    (r"watchdogutil\s+status|ssdutil(?:\s+-d\s+/dev/[a-z0-9]+)?|sensors|decode-syseeprom", True),
-    (r"docker\s+exec\s+[a-z][a-z0-9_-]*\s+(?:supervisorctl\s+status(?:\s+[a-z][a-z0-9_-]*)?|cat\s+/etc/supervisor/critical_processes|"
-     r"ps\s+-eo\s+[a-z,]+)", True),
-    (r"docker\s+(?:logs\s+--tail\s+\d{1,4}\s+[a-z][a-z0-9_-]*|inspect\s+[a-z][a-z0-9_-]*|stats\s+--no-stream)", True),
-    (r"ls\s+-l?\s*/var/core|cat\s+/proc/(?:meminfo|loadavg|uptime)|df\s+-P(?:\s+/[a-z/]*)*", True),
-    (r"journalctl\s+(?:-k|-u\s+[A-Za-z0-9@_.-]+|-p\s+(?:err|warning|crit))(?:\s+-p\s+(?:err|warning|crit))?(?:\s+-n\s+\d+)?"
-     r"(?:\s+--since\s+-?\d+[hm]|\s+--since\s+'-\d+\s+min')?(?:\s+--no-pager)?(?:\s+-q)?", True),
-    (r"systemctl\s+(?:status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?|--failed(?:\s+--no-pager)?|is-active\s+[A-Za-z0-9@_.-]+)", False),
-]
-COMPUTE_RO = [
-    (r"afmctl\s+show\s+(?:device|port|port\s+accelerator-addr|vpod|version|stats)(?:\s+-b\s+[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)?(?:\s+--json)?", True),
-    (r"dmesg(?:\s+-T)?", True),
-    (r"ip\s+-br\s+(?:link|addr)", False),
-    (r"uptime|free\s+-[mh]|df\s+-h|uname\s+-a", False),
-    (r"lspci(?:\s+-[nvkD]+)?(?:\s+-s\s+[0-9a-f:.]+)?", False),
-    (r"journalctl\s+(?:-k|-u\s+[A-Za-z0-9@_.-]+|-p\s+(?:err|warning|crit))(?:\s+-p\s+(?:err|warning|crit))?(?:\s+-n\s+\d+)?"
-     r"(?:\s+--since\s+-?\d+[hm]|\s+--since\s+'-\d+\s+min')?(?:\s+--no-pager)?(?:\s+-q)?", True),
-    (r"df\s+-[Ph](?:\s+/[a-z/]*)*|cat\s+/proc/(?:meminfo|loadavg|uptime)|rdma\s+link\s+show|lspci\s+-d\s+1002:", False),
-    # any part of the tray, read-only: GPUs, RDMA NICs, the BMC through the host, services
-    (r"amd-smi\s+(?:list|static|metric|firmware|topology|xgmi|process|bad-pages|ras)(?:\s+-[A-Za-z]+|\s+--[a-z-]+|\s+-g\s+\d+)*", True),
-    (r"rocm-smi(?:\s+--show[a-z]+|\s+-[itucfPa]|\s+--json)*", True),
-    (r"ibv_devinfo(?:\s+-[vl])?(?:\s+-d\s+[A-Za-z0-9_]+)?|rdma\s+(?:link|dev)(?:\s+show)?", False),
-    (r"ipmitool\s+(?:sel\s+(?:list|elist|info)|sdr(?:\s+list|\s+elist)?|fru(?:\s+print)?|sensor(?:\s+list)?|"
-     r"chassis\s+status|mc\s+info|lan\s+print)", True),
-    (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?|systemctl\s+--failed(?:\s+--no-pager)?", False),
-    (r"lsmod|sensors|nvme\s+list|ethtool(?:\s+-[Sim])?\s+[A-Za-z0-9_.-]+", False),
-]
+SWITCH_RO = platforms.read_only("switch")     # (pattern, needs sudo), from each platform's READ_ONLY
+COMPUTE_RO = platforms.read_only("compute")
 FORBIDDEN = re.compile(r"[;&`$<>\n\r\\]|\|\|")
 
 

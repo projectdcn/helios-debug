@@ -1425,7 +1425,8 @@ def health_cmd(a) -> int:
         outs = health.collect_switch(node, drift=not a.no_drift) if role == "switch" else health.collect_compute(node)
         if all(health.missing(r) for r in outs.values()):     # SSH failed (rc 255 / exception) on every command
             raise RuntimeError(next((r.get("err") for r in outs.values() if r.get("err")), "") or "no answer over SSH")
-        fs = health.judge_switch(name, outs) if role == "switch" else health.judge_compute(name, outs, node.gpus)
+        plats = health.for_node(role, node.host)            # the inventory's platforms: for this node, else the defaults
+        fs = health.judge_switch(name, outs, plats) if role == "switch" else health.judge_compute(name, outs, node.gpus, plats)
         return outs, fs
     try:
         for (role, name), res, err in fan_out(one, [("switch", n) for n in sws] + [("compute", n) for n in trs], workers=6):
