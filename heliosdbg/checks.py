@@ -33,6 +33,7 @@ class Platform:
     judge: Callable | None = None
     collect: Callable | None = None
     read_only: list = field(default_factory=list)   # [(regex, needs sudo)] Debug a node may run here
+    judge_rack: Callable | None = None          # judge_rack({node: outs}) -> findings across the nodes (consistency)
 
 
 def finding(node: str, role: str, check: str, area: str, severity: str, what: str, cause: str, nxt: str,

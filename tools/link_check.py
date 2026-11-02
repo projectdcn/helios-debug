@@ -1451,6 +1451,9 @@ def health_cmd(a) -> int:
             nodes[name] = {"role": role, "not_run": health.not_run(outs), "findings": len(fs)}
             findings += fs
             print(f"  {name}: {len(fs)} finding(s)" + (f", not checked: {', '.join(nodes[name]['not_run'])}" if nodes[name]["not_run"] else ""), flush=True)
+        findings += health.judge_rack(raw, {n: v["role"] for n, v in nodes.items() if "role" in v},
+                                      {n: (rack.switches.get(n) or rack.computes.get(n)).host for n in raw
+                                       if n in rack.switches or n in rack.computes})
         if not a.no_bmc:
             findings += _bmc_health(inv, rack, [("switch", n) for n in sws] + [("compute", n) for n in trs],
                                     set(unreachable), nodes, raw, health)

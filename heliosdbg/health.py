@@ -45,3 +45,19 @@ def judge_switch(node: str, outs: dict, platforms: list | None = None) -> list[d
 
 def judge_compute(node: str, outs: dict, expect_gpus: int = 4, platforms: list | None = None) -> list[dict]:
     return checks.judge(node, outs, platforms or for_node("compute"), {"gpus": expect_gpus})
+
+
+def judge_rack(raw: dict[str, dict], roles: dict[str, str], hosts: dict | None = None) -> list[dict]:
+    """The platforms' checks across nodes ({node: outs}, {node: role}): e.g. NIC firmware that differs between trays."""
+    F: list[dict] = []
+    by_platform: dict[str, dict[str, dict]] = {}
+    for node, outs in raw.items():
+        if node not in roles:
+            continue
+        for p in for_node(roles[node], (hosts or {}).get(node)):
+            if p.judge_rack:
+                by_platform.setdefault(p.name, {})[node] = outs
+    for name, outs_by_node in by_platform.items():
+        if len(outs_by_node) > 1:
+            F += PLATFORMS[name].judge_rack(outs_by_node)
+    return F
