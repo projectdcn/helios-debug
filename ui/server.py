@@ -217,6 +217,8 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
             a.append("--no-drift")
         if not req.get("afm"):
             a.append("--no-afm")
+        if req.get("no_bmc"):
+            a.append("--no-bmc")
     elif tool == "pingmap":
         a += ["--rounds", str(_int(req, "rounds", 1, 100, 3)), "--wait", str(_int(req, "wait", 0, 3600, 60))]
     elif tool == "bcm":
@@ -954,6 +956,8 @@ def start_job(state: State, req: dict) -> dict:
         if req.get("tool") in ("scan", "link", "health") and req.get("afm") and req.get("afm_password"):
             _f, inv = state.inventory(req["inventory"])
             env[((inv.afm or {}).get("auth") or {}).get("password_env") or "HELIOS_AFM_PASSWORD"] = str(req["afm_password"])
+        if req.get("tool") == "health" and not req.get("no_bmc") and req.get("bmc_password"):
+            env["HELIOS_BMC_PASSWORD"] = str(req["bmc_password"])          # this run only, never stored
         job = {"id": jid, "tool": req["tool"], "rack": rack, "inventory": req["inventory"], "argv": args,
                "out": str(out.relative_to(state.results_dir)), "status": "running", "rc": None,
                "started": time.time(), "ended": None, "log": "", "proc": None}

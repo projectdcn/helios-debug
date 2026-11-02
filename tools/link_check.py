@@ -1349,6 +1349,42 @@ def bcm_cmd(a) -> int:
     return 1 if bad else 0
 
 
+def _bmc_health(inv, rack, items, unreachable: set, nodes: dict, raw: dict, health) -> list[dict]:
+    """The BMC view (heliosdbg/bmc.py): with the BMC password every node that has bmc: in the inventory, without it
+    only the nodes SSH did not reach (the service root still says whether the BMC - and so the tray's power - is up)."""
+    from heliosdbg import bmc
+    todo = []
+    for role, name in items:
+        node = rack.switches[name] if role == "switch" else rack.computes[name]
+        address, user, pw = bmc.credentials(node.host)
+        if address and (pw or name in unreachable):
+            todo.append((role, name, address, user, pw))
+    if not todo:
+        return []
+    jump = (inv.transport or {}).get("jump")
+    F = []
+
+    def one(item):
+        role, name, address, user, pw = item
+        rf = bmc.Redfish(address, user, pw, jump=jump, timeout=15)
+        return bmc.snapshot(rf, authed=bool(pw))
+    for (role, name, address, _u, pw), snap, err in fan_out(one, todo, workers=3):
+        if err is not None:
+            print(f"  {name} BMC: not read ({type(err).__name__}: {str(err)[:100]})", flush=True)
+            continue
+        fs = bmc.judge(name, role, snap, ssh_ok=name not in unreachable, finding=health.finding,
+                       critical=health.CRITICAL, warning=health.WARNING)
+        raw.setdefault(name, {})["bmc"] = snap
+        nodes.setdefault(name, {"role": role})["bmc"] = {k: snap[k] for k in ("address", "reachable", "auth", "product")} | {
+            "power": [x["power"] for x in snap["systems"]]}
+        F += fs
+        state = ("no answer" if not snap["reachable"] else "answers" + (
+            f", power {'/'.join(str(x['power']) for x in snap['systems']) or '?'}" if snap["auth"] == "ok" else
+            ", login refused" if snap["auth"] == "refused" else " (no BMC password: power state not read)"))
+        print(f"  {name} BMC {address}: {state}; {len(fs)} finding(s)", flush=True)
+    return F
+
+
 def health_cmd(a) -> int:
     """Node health of every switch tray, compute tray (and AFM with its password): SONiC, platform, GPUs, OS - one
     finding per problem with its evidence, area, owner and next step (heliosdbg/health.py). Read-only."""
@@ -1414,6 +1450,9 @@ def health_cmd(a) -> int:
             nodes[name] = {"role": role, "not_run": health.not_run(outs), "findings": len(fs)}
             findings += fs
             print(f"  {name}: {len(fs)} finding(s)" + (f", not checked: {', '.join(nodes[name]['not_run'])}" if nodes[name]["not_run"] else ""), flush=True)
+        if not a.no_bmc:
+            findings += _bmc_health(inv, rack, [("switch", n) for n in sws] + [("compute", n) for n in trs],
+                                    set(unreachable), nodes, raw, health)
         if not a.no_afm and (inv.afm or {}).get("url"):
             from heliosdbg.afm import Afm, AfmUnavailable
             try:
@@ -1534,6 +1573,8 @@ def main(argv=None) -> int:
     hc.add_argument("--only", choices=("switches", "trays"), help="only the switches, or only the compute trays")
     hc.add_argument("--no-drift", action="store_true", help="skip comparing the running configuration with the saved one")
     hc.add_argument("--no-afm", action="store_true", help="skip AFM's view of the compute nodes (used with the AFM password)")
+    hc.add_argument("--no-bmc", action="store_true", help="skip the BMC view (Redfish; inventory bmc: / bmc_user:, password "
+                    "$HELIOS_BMC_PASSWORD) - without the password only the BMCs of nodes SSH did not reach are asked")
     hc.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/health-<UTC time>)")
     i = sub.add_parser("isolate", help="DISRUPTIVE: take one end of ONE GPU link down for a short hold and bring it back")
     i.add_argument("--inventory", **inv_kw)

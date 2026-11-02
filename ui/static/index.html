@@ -301,6 +301,8 @@ body.chat-open main{margin-right:min(460px,100vw)}
       <div class="checks"><label><input type="checkbox" id="health-drift" checked>Running vs saved configuration (switches)</label></div>
       <div class="checks"><label><input type="checkbox" id="health-afm">AFM view of the compute nodes</label></div>
       <div id="health-pw-box" class="hide"><label for="health-afmpw">AFM password (used for this run only, not stored)</label><input id="health-afmpw" type="password" autocomplete="off"></div>
+      <div class="checks"><label><input type="checkbox" id="health-bmc" checked>BMC view (Redfish: power state, event log, sensors; without the password only whether the BMC of a node SSH cannot reach answers)</label></div>
+      <div id="health-bmcpw-box"><label for="health-bmcpw">BMC password (inventory bmc_user; this run only, not stored)</label><input id="health-bmcpw" type="password" autocomplete="off"></div>
     </div>
     <div class="row"><button class="go" data-run="health">Check node health</button></div>
   </section>
@@ -588,7 +590,8 @@ function req(tool){
   if(tool==="cabling"){r.plan=$("cab-plan").value}
   if(tool==="isolate"){r.target=$("iso-target").value.trim();r.confirm=$("iso-confirm").value.trim();r.action=$("iso-action").value;r.hold=+$("iso-hold").value}
   if(tool==="health"){r.switches=picked("health-sw");r.trays=picked("health-ct");r.only=$("health-only").value;r.no_drift=!$("health-drift").checked;
-    r.afm=$("health-afm").checked;if(r.afm&&$("health-afmpw").value)r.afm_password=$("health-afmpw").value}
+    r.afm=$("health-afm").checked;if(r.afm&&$("health-afmpw").value)r.afm_password=$("health-afmpw").value;
+    r.no_bmc=!$("health-bmc").checked;if(!r.no_bmc&&$("health-bmcpw").value)r.bmc_password=$("health-bmcpw").value}
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;
 }
@@ -598,7 +601,7 @@ function moveJobcard(){var sec=document.querySelector("section[data-p]:not(.hide
 function run(tool){
   moveJobcard();$("result").innerHTML="";
   var r=req(tool);
-  api("/api/run",r).then(function(j){$("scan-afmpw").value="";$("link-afmpw").value="";$("health-afmpw").value="";j._est=estimate(tool);show(j,true);$("jobcard").scrollIntoView({block:"nearest",behavior:"smooth"})}).catch(function(e){
+  api("/api/run",r).then(function(j){$("scan-afmpw").value="";$("link-afmpw").value="";$("health-afmpw").value="";$("health-bmcpw").value="";j._est=estimate(tool);show(j,true);$("jobcard").scrollIntoView({block:"nearest",behavior:"smooth"})}).catch(function(e){
     $("jobinfo").innerHTML='<span class="err">'+friendly(e.message)+'</span>';$("jobbadge").innerHTML="";$("joblinks").innerHTML="";$("logbox").classList.add("hide");$("jobcard").scrollIntoView({block:"nearest"})})
 }
 function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<span class="badge '+c+'">'+esc(s)+'</span>'}
@@ -2102,6 +2105,7 @@ $("inv").addEventListener("change",function(){accState={}});
 document.querySelectorAll("nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.t)})});
 document.querySelectorAll("button[data-run]").forEach(function(b){b.addEventListener("click",function(){run(b.dataset.run)})});
 $("health-afm").addEventListener("change",function(){$("health-pw-box").classList.toggle("hide",!this.checked)});
+$("health-bmc").addEventListener("change",function(){$("health-bmcpw-box").classList.toggle("hide",!this.checked)});
 $("dbg-go").addEventListener("click",debugNode);$("dbg-subj").addEventListener("keydown",function(e){if(e.key==="Enter")debugNode()});
 $("inv").addEventListener("change",fillInv);
 $("scan-afm").addEventListener("change",function(){$("afm-pw-box").classList.toggle("hide",!$("scan-afm").checked)});

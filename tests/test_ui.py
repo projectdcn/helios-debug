@@ -31,7 +31,7 @@ out = pathlib.Path(a[a.index('--out') + 1]); out.mkdir(parents=True, exist_ok=Tr
 (out / 'report.txt').write_text('Scale-up link scan\\n4 GPU links: 4 ok, 0 degraded, 0 down\\n')
 (out / 'report.html').write_text('<html>ok</html>')
 (out / 'link_check.json').write_text('{}')
-print('args', ' '.join(a)); print('afm env set:', bool(os.environ.get('LAB_AFM_PW')))
+print('args', ' '.join(a)); print('afm env set:', bool(os.environ.get('LAB_AFM_PW'))); print('bmc env set:', bool(os.environ.get('HELIOS_BMC_PASSWORD')))
 sys.exit(0)
 """
 
@@ -536,7 +536,8 @@ def test_ai_diagnose_context_reads_a_real_shaped_result():
 def test_health_job_args_and_its_result_is_an_any_problem_report(ui):
     base, tmp = ui
     code, body = call(base, "/api/run", {"tool": "health", "inventory": "lab.local.yaml", "trays": ["c2"], "only": "trays",
-                                         "no_drift": True, "afm": True, "afm_password": "pw-not-logged"})
+                                         "no_drift": True, "afm": True, "afm_password": "pw-not-logged",
+                                         "bmc_password": "bmc-not-logged"})
     job = json.loads(body)
     assert code == 200 and job["argv"][0] == "health" and job["argv"][job["argv"].index("--trays") + 1] == "c2"
     assert "--only" in job["argv"] and "--no-drift" in job["argv"] and "--no-afm" not in job["argv"]
@@ -546,6 +547,13 @@ def test_health_job_args_and_its_result_is_an_any_problem_report(ui):
             break
         time.sleep(0.1)
     assert "afm env set: True" in j["log"] and "pw-not-logged" not in j["log"]
+    assert "bmc env set: True" in j["log"] and "bmc-not-logged" not in j["log"] and "--no-bmc" not in job["argv"]
+    code, body = call(base, "/api/run", {"tool": "health", "inventory": "lab.local.yaml", "trays": ["c2"], "no_bmc": True})
+    assert "--no-bmc" in json.loads(body)["argv"]
+    for _ in range(100):
+        if json.loads(call(base, f"/api/job/{json.loads(body)['id']}")[1])["status"] != "running":
+            break
+        time.sleep(0.1)
     code, body = call(base, "/api/run", {"tool": "health", "inventory": "lab.local.yaml", "trays": ["c9"]})
     assert code == 400
 
