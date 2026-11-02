@@ -1385,7 +1385,7 @@ def _bmc_health(inv, rack, items, unreachable: set, nodes: dict, raw: dict, heal
     return F
 
 
-def health_cmd(a) -> int:
+def _health_once(a) -> int:
     """Node health of every switch tray, compute tray (and AFM with its password): SONiC, platform, GPUs, OS - one
     finding per problem with its evidence, area, owner and next step (heliosdbg/health.py). Read-only."""
     import html as _html
@@ -1470,14 +1470,18 @@ def health_cmd(a) -> int:
     finally:
         rack.close()
     order = {health.CRITICAL: 0, health.WARNING: 1}
+    per_node = [f for f in findings]                 # before the rack-wide grouping: what history compares run to run
     findings = health.rack_wide(findings, {"switch": len(sws), "compute": len(trs)})
     findings.sort(key=lambda f: (order.get(f["severity"], 2), f["node"], f["check"]))
     res = {"rack": inv.rack, "time": time.strftime("%Y-%m-%d %H:%M", time.gmtime()), "nodes": nodes, "findings": findings,
            "summary": health.summary(findings), "unreachable": unreachable,
-           "quarantined": [h.name for h in inv.quarantined]}
+           "quarantined": [h.name for h in inv.quarantined],
+           "node_findings": [{k: f[k] for k in ("node", "check", "area", "severity", "what")} for f in per_node]}
+    from heliosdbg import history
+    res["changes"] = history.compare(history.previous(out.parent, out), res)
     out.mkdir(parents=True, exist_ok=True)
     (out / "health.json").write_text(json.dumps(res, indent=1))
-    (out / "report.txt").write_text(health.report_text(res))
+    (out / "report.txt").write_text(health.report_text(res) + "\n" + "\n".join(history.text(res["changes"])))
     (out / "raw").mkdir(exist_ok=True)
     import gzip
     with gzip.open(out / "raw" / "outputs.json.gz", "wt") as fh:
@@ -1495,11 +1499,56 @@ def health_cmd(a) -> int:
         "{color:#a15c00}.mut{color:#666}pre{white-space:pre-wrap;background:#f5f5f5;padding:6px}</style>"
         f"<h1>Node health of {e(inv.rack)}</h1><p>{e(res['time'])} UTC - {s['critical']} critical, {s['warning']} warning on "
         f"{len(nodes)} node(s)" + (f"; not reached: {e(', '.join(unreachable))}" if unreachable else "") + "</p>"
-        "<table><tr><th>Severity</th><th>Node</th><th>Area</th><th>Finding</th><th>Owner</th></tr>" + rows + "</table>"
+        + _changes_html(res["changes"], e)
+        + "<table><tr><th>Severity</th><th>Node</th><th>Area</th><th>Finding</th><th>Owner</th></tr>" + rows + "</table>"
         + ("<h2>Not checked</h2><ul>" + "".join(f"<li>{e(n)}: {e(', '.join(v['not_run']))}</li>" for n, v in sorted(nodes.items()) if v.get("not_run")) + "</ul>"
            if any(v.get("not_run") for v in nodes.values()) else ""))
+    ch = res["changes"]
+    if ch.get("since"):
+        print(f"\nsince {ch['since']} UTC: {len(ch['new'])} new, {len(ch['gone'])} gone, {len(ch['grew'])} grew")
+    if getattr(a, "incidents", None) and (res["changes"].get("new") or a.incidents_all or not ch.get("since")):
+        from heliosdbg import incidents
+        todo, left = incidents.pick(res, every=a.incidents_all, max_n=a.incidents_max)
+        sent = incidents.send(a.incidents, [incidents.to_incident(f, inv.rack, res["time"].replace(" ", "T") + ":00Z")
+                                            for f in todo])
+        res["incidents"] = {"url": a.incidents, "sent": sent, "left_out": left}
+        (out / "health.json").write_text(json.dumps(res, indent=1))
+        ok = sum(x["ok"] for x in sent)
+        print(f"incidents: {ok} of {len(sent)} sent to {a.incidents}" + (f" ({left} more left out)" if left else "")
+              + "".join(f"\n  {x['id']}: " + (f"{x.get('area')} - {str(x.get('summary'))[:100]}" if x["ok"] else x["error"])
+                        for x in sent))
+    history.record(out.parent, res, out)
+    thinned = history.prune(out.parent, getattr(a, "keep", 0) or 0)
+    if thinned:
+        print(f"older runs thinned to health.json: {len(thinned)}")
     print(f"\n{s['critical']} critical, {s['warning']} warning finding(s)\nreport: {out / 'report.html'}")
     return 1 if findings else 0
+
+
+def _changes_html(ch: dict, e) -> str:
+    if not ch.get("since"):
+        return "<p class='mut'>First health check of this rack here: nothing to compare with.</p>"
+    li = ([f"<li><b>new</b> {e(f['severity'])}: {e(f['node'])}: {e(f['what'])}</li>" for f in ch["new"]]
+          + [f"<li><b>grew</b> {e(g['node'])}: {e(g['before'])} &rarr; {e(g['now'])}</li>" for g in ch["grew"]]
+          + [f"<li><b>gone</b> {e(f['node'])}: {e(f['what'])}</li>" for f in ch["gone"]])
+    return (f"<h2>Since {e(ch['since'])} UTC</h2><p>{len(ch['new'])} new, {len(ch['gone'])} gone, {len(ch['grew'])} grew, "
+            f"{ch['same']} unchanged</p>" + (f"<ul>{''.join(li)}</ul>" if li else ""))
+
+
+def health_cmd(a) -> int:
+    """One health check, or with --every one every N minutes (each its own folder, compared with the one before)."""
+    if not a.every:
+        return _health_once(a)
+    if a.out:
+        raise SystemExit("--every writes a folder per run: leave --out out")
+    n = 0
+    while True:
+        rc = _health_once(a)
+        n += 1
+        if a.count and n >= a.count:
+            return rc
+        print(f"next health check in {a.every:g} min (run {n}{' of ' + str(a.count) if a.count else ''})", flush=True)
+        time.sleep(a.every * 60)
 
 
 def main(argv=None) -> int:
@@ -1580,6 +1629,14 @@ def main(argv=None) -> int:
     hc.add_argument("--no-bmc", action="store_true", help="skip the BMC view (Redfish; inventory bmc: / bmc_user:, password "
                     "$HELIOS_BMC_PASSWORD) - without the password only the BMCs of nodes SSH did not reach are asked")
     hc.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/health-<UTC time>)")
+    hc.add_argument("--every", type=float, default=0, help="repeat every N minutes (each run compared with the one before)")
+    hc.add_argument("--count", type=int, default=0, help="with --every: stop after N runs (0: until stopped)")
+    hc.add_argument("--keep", type=int, default=48, help="keep the newest N health runs whole; older ones only keep "
+                    "health.json (default 48; 0 keeps all)")
+    hc.add_argument("--incidents", metavar="URL", help="send the findings to the AIOps incident API at URL (helios-slm, "
+                    "e.g. http://10.83.2.15:8443): the new ones since the last run, critical first")
+    hc.add_argument("--incidents-all", action="store_true", help="with --incidents: every finding, not only the new ones")
+    hc.add_argument("--incidents-max", type=int, default=10, help="with --incidents: at most N per run (10)")
     i = sub.add_parser("isolate", help="DISRUPTIVE: take one end of ONE GPU link down for a short hold and bring it back")
     i.add_argument("--inventory", **inv_kw)
     i.add_argument("target", help="the link, as for 'link'")

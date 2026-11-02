@@ -867,6 +867,14 @@ function renderHealth(box,d,out){
     "</h3>"+Object.keys(d.nodes||{}).length+" node(s) checked"+((d.unreachable||[]).length?" - not reached: "+esc(d.unreachable.join(", ")):"")+
     ((d.quarantined||[]).length?" - quarantined (not checked): "+esc(d.quarantined.join(", ")):"")+
     ' - <a href="/results/'+esc(out)+'/report.html" target="_blank" rel="noopener">full report</a></div>';
+  var ch=d.changes||{};
+  if(ch.since){var li=(ch["new"]||[]).map(function(f){return "<li><b>new</b> "+esc(f.severity)+": "+esc(f.node)+": "+esc(f.what)+"</li>"})
+      .concat((ch.grew||[]).map(function(g){return "<li><b>grew</b> "+esc(g.node)+": "+esc(g.before)+" &rarr; "+esc(g.now)+"</li>"}))
+      .concat((ch.gone||[]).map(function(f){return "<li><b>gone</b> "+esc(f.node)+": "+esc(f.what)+"</li>"}));
+    head+='<p style="font-size:13px"><b>Since the check of '+esc(ch.since)+' UTC:</b> '+(ch["new"]||[]).length+" new, "+(ch.gone||[]).length+" gone, "+
+      (ch.grew||[]).length+" grew, "+(ch.same||0)+" unchanged</p>"+(li.length?'<ul style="font-size:13px">'+li.join("")+"</ul>":"")}
+  if(d.incidents){var ok=(d.incidents.sent||[]).filter(function(x){return x.ok}).length;
+    head+='<p class="mut" style="font-size:12px">Sent to the incident API: '+ok+" of "+(d.incidents.sent||[]).length+"</p>"}
   var rows=fs.map(function(f,i){return '<tr><td class="'+(f.severity==="critical"?"err":"")+'"><b>'+esc(f.severity)+"</b></td><td>"+esc(f.node)+"</td><td>"+esc(f.area)+
     "</td><td><b>"+esc(f.what)+'</b><div class="mut" style="font-size:12px">'+esc(f.cause)+'</div><div style="font-size:12px">Next: '+esc(f.next)+
     '</div><details><summary class="mut" style="font-size:12px">evidence</summary><pre style="max-height:24vh">'+esc((f.evidence||[]).join("\n"))+"</pre>"+
