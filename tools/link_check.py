@@ -1345,6 +1345,101 @@ def bcm_cmd(a) -> int:
     return 1 if bad else 0
 
 
+def health_cmd(a) -> int:
+    """Node health of every switch tray, compute tray (and AFM with its password): SONiC, platform, GPUs, OS - one
+    finding per problem with its evidence, area, owner and next step (heliosdbg/health.py). Read-only."""
+    import html as _html
+    from heliosdbg import health
+    inv = load_inventory(a.inventory)
+    lim = (inv.thresholds or {}).get("health") or {}
+    health.LIMITS.update({k: v for k, v in lim.items() if k in health.LIMITS})
+    rack = Rack(inv)
+    sws = [x.strip() for x in (a.switches or "").split(",") if x.strip()] or sorted(rack.switches)
+    trs = [x.strip() for x in (a.trays or "").split(",") if x.strip()] or sorted(rack.computes)
+    unknown = [n for n in sws if n not in rack.switches] + [n for n in trs if n not in rack.computes]
+    if unknown:
+        raise SystemExit(f"unknown node {unknown} (switches {sorted(rack.switches)}, trays {sorted(rack.computes)})")
+    if a.only == "switches":
+        trs = []
+    elif a.only == "trays":
+        sws = []
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"health-{stamp}"
+    _OUTS.append(out)
+    _room(out, 10)
+    print(f"node health of {inv.rack}: {len(sws)} switch(es), {len(trs)} compute tray(s) - read-only", flush=True)
+    raw, nodes, findings, unreachable = {}, {}, [], []
+
+    def one(item):
+        role, name = item
+        node = rack.switches[name] if role == "switch" else rack.computes[name]
+        outs = health.collect_switch(node, drift=not a.no_drift) if role == "switch" else health.collect_compute(node)
+        if all(health.missing(r) for r in outs.values()):     # SSH failed (rc 255 / exception) on every command
+            raise RuntimeError(next((r.get("err") for r in outs.values() if r.get("err")), "") or "no answer over SSH")
+        fs = health.judge_switch(name, outs) if role == "switch" else health.judge_compute(name, outs, node.gpus)
+        return outs, fs
+    try:
+        for (role, name), res, err in fan_out(one, [("switch", n) for n in sws] + [("compute", n) for n in trs], workers=6):
+            if err is not None:
+                unreachable.append(name)
+                nodes[name] = {"role": role, "error": str(err)[:300], "not_run": []}
+                findings.append(health.finding(name, role, "reach", "switch" if role == "switch" else "compute",
+                                               health.CRITICAL, f"{name} could not be checked: {str(err)[:160]}",
+                                               "the node did not answer over SSH (down, powered off, or no access)",
+                                               "ping it and check its BMC / console; the SSH access tab for keys",
+                                               [str(err)[:300]]))
+                print(f"  {name}: NOT REACHED - {str(err)[:120]}", flush=True)
+                continue
+            outs, fs = res
+            raw[name] = outs
+            nodes[name] = {"role": role, "not_run": health.not_run(outs), "findings": len(fs)}
+            findings += fs
+            print(f"  {name}: {len(fs)} finding(s)" + (f", not checked: {', '.join(nodes[name]['not_run'])}" if nodes[name]["not_run"] else ""), flush=True)
+        if not a.no_afm and (inv.afm or {}).get("url"):
+            from heliosdbg.afm import Afm, AfmUnavailable
+            try:
+                afm_f = health.judge_afm(Afm(inv.afm).computes())
+                findings += afm_f
+                print(f"  AFM: {len(afm_f)} finding(s)")
+            except AfmUnavailable as e:
+                print(f"  AFM: not read ({str(e)[:100]})")
+            except Exception as e:  # noqa: BLE001 - AFM is an extra view
+                print(f"  AFM: not read ({type(e).__name__}: {str(e)[:100]})")
+    finally:
+        rack.close()
+    order = {health.CRITICAL: 0, health.WARNING: 1}
+    findings = health.rack_wide(findings, {"switch": len(sws), "compute": len(trs)})
+    findings.sort(key=lambda f: (order.get(f["severity"], 2), f["node"], f["check"]))
+    res = {"rack": inv.rack, "time": time.strftime("%Y-%m-%d %H:%M", time.gmtime()), "nodes": nodes, "findings": findings,
+           "summary": health.summary(findings), "unreachable": unreachable,
+           "quarantined": [h.name for h in inv.quarantined]}
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "health.json").write_text(json.dumps(res, indent=1))
+    (out / "report.txt").write_text(health.report_text(res))
+    (out / "raw").mkdir(exist_ok=True)
+    import gzip
+    with gzip.open(out / "raw" / "outputs.json.gz", "wt") as fh:
+        json.dump(raw, fh)
+    e = _html.escape
+    rows = "".join(f"<tr class='{f['severity']}'><td>{e(f['severity'])}</td><td>{e(f['node'])}</td><td>{e(f['area'])}</td>"
+                   f"<td><b>{e(f['what'])}</b><br><span class='mut'>{e(f['cause'])}</span><br>Next: {e(f['next'])}"
+                   f"<details><summary>evidence</summary><pre>{e(chr(10).join(f['evidence']))}</pre><div class='mut'>{e(f['command'])}</div></details></td>"
+                   f"<td>{e(f['owner'])}</td></tr>" for f in findings)
+    s = res["summary"]
+    (out / "report.html").write_text(
+        "<!doctype html><meta charset=utf-8><title>Node health " + e(inv.rack) + "</title><style>body{font:14px system-ui,sans-serif;"
+        "margin:24px;max-width:1200px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:6px;"
+        "vertical-align:top;text-align:left}tr.critical td:first-child{color:#b00020;font-weight:600}tr.warning td:first-child"
+        "{color:#a15c00}.mut{color:#666}pre{white-space:pre-wrap;background:#f5f5f5;padding:6px}</style>"
+        f"<h1>Node health of {e(inv.rack)}</h1><p>{e(res['time'])} UTC - {s['critical']} critical, {s['warning']} warning on "
+        f"{len(nodes)} node(s)" + (f"; not reached: {e(', '.join(unreachable))}" if unreachable else "") + "</p>"
+        "<table><tr><th>Severity</th><th>Node</th><th>Area</th><th>Finding</th><th>Owner</th></tr>" + rows + "</table>"
+        + ("<h2>Not checked</h2><ul>" + "".join(f"<li>{e(n)}: {e(', '.join(v['not_run']))}</li>" for n, v in sorted(nodes.items()) if v.get("not_run")) + "</ul>"
+           if any(v.get("not_run") for v in nodes.values()) else ""))
+    print(f"\n{s['critical']} critical, {s['warning']} warning finding(s)\nreport: {out / 'report.html'}")
+    return 1 if findings else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1413,6 +1508,14 @@ def main(argv=None) -> int:
     c.add_argument("--export", help="write the scan's cabling as a plan CSV to this file ('-' = stdout)")
     c.add_argument("--scan", help="a scan's link_check.json (default: the rack's latest)")
     c.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/cabling-<UTC time>)")
+    hc = sub.add_parser("health", help="node health: SONiC, switch platform, compute trays / GPUs, AFM - read-only")
+    hc.add_argument("--inventory", **inv_kw)
+    hc.add_argument("--switches", help="only these switches (comma-separated inventory names)")
+    hc.add_argument("--trays", help="only these compute trays (comma-separated inventory names)")
+    hc.add_argument("--only", choices=("switches", "trays"), help="only the switches, or only the compute trays")
+    hc.add_argument("--no-drift", action="store_true", help="skip comparing the running configuration with the saved one")
+    hc.add_argument("--no-afm", action="store_true", help="skip AFM's view of the compute nodes (used with the AFM password)")
+    hc.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/health-<UTC time>)")
     i = sub.add_parser("isolate", help="DISRUPTIVE: take one end of ONE GPU link down for a short hold and bring it back")
     i.add_argument("--inventory", **inv_kw)
     i.add_argument("target", help="the link, as for 'link'")
@@ -1423,7 +1526,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "watch":
         a.every, a.duration = max(2.0, a.every), min(86400.0, max(a.every, a.duration))
-    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd, "watch": watch_cmd, "cabling": cabling_cmd, "isolate": isolate_cmd}[a.cmd]
+    fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd, "watch": watch_cmd,
+          "cabling": cabling_cmd, "isolate": isolate_cmd, "health": health_cmd}[a.cmd]
     if a.cmd == "cabling":                               # no node is logged into
         return fn(a)
     if a.cmd in ("scan", "link", "watch", "isolate"):                        # these keep their log in raw/ and in report.html

@@ -50,13 +50,20 @@ def test_propose_and_conclude_with_a_stand_in_model(monkeypatch):
     ev.add("Verdict: degraded, kind ifcp", "link")
     replies = ['{"done": false, "node": "ct02", "command": "sudo afmctl show port -b 0004:01:00.1 --json", "why": "IFCP"}',
                '{"done": false, "node": "st6", "command": "sudo config interface shutdown Ethernet170", "why": "x"}',
+               '{"done": false, "node": "st6", "command": "show interfaces status -n asic0", "why": "the port"}',
+               '{"done": false, "node": "st6", "command": "show system-health detail -n asic0 -d all", "why": "x"}',
+               '{"done": false, "node": "st6", "command": "show system-health detail -n asic0", "why": "x"}',
                'Here: {"done": true, "conclusion": "st6 asic0 has no IFCP [S1]", "next": "AMD"}']
-    monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (replies.pop(0), "m"))
+    seen = []
+    monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (seen.append(msgs) or replies.pop(0), "m"))
     nodes = {"st6": "switch", "ct02": "compute"}
     p = guide.propose(ai, ev, "link st6 Ethernet170", [], nodes)
     assert p["allowed"] and p["command"] == "afmctl show port -b 0004:01:00.1 --json"
     p = guide.propose(ai, ev, "link st6 Ethernet170", [{"node": "ct02", "command": p["command"], "rc": 0, "output": "x"}], nodes)
-    assert not p["allowed"] and "read-only" in p["refused"]
+    assert p["allowed"] and p["retried"] and p["command"] == "show interfaces status -n asic0"    # refused, told why, asked again
+    assert "Refused:" in seen[-1][-1]["content"] and "watchdogutil status" in seen[-1][-1]["content"]
+    p = guide.propose(ai, ev, "link st6 Ethernet170", [], nodes)
+    assert not p["allowed"] and "read-only" in p["refused"] and p["retried"]                     # refused twice: shown so
     p = guide.propose(ai, ev, "link st6 Ethernet170", [], nodes)
     assert p["done"] and "[S1]" in p["conclusion"]
 

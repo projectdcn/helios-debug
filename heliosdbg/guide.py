@@ -36,6 +36,18 @@ SWITCH_RO = [   # (pattern, needs sudo)
     (rf"sonic-db-cli{_NS}\s+(?:APPL_DB|ASIC_DB|CONFIG_DB|STATE_DB|COUNTERS_DB)\s+(?:keys|hgetall|hget|exists|scan)\s+{_WORD}(?:\s+{_WORD})?", True),
     (r"docker\s+ps(?:\s+-a)?", True),
     (r"uptime|free\s+-[mh]|df\s+-h", False),
+    # SONiC and switch platform health, read-only (heliosdbg/health.py and its follow-ups)
+    (r"show\s+(?:system-health\s+(?:summary|detail|monitor-list|sysready-status)|platform\s+(?:voltage|current|ssdhealth)|"
+     r"reboot-cause(?:\s+history)?|feature\s+status|interfaces\s+counters\s+errors|ip\s+interfaces|ndp|arp)", False),
+    (r"crm\s+show\s+(?:resources\s+(?:all|fdb|ipv4\s+route|ipv6\s+route|nexthop|neighbor|acl\s+table|acl\s+group)|thresholds\s+all|summary)", True),
+    (r"watchdogutil\s+status|ssdutil(?:\s+-d\s+/dev/[a-z0-9]+)?|sensors|decode-syseeprom", True),
+    (r"docker\s+exec\s+[a-z][a-z0-9_-]*\s+(?:supervisorctl\s+status(?:\s+[a-z][a-z0-9_-]*)?|cat\s+/etc/supervisor/critical_processes|"
+     r"ps\s+-eo\s+[a-z,]+)", True),
+    (r"docker\s+(?:logs\s+--tail\s+\d{1,4}\s+[a-z][a-z0-9_-]*|inspect\s+[a-z][a-z0-9_-]*|stats\s+--no-stream)", True),
+    (r"ls\s+-l?\s*/var/core|cat\s+/proc/(?:meminfo|loadavg|uptime)|df\s+-P(?:\s+/[a-z/]*)*", True),
+    (r"journalctl\s+(?:-k|-u\s+[A-Za-z0-9@_.-]+|-p\s+(?:err|warning|crit))(?:\s+-p\s+(?:err|warning|crit))?(?:\s+-n\s+\d+)?"
+     r"(?:\s+--since\s+-?\d+[hm]|\s+--since\s+'-\d+\s+min')?(?:\s+--no-pager)?(?:\s+-q)?", True),
+    (r"systemctl\s+(?:status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?|--failed(?:\s+--no-pager)?|is-active\s+[A-Za-z0-9@_.-]+)", False),
 ]
 COMPUTE_RO = [
     (r"afmctl\s+show\s+(?:device|port|port\s+accelerator-addr|vpod|version|stats)(?:\s+-b\s+[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)?(?:\s+--json)?", True),
@@ -43,7 +55,9 @@ COMPUTE_RO = [
     (r"ip\s+-br\s+(?:link|addr)", False),
     (r"uptime|free\s+-[mh]|df\s+-h|uname\s+-a", False),
     (r"lspci(?:\s+-[nvkD]+)?(?:\s+-s\s+[0-9a-f:.]+)?", False),
-    (r"journalctl\s+(?:-k|-u\s+[A-Za-z0-9@_.-]+)(?:\s+-n\s+\d+)?(?:\s+--no-pager)?", True),
+    (r"journalctl\s+(?:-k|-u\s+[A-Za-z0-9@_.-]+|-p\s+(?:err|warning|crit))(?:\s+-p\s+(?:err|warning|crit))?(?:\s+-n\s+\d+)?"
+     r"(?:\s+--since\s+-?\d+[hm]|\s+--since\s+'-\d+\s+min')?(?:\s+--no-pager)?(?:\s+-q)?", True),
+    (r"df\s+-[Ph](?:\s+/[a-z/]*)*|cat\s+/proc/(?:meminfo|loadavg|uptime)|rdma\s+link\s+show|lspci\s+-d\s+1002:", False),
     # any part of the tray, read-only: GPUs, RDMA NICs, the BMC through the host, services
     (r"amd-smi\s+(?:list|static|metric|firmware|topology|xgmi|process|bad-pages|ras)(?:\s+-[A-Za-z]+|\s+--[a-z-]+|\s+-g\s+\d+)*", True),
     (r"rocm-smi(?:\s+--show[a-z]+|\s+-[itucfPa]|\s+--json)*", True),
@@ -84,7 +98,9 @@ GUIDE_SYSTEM_ADD = (
     '{"done": true, "conclusion": "<root cause in two sentences, citing [E..] / [S..]>", "next": "<what to do and who>"}\n'
     "Each command must be read-only and exist on that node (switch trays: show ..., sudo sonic-db-cli ..., docker ps; "
     "compute trays: sudo afmctl show ..., dmesg, ip -br link, sudo amd-smi metric / static, sudo ipmitool sel list, "
-    "ibv_devinfo, systemctl status <unit>). One command, no ; && pipes except '| grep X' or '| tail -N'. "
+    "ibv_devinfo, systemctl status <unit>; health: show system-health detail, crm show resources all, watchdogutil status, "
+    "sudo docker exec <container> supervisorctl status, sudo docker logs --tail 100 <container>, show reboot-cause history, "
+    "sudo journalctl -k -p err -n 200 --no-pager, sudo amd-smi metric --ecc --json, sudo amd-smi bad-pages -g N). One command, no ; && pipes except '| grep X' or '| tail -N'. "
     "Do not repeat a command already run. At most 6 steps; conclude earlier when you can."
 )
 
@@ -158,9 +174,37 @@ def messages(ai, ev, subject: str, steps: list[dict], nodes: dict) -> list[dict]
     return msgs
 
 
-def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None) -> dict:
-    """The model's next step: {done, node, command, why, allowed, refused} or {done, conclusion, next}."""
+EXAMPLES = {   # exact forms a refused proposal is shown again (models add flags a command does not take: -n asic0 -d all)
+    "switch": ["show system-health detail", "show system-health summary", "watchdogutil status", "crm show resources all",
+               "show platform psustatus", "show platform temperature", "show reboot-cause history",
+               "docker exec pmon supervisorctl status", "docker logs --tail 100 swss0", "show interfaces status -n asic0",
+               "show logging | grep watchdog", "systemctl status watchdog-control"],
+    "compute": ["sudo amd-smi metric --ecc --json", "sudo amd-smi list --json", "sudo afmctl show device --json",
+                "sudo journalctl -k -p err -n 200 --no-pager", "dmesg | grep -i amdgpu", "lspci -d 1002:", "rdma link show",
+                "systemctl --failed --no-pager", "df -h", "free -m"],
+}
+
+
+def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retries: int = 1) -> dict:
+    """The model's next step: {done, node, command, why, allowed, refused} or {done, conclusion, next}. A proposal the
+    read-only list refuses goes back to the model with the reason and the exact forms allowed, once (g02-g17 2 Nov:
+    'show system-health detail -n asic0 -d all' was refused, and proposed again on every 'Another step')."""
     msgs = messages(ai, ev, subject, steps, nodes)
+    out = _propose_once(ai, msgs, subject, steps, nodes, env)
+    for _ in range(retries):
+        if out.get("done") or out.get("allowed") or not out.get("refused") or out["refused"].startswith("already run"):
+            break
+        role = nodes.get(out.get("node"), "switch")
+        msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
+                       {"role": "user", "content": f"Refused: {out['refused']}. Propose ONE command that exists on that node, "
+                        f"exactly in one of these forms (or another plain show / read command without extra flags): "
+                        f"{'; '.join(EXAMPLES.get(role, EXAMPLES['switch']))}. Answer with the JSON object only."}]
+        out = _propose_once(ai, msgs, subject, steps, nodes, env) | {"retried": True}
+    out.pop("_text", None)
+    return out
+
+
+def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=None) -> dict:
     text, model = ai.chat(msgs, env, max_tokens=500)
     st = parse_step(text)
     st["model"] = model
@@ -169,7 +213,7 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None) -> d
                 "answer_id": ai.remember(msgs, text, model, subject + " (step by step)")}
     node = str(st.get("node") or "").strip()
     out = {"done": False, "node": node, "command": str(st.get("command") or "").strip(), "why": str(st.get("why") or ""),
-           "model": model, "allowed": False, "refused": None}
+           "model": model, "allowed": False, "refused": None, "_text": text}
     if node not in nodes:
         out["refused"] = f"'{node}' is not a node of this rack"
         return out

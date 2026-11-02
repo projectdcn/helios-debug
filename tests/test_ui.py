@@ -531,3 +531,42 @@ def test_ai_diagnose_context_reads_a_real_shaped_result():
     txt = ev.block()
     assert "on st1: show interfaces status -n asic0 Ethernet1" in txt and "node agent of slot 0: NOT OK" in txt
     assert "flap count 3" in txt and "could not read c1" in txt and subject == "diagnosed link st1 Ethernet1"
+
+
+def test_health_job_args_and_its_result_is_an_any_problem_report(ui):
+    base, tmp = ui
+    code, body = call(base, "/api/run", {"tool": "health", "inventory": "lab.local.yaml", "trays": ["c2"], "only": "trays",
+                                         "no_drift": True, "afm": True, "afm_password": "pw-not-logged"})
+    job = json.loads(body)
+    assert code == 200 and job["argv"][0] == "health" and job["argv"][job["argv"].index("--trays") + 1] == "c2"
+    assert "--only" in job["argv"] and "--no-drift" in job["argv"] and "--no-afm" not in job["argv"]
+    for _ in range(100):
+        j = json.loads(call(base, f"/api/job/{job['id']}")[1])
+        if j["status"] != "running":
+            break
+        time.sleep(0.1)
+    assert "afm env set: True" in j["log"] and "pw-not-logged" not in j["log"]
+    code, body = call(base, "/api/run", {"tool": "health", "inventory": "lab.local.yaml", "trays": ["c9"]})
+    assert code == 400
+
+
+def test_health_and_symptom_evidence(tmp_path):
+    from heliosdbg import cases
+    d = tmp_path / "link-check" / "lab" / "health-20261102-063300"
+    d.mkdir(parents=True)
+    f = {"node": "st1", "role": "switch", "check": "watchdog", "area": "sonic", "severity": "warning",
+         "what": "hardware watchdog not armed", "cause": "not armed at start", "owner": "network", "next": "x",
+         "evidence": ["Status: Unarmed"], "command": "watchdogutil status"}
+    g = dict(f, node="c1", role="compute", check="rdma", area="rdma", what="1 RDMA NIC port(s) not ACTIVE", owner="compute")
+    (d / "health.json").write_text(json.dumps({"rack": "lab", "nodes": {"st1": {"not_run": ["voltage"]}, "c1": {"not_run": []}},
+                                               "findings": [f, g], "summary": {"critical": 0, "warning": 2}, "unreachable": []}))
+    rel = "link-check/lab/health-20261102-063300"
+    assert cases.spec_of({"path": rel, "node": "st1"}) == {"path": rel, "node": "st1"}
+    ev, subject, rack = cases.context({"path": rel, "node": "st1"}, tmp_path)
+    texts = " ".join(x["text"] for x in ev.items)
+    assert rack == "lab" and subject == "the health of st1" and "watchdog not armed" in texts and "RDMA" not in texts
+    assert "Not checked (command missing or failed): st1: voltage" in texts
+    ev, subject, rack = cases.context({"path": rel}, tmp_path)
+    assert "RDMA" in " ".join(x["text"] for x in ev.items) and rack == "lab"
+    ev, subject, rack = cases.context({"blocks": [], "subject": "st3: PSU 2 shows N/A", "rack": "lab"}, tmp_path)
+    assert subject == "st3: PSU 2 shows N/A" and rack == "lab" and "nothing collected yet" in ev.items[0]["text"]

@@ -20,8 +20,8 @@ from pathlib import Path
 from .ai import AIError, Evidence
 from .guide import compact
 
-TOOLS = ("bcm", "path", "pingmap", "watch", "cabling", "isolate")
-REPORT_RX = re.compile(r"link-check/[A-Za-z0-9_.-]+/(?:bcm|path|pingmap|watch|cabling|isolate)-[0-9]{8}-[0-9]{6}")
+TOOLS = ("bcm", "path", "pingmap", "watch", "cabling", "isolate", "health")
+REPORT_RX = re.compile(r"link-check/[A-Za-z0-9_.-]+/(?:bcm|path|pingmap|watch|cabling|isolate|health)-[0-9]{8}-[0-9]{6}")
 IMPORTANT = re.compile(
     r"\b(fail\w*|error\w*|err\b|down|not ok|nok|timeout|timed out|denied|refused|missing|mismatch\w*|warn\w*|critical|"
     r"fatal|panic|degraded|blocked|unreachable|no such|cannot|can't|unable|invalid|exceed\w*|lost|drop\w*|abort\w*|"
@@ -88,14 +88,39 @@ def _when(name: str) -> str:
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)} UTC" if m else name
 
 
-def report_context(results_dir: Path, rel: str) -> tuple[Evidence, str, str]:
+def health_context(d: Path, rack: str, name: str, node: str = "") -> tuple[Evidence, str, str]:
+    """A node health result as evidence: one item per finding (what, cause, owner, evidence lines) - of one node when
+    ``node`` is given - and the checks that could not run (a missing finding there is not health)."""
+    import json
+    res = json.loads((d / "health.json").read_text())
+    fs = [f for f in res.get("findings") or [] if not node or f["node"] == node]
+    ev = general(Evidence())
+    s = res.get("summary") or {}
+    ev.add(f"Rack {rack}: helios-debug node health of {_when(name)}" + (f", node {node}" if node else "") +
+           f": {s.get('critical', 0)} critical, {s.get('warning', 0)} warning on {len(res.get('nodes') or {})} node(s)"
+           + (f"; not reached: {', '.join(res['unreachable'])}" if res.get("unreachable") else ""), "health")
+    for f in fs[:40]:
+        ev.add(f"{f['severity'].upper()} {f['node']} [{f['area']}, owner {f['owner']}]: {f['what']} - {f['cause']}. "
+               f"Evidence ({f['command'][:120]}): " + " | ".join(f["evidence"][:4])[:600], "health")
+    nr = {n: v.get("not_run") for n, v in (res.get("nodes") or {}).items() if v.get("not_run") and (not node or n == node)}
+    if nr:
+        ev.add("Not checked (command missing or failed): " + "; ".join(f"{n}: {', '.join(v)}" for n, v in sorted(nr.items())), "health")
+    if not fs:
+        ev.add("No problem found" + (f" on {node}" if node else " on the nodes checked"), "health")
+        ev.verdict = "ok"
+    return ev, (f"the health of {node}" if node else f"the node health result {name}"), rack
+
+
+def report_context(results_dir: Path, rel: str, node: str = "") -> tuple[Evidence, str, str]:
     if not REPORT_RX.fullmatch(rel or ""):
-        raise AIError("path: link-check/<rack>/<bcm|path|pingmap|watch|cabling|isolate>-<time>")
+        raise AIError("path: link-check/<rack>/<bcm|path|pingmap|watch|cabling|isolate|health>-<time>")
     d = Path(results_dir) / rel
     if not d.is_dir():
         raise AIError(f"no result {rel}")
     rack, name = rel.split("/")[1], rel.split("/")[2]
     tool = name.split("-", 1)[0]
+    if tool == "health" and (d / "health.json").is_file():
+        return health_context(d, rack, name, node)
     ev = general(Evidence())
     ev.add(f"Rack {rack}: helios-debug {tool} result of {_when(name)}", tool)
     files = [f for f in ("report.txt", "bcm.txt") if (d / f).is_file()]
@@ -154,7 +179,9 @@ def test_context(row: dict) -> tuple[Evidence, str, str]:
 
 # ------------------------------------------------------------------------------------------------ blocks
 
-def clean_blocks(blocks) -> list[dict]:
+def clean_blocks(blocks, subject: str = "") -> list[dict]:
+    if isinstance(blocks, list) and not blocks and subject.strip():
+        return []                        # a symptom alone: step by step starts from the description
     if not isinstance(blocks, list) or not blocks:
         raise AIError("blocks: [{node, command, output}] - at least one output")
     out = []
@@ -169,8 +196,12 @@ def clean_blocks(blocks) -> list[dict]:
 
 
 def blocks_context(blocks, subject: str = "", rack: str = "") -> tuple[Evidence, str, str]:
-    bs = clean_blocks(blocks)
+    bs = clean_blocks(blocks, subject or "")
     ev = general(Evidence())
+    if not bs:
+        ev.add(f"Reported symptom{' on rack ' + rack if rack else ''}: {(subject or '').strip()[:600]} - nothing collected yet: "
+               "start with the read-only commands that show it", "symptom")
+        return ev, (subject or "").strip()[:160], rack
     ev.add(f"Outputs collected by hand{' on rack ' + rack if rack else ''}: {len(bs)}", "outputs")
     for b in bs:
         where = f"On {b['node']}" if b["node"] else "Output"
@@ -187,7 +218,7 @@ def context(spec: dict, results_dir: Path) -> tuple[Evidence, str, str]:
     if isinstance(spec.get("test"), dict):
         t = spec["test"]
         return test_context(find_test(str(t.get("run") or ""), str(t.get("tc_id") or ""), str(t.get("test") or "")))
-    return report_context(results_dir, str(spec.get("path") or "").strip("/"))
+    return report_context(results_dir, str(spec.get("path") or "").strip("/"), str(spec.get("node") or "")[:80])
 
 
 def spec_of(req: dict) -> dict | None:
@@ -195,5 +226,5 @@ def spec_of(req: dict) -> dict | None:
     if req.get("blocks") is not None or isinstance(req.get("test"), dict):
         return {k: req.get(k) for k in ("blocks", "subject", "rack", "test") if req.get(k) is not None}
     if REPORT_RX.fullmatch(str(req.get("path") or "").strip("/")):
-        return {"path": str(req["path"]).strip("/")}
+        return {"path": str(req["path"]).strip("/")} | ({"node": str(req["node"])} if req.get("node") else {})
     return None

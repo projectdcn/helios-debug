@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Helios link debug</title>
+<title>Helios debug</title>
 <style>
 :root{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--card:#fff;--acc:#2f5bd3;--ok:#067647;--deg:#b54708;--down:#b42318;
 --okbg:#e7f6ec;--degbg:#fef3e2;--downbg:#fdecea;--code:#eef1f5}
@@ -122,7 +122,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
 </head>
 <body>
 <header>
-  <div><h1>Helios link debug</h1><div class="mut" id="where">checks of the links between the GPUs and the switch trays</div></div>
+  <div><h1>Helios debug</h1><div class="mut" id="where">GPU links, SONiC switch trays, compute trays / GPUs and AFM of a Helios rack</div></div>
   <div class="hdr-right">
     <div style="min-width:240px"><label for="inv">Rack</label><select id="inv"></select></div>
     <button class="sec" id="chat-open" title="ask the AI anything about this rack">Chat</button>
@@ -137,6 +137,8 @@ body.chat-open main{margin-right:min(460px,100vw)}
   <nav role="tablist">
     <button role="tab" data-t="home" aria-selected="true">Start here</button>
     <button role="tab" data-t="scan">Check all links</button>
+    <button role="tab" data-t="health" title="SONiC, switch platform, compute trays / GPUs and AFM - one finding per problem">Node health</button>
+    <button role="tab" data-t="debug" title="describe a symptom on any node; the AI proposes read-only commands one at a time">Debug a node</button>
     <button role="tab" data-t="map">Rack map</button>
     <button role="tab" data-t="link">Diagnose a link</button>
     <button role="tab" data-t="anyprob" title="a helios-tests result, a tool report or outputs you collected - any part of the rack">Any problem</button>
@@ -285,6 +287,30 @@ body.chat-open main{margin-right:min(460px,100vw)}
       <div id="afm-pw-box" class="hide"><label for="scan-afmpw">AFM password (used for this run only, not stored)</label><input id="scan-afmpw" type="password" autocomplete="off"></div>
     </div>
     <div class="row"><button class="go" data-run="scan">Run scan</button><span class="mut" id="afm-note"></span></div>
+  </section>
+
+  <section class="card hide" data-p="health">
+    <h2>Node health</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Checks every switch tray, compute tray (and AFM) beyond the links: SONiC (system health, containers, critical daemons, CRM tables, disk, memory, core files, reboot cause, syslog errors, running vs saved configuration), the switch platform (PSUs, fans, temperatures, voltages, watchdog), the compute trays (GPUs, ECC, PCIe, GPU configuration in afmctl, kernel errors, disk, memory, RDMA NICs, failed services) and AFM (agent, certificates; with the password, AFM's view of every compute node). One finding per problem: what, why, who owns it, the next step, the evidence.</dd><dt>When</dt><dd>Before and after test runs, when a node misbehaves, or as a first look at a rack.</dd><dt>How long</dt><dd>About a minute on a full rack (nodes in parallel).</dd><dt>Safe?</dt><dd>Yes - it only reads.</dd></dl></details>
+    <div class="grid">
+      <div><label>Switch trays (none = all)</label><div class="checks" id="health-sw"></div></div>
+      <div><label>Compute trays (none = all)</label><div class="checks" id="health-ct"></div></div>
+      <div><label for="health-only">Nodes</label><select id="health-only"><option value="">switches and compute trays</option><option value="switches">switches only</option><option value="trays">compute trays only</option></select></div>
+    </div>
+    <div class="grid" style="margin-top:10px">
+      <div class="checks"><label><input type="checkbox" id="health-drift" checked>Running vs saved configuration (switches)</label></div>
+      <div class="checks"><label><input type="checkbox" id="health-afm">AFM view of the compute nodes</label></div>
+      <div id="health-pw-box" class="hide"><label for="health-afmpw">AFM password (used for this run only, not stored)</label><input id="health-afmpw" type="password" autocomplete="off"></div>
+    </div>
+    <div class="row"><button class="go" data-run="health">Check node health</button></div>
+  </section>
+
+  <section class="card hide" data-p="debug">
+    <h2>Debug a node</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>For any problem on any node - a SONiC daemon, a PSU, a GPU, AFM, a tray's OS: describe what you see, and the AI proposes one read-only command at a time (checked against the read-only list of that kind of node; nothing runs until you click Run), reads the output and proposes the next, until it can name the cause.</dd><dt>When</dt><dd>A node misbehaves and no tool here covers it, or after Node health to dig into one finding.</dd><dt>How long</dt><dd>A few minutes, one click per step.</dd><dt>Safe?</dt><dd>Yes - read-only commands only, each on your click.</dd></dl></details>
+    <div class="row"><input id="dbg-subj" maxlength="300" placeholder="what you see, e.g. st3: PSU 2 shows N/A; ct07 GPU 2 resets during RCCL; afm-agent keeps restarting on st1" style="flex:1;min-width:300px"><button class="go" id="dbg-go">Start</button></div>
+    <p class="mut" style="font-size:12px">Name the node(s) in the description. Add outputs you already have in Any problem instead, if you collected some.</p>
+    <div id="dbg-ai"></div>
   </section>
 
   <section class="card hide" data-p="bcm">
@@ -508,8 +534,8 @@ function fillInv(){
   fillNodePick("term-node");fillNodePick("cfg-node");
   $("inverr").classList.toggle("hide",!i.error);$("inverr").textContent=i.error?("Inventory "+i.file+": "+i.error):"";
   if(i.error)return;
-  ["scan-sw","bcm-sw","pm-sw"].forEach(function(id){checks(id,i.switches)});
-  ["scan-ct","pm-ct"].forEach(function(id){checks(id,i.computes)});
+  ["scan-sw","bcm-sw","pm-sw","health-sw"].forEach(function(id){checks(id,i.switches)});
+  ["scan-ct","pm-ct","health-ct"].forEach(function(id){checks(id,i.computes)});
   $("path-src").innerHTML=i.computes.map(function(n){return "<option>"+esc(n)+"</option>"}).join("");
   $("path-dst").innerHTML='<option value="">same as source</option>'+i.computes.map(function(n){return "<option>"+esc(n)+"</option>"}).join("");
   $("scan-afm").disabled=!i.afm;
@@ -561,23 +587,25 @@ function req(tool){
   if(tool==="watch"){r.targets=$("watch-targets").value;r.every=+$("watch-every").value;r.duration=Math.round(+$("watch-dur").value*60)}
   if(tool==="cabling"){r.plan=$("cab-plan").value}
   if(tool==="isolate"){r.target=$("iso-target").value.trim();r.confirm=$("iso-confirm").value.trim();r.action=$("iso-action").value;r.hold=+$("iso-hold").value}
+  if(tool==="health"){r.switches=picked("health-sw");r.trays=picked("health-ct");r.only=$("health-only").value;r.no_drift=!$("health-drift").checked;
+    r.afm=$("health-afm").checked;if(r.afm&&$("health-afmpw").value)r.afm_password=$("health-afmpw").value}
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;
 }
-var EST={scan:150,link:60,bcm:25,path:40,cabling:5,isolate:60};
+var EST={scan:150,link:60,bcm:25,path:40,cabling:5,isolate:60,health:60};
 function estimate(tool){if(tool==="watch")return Math.round(+$("watch-dur").value*60);if(tool==="pingmap")return (+$("pm-rounds").value)*(+$("pm-wait").value+20);return EST[tool]||60}
 function moveJobcard(){var sec=document.querySelector("section[data-p]:not(.hide)");if(sec&&sec.nextElementSibling!==$("jobcard"))sec.insertAdjacentElement("afterend",$("jobcard"))}
 function run(tool){
   moveJobcard();$("result").innerHTML="";
   var r=req(tool);
-  api("/api/run",r).then(function(j){$("scan-afmpw").value="";$("link-afmpw").value="";j._est=estimate(tool);show(j,true);$("jobcard").scrollIntoView({block:"nearest",behavior:"smooth"})}).catch(function(e){
+  api("/api/run",r).then(function(j){$("scan-afmpw").value="";$("link-afmpw").value="";$("health-afmpw").value="";j._est=estimate(tool);show(j,true);$("jobcard").scrollIntoView({block:"nearest",behavior:"smooth"})}).catch(function(e){
     $("jobinfo").innerHTML='<span class="err">'+friendly(e.message)+'</span>';$("jobbadge").innerHTML="";$("joblinks").innerHTML="";$("logbox").classList.add("hide");$("jobcard").scrollIntoView({block:"nearest"})})
 }
 function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<span class="badge '+c+'">'+esc(s)+'</span>'}
 function links(j){
   if(!j||j.status==="running")return "";
   var b="/results/"+j.out+"/";
-  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:j.tool==="cabling"?["report.html","report.txt","cabling.json"]:j.tool==="isolate"?["report.txt","isolate.json"]:["report.html","report.txt"];
+  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:j.tool==="cabling"?["report.html","report.txt","cabling.json"]:j.tool==="isolate"?["report.txt","isolate.json"]:j.tool==="health"?["report.html","report.txt","health.json"]:["report.html","report.txt"];
   return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ")+
     ' · <a href="/api/bundle?path='+encodeURIComponent(j.out)+'">bundle.zip</a>';
 }
@@ -587,7 +615,7 @@ function show(j,fresh){
   $("jobbadge").innerHTML=badge(j.status);
   var el=Math.round(((j.ended||Date.now()/1000)-j.started)),mm=function(x){return Math.floor(x/60)+":"+("0"+(x%60)).slice(-2)};
   if(fresh&&j._est)job._est=j._est;
-  $("jobinfo").innerHTML=esc(({scan:"Check all links",link:"Diagnose a link",watch:"Watch links",bcm:"Switch signal",path:"GPU-to-GPU path",pingmap:"Ping map",cabling:"Cabling plan",isolate:"Isolate"})[j.tool]||j.tool)+
+  $("jobinfo").innerHTML=esc(({scan:"Check all links",link:"Diagnose a link",watch:"Watch links",bcm:"Switch signal",path:"GPU-to-GPU path",pingmap:"Ping map",cabling:"Cabling plan",isolate:"Isolate",health:"Node health"})[j.tool]||j.tool)+
     " on "+esc(j.rack)+", started "+esc(new Date(j.started*1000).toLocaleTimeString())+
     (j.status==="running"?'<span class="progress">running '+mm(el)+(job._est?" (usually about "+mm(job._est)+")":"")+"</span>":" - took "+mm(el));
   $("stop").classList.toggle("hide",j.status!=="running");
@@ -818,9 +846,37 @@ function renderResult(j){
       (bad?"Some ports of this path did not pass - see below; Diagnose a link on one of them for the cause.":"Every port checked passed (forwarding entries, test packets, counters).")+
       '</div><pre style="max-height:40vh">'+esc(lines.slice(-30).join("\n"))+"</pre>"})}
   else if(j.tool==="scan"){api("/api/scan?path="+encodeURIComponent(j.out)).then(function(d){box.innerHTML=findingsHtml(d);wireFindingButtons(box)}).catch(function(){})}
+  else if(j.tool==="health"){fetch(base+"health.json").then(function(r){return r.ok?r.json():null}).then(function(d){if(d)renderHealth(box,d,j.out)})}
   else if(j.tool==="watch"){fetch(base+"watch.json").then(function(r){return r.ok?r.json():null}).then(function(w){if(!w)return;
     box.innerHTML=Object.keys(w.per_link).map(function(k){var p=w.per_link[k],bad=p.link_changes||p.down||Object.keys(p.errors_grew).length;
       return '<div class="verdict '+(bad?"down":"ok")+'"><h3>'+esc(k)+"</h3>Up in "+p.up+" of "+p.rounds+" reads, "+p.link_changes+" changes"+(Object.keys(p.errors_grew).length?", errors grew: "+esc(JSON.stringify(p.errors_grew)):"")+"</div>"}).join("")})}
+}
+
+// ---------------------------------------------------------------- node health
+function renderHealth(box,d,out){
+  var fs=d.findings||[],s=d.summary||{},rack=d.rack;
+  var head='<div class="verdict '+(s.critical?"down":s.warning?"degraded":"ok")+'"><h3>'+(fs.length?s.critical+" critical, "+s.warning+" warning finding(s)":"No problem found")+
+    "</h3>"+Object.keys(d.nodes||{}).length+" node(s) checked"+((d.unreachable||[]).length?" - not reached: "+esc(d.unreachable.join(", ")):"")+
+    ((d.quarantined||[]).length?" - quarantined (not checked): "+esc(d.quarantined.join(", ")):"")+
+    ' - <a href="/results/'+esc(out)+'/report.html" target="_blank" rel="noopener">full report</a></div>';
+  var rows=fs.map(function(f,i){return '<tr><td class="'+(f.severity==="critical"?"err":"")+'"><b>'+esc(f.severity)+"</b></td><td>"+esc(f.node)+"</td><td>"+esc(f.area)+
+    "</td><td><b>"+esc(f.what)+'</b><div class="mut" style="font-size:12px">'+esc(f.cause)+'</div><div style="font-size:12px">Next: '+esc(f.next)+
+    '</div><details><summary class="mut" style="font-size:12px">evidence</summary><pre style="max-height:24vh">'+esc((f.evidence||[]).join("\n"))+"</pre>"+
+    '<div class="mut" style="font-size:11px">'+esc(f.command||"")+"</div></details></td><td>"+esc(f.owner)+
+    '</td><td><button class="sec h-ask" data-i="'+i+'" title="the AI on this node\'s findings: root cause, how to debug, step by step">Debug '+esc(f.node.replace(/^AFM /,""))+"</button></td></tr>"}).join("");
+  var nr=Object.keys(d.nodes||{}).filter(function(n){return (d.nodes[n].not_run||[]).length}).map(function(n){return esc(n)+": "+esc(d.nodes[n].not_run.join(", "))});
+  box.innerHTML=head+(fs.length?'<div class="wrap"><table><thead><tr><th>Severity</th><th>Node</th><th>Area</th><th>Finding</th><th>Owner</th><th></th></tr></thead><tbody>'+rows+"</tbody></table></div>":"")+
+    (nr.length?'<p class="mut" style="font-size:12px">Not checked (command missing or failed on the node): '+nr.join("; ")+"</p>":"")+'<div id="h-ai"></div>';
+  aiPanel($("h-ai"),{path:out,rack:rack,label:"node health "+out.split("/").pop()});
+  box.querySelectorAll(".h-ask").forEach(function(b){b.addEventListener("click",function(){var f=fs[+b.dataset.i],node=f.node;
+    aiPanel($("h-ai"),{path:out,rack:rack,spec:{path:out,node:node},label:"the health of "+node});$("h-ai").scrollIntoView({behavior:"smooth",block:"nearest"})})});
+}
+function debugNode(){
+  var subj=$("dbg-subj").value.trim(),i=inv();
+  if(!subj){$("dbg-ai").innerHTML='<p class="err">Describe what you see first (and on which node).</p>';return}
+  if(!i||!i.rack){$("dbg-ai").innerHTML='<p class="err">Pick the rack at the top first.</p>';return}
+  aiPanel($("dbg-ai"),{spec:{blocks:[],subject:subj,rack:i.rack},rack:i.rack,label:subj});
+  var g=$("dbg-ai").querySelector(".ai-guide-go");if(g&&!g.disabled)g.click();
 }
 
 // ---------------------------------------------------------------- GPU-to-GPU path pickers
@@ -2040,6 +2096,8 @@ $("acc-keygen").addEventListener("click",function(){
 $("inv").addEventListener("change",function(){accState={}});
 document.querySelectorAll("nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.t)})});
 document.querySelectorAll("button[data-run]").forEach(function(b){b.addEventListener("click",function(){run(b.dataset.run)})});
+$("health-afm").addEventListener("change",function(){$("health-pw-box").classList.toggle("hide",!this.checked)});
+$("dbg-go").addEventListener("click",debugNode);$("dbg-subj").addEventListener("keydown",function(e){if(e.key==="Enter")debugNode()});
 $("inv").addEventListener("change",fillInv);
 $("scan-afm").addEventListener("change",function(){$("afm-pw-box").classList.toggle("hide",!$("scan-afm").checked)});
 $("stop").addEventListener("click",function(){if(job)api("/api/job/"+job.id+"/stop",{}).then(function(j){show(j,false)})});

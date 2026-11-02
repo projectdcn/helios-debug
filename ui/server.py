@@ -43,7 +43,7 @@ PAGE = (STATIC / "index.html").read_bytes()
 VENDOR = {n: (t, (STATIC / "vendor" / n).read_bytes()) for n, t in (            # served as-is, a fixed list
     ("xterm/xterm.js", "text/javascript; charset=utf-8"), ("xterm/addon-fit.js", "text/javascript; charset=utf-8"),
     ("xterm/xterm.css", "text/css; charset=utf-8")) if (STATIC / "vendor" / n).is_file()}
-TOOLS = ("scan", "link", "watch", "cabling", "isolate", "bcm", "path", "pingmap")
+TOOLS = ("scan", "link", "watch", "cabling", "isolate", "bcm", "path", "pingmap", "health")
 TARGET_RX = re.compile(r"^[A-Za-z0-9 _./:\[\],()-]{1,200}$")
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PORTS_RX = re.compile(r"^Ethernet\d{1,4}(,Ethernet\d{1,4}){0,63}$")
@@ -155,7 +155,7 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
     rack = inv.rack or f.stem
     out = state.results_dir / "link-check" / rack / f"{tool}-{stamp}"
     a = [tool, "--inventory", str(f), "--out", str(out)]
-    if tool in ("scan", "pingmap"):
+    if tool in ("scan", "pingmap", "health"):
         s = _names(req.get("switches"), sws, "switch")
         t = _names(req.get("trays"), cts, "compute tray")
         a += (["--switches", s] if s else []) + (["--trays", t] if t else [])
@@ -210,6 +210,13 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
         pf = d / f"plan-{stamp}-{uuid.uuid4().hex[:6]}.csv"
         pf.write_text(plan)
         a += ["--plan", str(pf)]
+    elif tool == "health":
+        if req.get("only") in ("switches", "trays"):
+            a += ["--only", req["only"]]
+        if req.get("no_drift"):
+            a.append("--no-drift")
+        if not req.get("afm"):
+            a.append("--no-afm")
     elif tool == "pingmap":
         a += ["--rounds", str(_int(req, "rounds", 1, 100, 3)), "--wait", str(_int(req, "wait", 0, 3600, 60))]
     elif tool == "bcm":
@@ -944,7 +951,7 @@ def start_job(state: State, req: dict) -> dict:
             raise BadRequest(f"a {state.jobs[state.current]['tool']} run is already running - wait for it or stop it")
         jid = uuid.uuid4().hex[:12]
         env = dict(os.environ)
-        if req.get("tool") in ("scan", "link") and req.get("afm") and req.get("afm_password"):
+        if req.get("tool") in ("scan", "link", "health") and req.get("afm") and req.get("afm_password"):
             _f, inv = state.inventory(req["inventory"])
             env[((inv.afm or {}).get("auth") or {}).get("password_env") or "HELIOS_AFM_PASSWORD"] = str(req["afm_password"])
         job = {"id": jid, "tool": req["tool"], "rack": rack, "inventory": req["inventory"], "argv": args,

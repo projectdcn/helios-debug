@@ -1,12 +1,22 @@
 # helios-debug
 
-Debug tools for the AMD Helios scale-up fabric, separate from the test-case automation (helios-tests).
+Debug tools for AMD Helios racks - the scale-up fabric, SONiC switch trays, compute trays / GPUs and AFM - separate from the test-case automation (helios-tests).
 
 - **Link check** (`tools/link_check.py` scan | link | watch | cabling | bcm | path | pingmap | isolate): every GPU link of a rack (switch port <-> GPU port), its state
   (ok / degraded / down) and, for each problem, one root cause with the evidence, who owns the fix and the next step.
   Also each GPU's state (`afmctl` config phase), and with the AFM password set (optional, `afm:` block in the
   inventory) AFM's view: vPOD membership, accelerator ids and port state. Read-only, SSH (+ AFM GETs). Runs on
   any rack described by an inventory.
+- **Node health** (`tools/link_check.py health`, `heliosdbg/health.py`): every switch tray, compute tray and AFM beyond
+  the links - SONiC (system health, containers and restarts, critical daemons, CRM tables, disk, memory, core files,
+  reboot cause, syslog errors grouped by message, running vs saved configuration), the switch platform (PSUs, fans,
+  temperatures, voltages, watchdog), the compute trays (amd-smi GPUs, ECC, PCIe, afmctl GPU state, kernel errors incl.
+  machine checks, disk, memory, RDMA NIC ports, failed services) and AFM (agent, controller and agent certificates; with
+  the password, AFM's view of the compute nodes). One finding per problem - area, owner, next step, evidence - and the
+  same finding on many nodes as one rack-wide finding; a check whose command is missing or fails is listed as not
+  checked, never as healthy. Read-only.
+- **Debug a node** (web UI): describe a symptom on any node; the AI proposes one read-only command at a time (allow-list
+  per kind of node, including the health commands), you click Run, it reads the output - until it names the cause.
 - **Debug guide** (`docs/link-debug-guide.md`, `docs/link-debug-guide.html` to share; regenerate with `python3 tools/md_to_html.py docs/link-debug-guide.md`): how to isolate a link problem by hand, layer by layer, with every
   command, and the abbreviations.
 - **Topology** (`docs/scaleup-topology.html`): how the GPUs / compute trays are cabled to the switch trays (planes,
@@ -48,7 +58,12 @@ password in the file. Rack behind a bastion: `transport.jump`. The compute tray 
 .venv/bin/python tools/link_check.py pingmap --inventory inv.yaml --rounds 12 --wait 300
 .venv/bin/python tools/link_check.py path --inventory inv.yaml --src ct03 --src-bdf 0004:01:00.1 --dst-acc 8 --ports 25,26
 .venv/bin/python tools/link_check.py bcm --inventory inv.yaml --switch st6 --ports Ethernet257,Ethernet261
+.venv/bin/python tools/link_check.py health --inventory inv.yaml [--only switches|trays] [--switches st1] [--trays ct07] [--no-drift]
 ```
+
+- `health`: report.html / report.txt / health.json + raw/outputs.json.gz under `results/link-check/<rack>/health-<time>/`;
+  exit 1 when there are findings. Thresholds: `thresholds: {health: {disk_warn: 85, crm_warn: 85, gpu_hot: 100, ...}}`
+  in the inventory. The AI (Ask / step by step) reads a health result as evidence, for the whole rack or one node.
 
 - `scan`: every link; counters sampled twice (`--interval`, 30 s) so only growing errors count; patterns across
   problem links (several on one GPU, the same GPU position on many trays, adjacent ports on one ASIC); cabling checked
