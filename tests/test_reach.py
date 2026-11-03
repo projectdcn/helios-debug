@@ -52,3 +52,15 @@ def test_unsafe_reads_are_not_steps():
     assert ai.unsafe_text("2. reboot the switch") == "reboot"
     assert ai.unsafe_text("2. config reload") == "config reload"
     assert ai.unsafe_text("1. config save (on st5)") == "config save"
+
+
+def test_only_ssh_failures_are_access_problems():
+    """3 Nov audit: a hung command read as 'no answer, powered off'; redis's 'Permission denied' as 'login refused'."""
+    from heliosdbg.transport import CmdResult, CommandError, CommandTimeout
+    redis = CommandError(CmdResult("st1", "show interfaces status", 1, "", "Permission denied: /var/run/redis/redis.sock"))
+    assert reach.classify(redis) is None and reach.classify(str(redis)) is None
+    ssh = CommandError(CmdResult("st1", "x", 255, "", "ssh: connect to host 10.0.0.1 port 22: No route to host\n"))
+    assert reach.classify(ssh)["kind"] == "no_route" and reach.classify(str(ssh))["kind"] == "no_route"
+    hung = CommandTimeout("[ct12] timed out after 60s: afmctl show port -b 0002:01:00.1")
+    assert reach.classify(hung)["kind"] == "cmd_timeout"
+    assert reach.classify("NoValidConnectionsError: Unable to connect to port 22")["kind"] == "timeout"

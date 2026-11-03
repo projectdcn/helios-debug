@@ -686,6 +686,7 @@ function friendly(msg){
    [/no route|off the network|network is unreachable|host is unreachable/i,"Not on the network - powered off, OS down, or its management link. Check its power and console on its BMC."],
    [/ssh refused|connection refused/i,"It answers but SSH is not listening - booting, or its SSH server stopped. Wait a few minutes, else check it on the console."],
    [/did not open a session|secsh channel|administratively prohibited|channelexception/i,"The jump host did not open a session to it - usually its limit on sessions at once (retried by itself)."],
+   [/command hung/i,"It answers SSH, but a command did not finish in time - the node is overloaded or a tool is stuck (a GPU in a bad state?). Run the command by hand there."],
    [/name not resolved|could not resolve/i,"Its name does not resolve - check the address in the inventory."],
    [/unable to connect|timed out|timeout|unreachable|novalidconnections/i,"No answer - powered off, hung, or a firewall in the way. Check its power and console on its BMC."],
    [/sudo/i,"Logged in, but sudo asks for a password there - the user needs sudo without a password."],

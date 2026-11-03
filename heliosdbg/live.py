@@ -62,7 +62,7 @@ def wrap(cmd: str, max_s: float) -> str:
 
 def _why(e: Exception) -> dict:
     """A follower's error: the access reason when SSH failed (login refused / no route ...), else the exception."""
-    acc = reach.classify(getattr(getattr(e, "result", None), "stderr", None) or str(e))   # ssh's own line, not ours
+    acc = reach.classify(e)                          # ssh's own line when ssh failed (rc 255), else None
     return {"error": (f"{acc['what']}: {acc['line']}" if acc else f"{type(e).__name__}: {str(e)[:160]}"),
             "access": acc}
 

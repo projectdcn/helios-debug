@@ -45,11 +45,23 @@ KINDS = [
      "the node's auth.log"),
 ]
 _RX = [(k, re.compile(p, re.I), w, o, n) for k, p, w, o, n in KINDS]
+HUNG_RX = re.compile(r"\] timed out after \d+(?:\.\d+)?s:")     # transport.CommandTimeout
 
 
 def classify(err, user: str = "", host: str = "") -> dict | None:
     """{kind, what, owner, next, line} for an access failure in `err` (text or exception), None when it is not one."""
     text = err if isinstance(err, str) else f"{type(err).__name__}: {err}"
+    res = getattr(err, "result", None)
+    rc = res.rc if res is not None else next((int(m) for m in re.findall(r"\brc=(\d+)", text or "")), None)
+    if rc is not None and rc != 255:
+        return None          # logged in, the command failed: its 'Permission denied' / 'Connection refused' is redis's
+    if HUNG_RX.search(text or ""):
+        return {"kind": "cmd_timeout", "what": "a command hung (the login worked)", "owner": SITE,
+                "next": f"{host or 'the node'} answered SSH but the command did not finish in time: the node is "
+                        "overloaded or the tool is stuck (a GPU in a bad state?) - run it by hand there",
+                "line": next((ln.strip() for ln in text.splitlines() if HUNG_RX.search(ln)), "")[:200]}
+    if res is not None:
+        text = res.stderr or ""                      # ssh's own message, not our wrapper's
     for kind, rx, what, owner, nxt in _RX:
         m = rx.search(text or "")
         if m:
