@@ -166,8 +166,10 @@ def afm_events(afm, sw_port: str, acc: str | None, gpu_port: int | None, since: 
             body = json.dumps(e) if kind == "afm audit" else str(e.get("message") or "")
             if not (word.search(body) or (gpu and gpu.search(body))):
                 continue
-            try:
-                t = datetime.fromisoformat(ts.replace("Z", "+00:00")[:26] + ("+00:00" if "+" not in ts[19:] else ""))
+            try:     # fractions trimmed to 6 digits, the offset kept (cutting at 26 dropped '-07:00' / shifted it)
+                t = datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", ts.replace("Z", "+00:00")))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
             except ValueError:
                 t = since
             if t < since:

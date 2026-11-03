@@ -177,9 +177,6 @@ class SonicSwitch:
         """swss + asic1 -> 'swss1' (container) or 'swss@1' (service, sep='@')."""
         return f"{base}{sep}{ns.removeprefix('asic')}" if ns else base
 
-    def restart_service(self, base: str, ns: str | None, timeout: float = 600) -> CmdResult:
-        return self.run(f"systemctl restart {self.per_asic(base, ns, '@')}", sudo=True, timeout=timeout)
-
     def critical_processes(self, container: str) -> list[str]:
         out = self.run(f"docker exec {container} cat /etc/supervisor/critical_processes", sudo=True)
         names = []

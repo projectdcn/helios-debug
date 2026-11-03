@@ -11,6 +11,7 @@ stderr may carry a login banner, so every command discards it before JSON parsin
 from __future__ import annotations
 
 import json
+import shlex
 import re
 import time
 from dataclasses import dataclass, field
@@ -206,16 +207,17 @@ class Afmctl:
 
     def ports_raw(self, bdf: str) -> list[dict]:
         """Raw `afmctl show port -b <bdf> --json` port objects (spec, status, status.ifcp.*)."""
-        doc = json.loads(self._json(f"show port -b {bdf} --json"))
+        doc = json.loads(self._json(f"show port -b {shlex.quote(bdf)} --json"))
         return next((d.get("port") or [] for d in _devices(doc) if str(d.get("bdf")) == bdf), [])
 
     def ports(self, bdf: str) -> list[Port]:
-        return parse_show_port(self._json(f"show port -b {bdf} --json")).get(bdf, [])
+        return parse_show_port(self._json(f"show port -b {shlex.quote(bdf)} --json")).get(bdf, [])
 
     def ping(self, src_bdf: str, dst_acc: str, ports: list[int], *, timeout: float = 200,
              busy_retries: int = 5, busy_wait: float = 20):
         """One bounded ping; retried while the host is busy with another ping. Returns (PingResult, CmdResult)."""
-        cmd = (f"timeout {int(timeout)} afmctl test ping -b {src_bdf} -c 1 --dst-accelerator {dst_acc} "
+        cmd = (f"timeout {int(timeout)} afmctl test ping -b {shlex.quote(src_bdf)} -c 1 "     # AFM data: quoted
+               f"--dst-accelerator {shlex.quote(str(dst_acc))} "
                f"--port {','.join(map(str, ports))} 2>&1")
         for attempt in range(busy_retries + 1):
             r = self.c.run(cmd, sudo=True, timeout=timeout + 30)

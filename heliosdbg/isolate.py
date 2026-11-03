@@ -12,6 +12,7 @@ Actions: switch-flap (config interface shutdown / startup), gpu-flap (afmctl upd
 """
 from __future__ import annotations
 
+import re
 import signal
 import time
 from datetime import datetime, timezone
@@ -78,6 +79,9 @@ def _sw_oper(sw, ns, port) -> str:
 def run(sw, tray, ln, action: str, hold_s: float, avoid: set[str], log=print, wait_up_s: float = 120,
         collateral_s: float = 90, sleep=time.sleep) -> dict:
     check_allowed(ln, avoid, action)
+    for v in (ln.sw_port, ln.asic or "", ln.bdf or ""):   # these go into a sudo command line on the rack
+        if not re.fullmatch(r"[A-Za-z0-9:./_-]*", str(v)):
+            raise Refused(f"refusing an unexpected value in the command: {v!r}")
     hold_s = max(1.0, min(float(hold_s), MAX_HOLD_S))
     ns = ln.asic or None
     steps: list[dict] = []
