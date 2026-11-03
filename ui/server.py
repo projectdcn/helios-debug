@@ -844,8 +844,15 @@ def discover_rack(req: dict) -> dict:
     key = str(req.get("key_file") or "").strip() or None
     if key and not re.match(r"^[~A-Za-z0-9_./-]{1,200}$", key):
         raise BadRequest("key file: a path like ~/.ssh/id_ed25519")
+    jump = None
+    jh = str(req.get("jump_host") or "").strip()
+    if jh:                                            # a rack reachable only through a jump host (g02-g17)
+        ju, jp = str(req.get("jump_user") or "").strip(), _int(req, "jump_port", 1, 65535, 22)
+        if not ADDR_RX.match(jh) or (ju and not USER_RX.match(ju)):
+            raise BadRequest("jump host: an address (and a user name: letters, digits, _ . -)")
+        jump = {"host": jh, "port": jp, **({"user": ju} if ju else {}), "via": "exec"}
     found, errors = [], {}
-    for a, v, e in fan_out(lambda x: discover.read_switch(x, us, key_file=key), addrs):
+    for a, v, e in fan_out(lambda x: discover.read_switch(x, us, key_file=key, jump=jump), addrs):
         if e:
             errors[a] = f"{type(e).__name__}: {str(e)[:200]}"
         else:
@@ -864,8 +871,18 @@ def discover_rack(req: dict) -> dict:
             errors["afm"] = str(e)
         finally:
             os.environ.pop(env, None)
-    text = discover.draft(rack, found, us, uc or "FILL-ME-tray-user", afm_url, trays, key)
+    text = discover.draft(rack, found, us, uc or "FILL-ME-tray-user", afm_url, trays, key, jump=jump)
     return {"yaml": text, "switches": found, "errors": errors}
+
+
+def inventory_text(state: State, name: str) -> dict:
+    """An inventory file as written (comments kept), for editing in Add / edit a rack - also one that does not load."""
+    if not NAME_RX.match(name or "") or not name.endswith(".yaml"):
+        raise BadRequest("unknown inventory")
+    f = state.inventory_dir / name
+    if not f.is_file():
+        raise BadRequest(f"no inventory {name}")
+    return {"file": f.name, "name": re.sub(r"(\.local)?\.yaml$", "", f.name), "yaml": f.read_text()}
 
 
 def save_inventory(state: State, req: dict) -> dict:
@@ -880,6 +897,7 @@ def save_inventory(state: State, req: dict) -> dict:
     f = state.inventory_dir / f"{name}.local.yaml"
     if f.exists() and not req.get("overwrite"):
         raise BadRequest(f"{f.name} exists - tick overwrite to replace it")
+    backup = None
     tmp = state.inventory_dir / f".{name}.check.yaml"
     tmp.write_text(text)
     try:
@@ -888,8 +906,11 @@ def save_inventory(state: State, req: dict) -> dict:
         raise BadRequest(f"not a valid inventory: {type(e).__name__}: {str(e)[:200]}") from None
     finally:
         tmp.unlink(missing_ok=True)
+    if f.exists() and f.read_text() != text:          # an edit keeps the previous file beside it
+        backup = f.with_name(f"{f.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+        backup.write_text(f.read_text())
     f.write_text(text)
-    return {"file": f.name, "rack": inv.rack, "switches": len(inv.switches), "computes": len(inv.computes),
+    return {"file": f.name, "backup": backup.name if backup else None, "rack": inv.rack, "switches": len(inv.switches), "computes": len(inv.computes),
             "fill_me": sum(ln.count("FILL-ME") for ln in text.splitlines() if not ln.lstrip().startswith("#"))}
 
 
@@ -1099,6 +1120,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not f:
                     return self._json(404, {"error": "not found"})
                 return self._send(200, f[1], f[0])
+            if u.path == "/api/inventory/text":
+                return self._json(200, inventory_text(st, (parse_qs(u.query).get("file") or [""])[0]))
             if u.path == "/api/state":
                 with st.lock:
                     cur = public(st.jobs[st.current]) if st.current else None

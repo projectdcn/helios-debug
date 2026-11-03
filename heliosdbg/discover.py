@@ -21,9 +21,9 @@ from .transport import SshTransport
 IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
-def read_switch(addr: str, user: str, timeout: float = 15, key_file: str | None = None) -> dict:
+def read_switch(addr: str, user: str, timeout: float = 15, key_file: str | None = None, jump: dict | None = None) -> dict:
     h = Host(name=addr, host=addr, role="switch", user=user, key_file=key_file or None)
-    sw = SonicSwitch(h, SshTransport(h, connect_timeout=timeout))
+    sw = SonicSwitch(h, SshTransport(h, connect_timeout=timeout, jump=jump))
     try:
         name = sw.sh("hostname", timeout=30).strip()
         slots: Counter = Counter()
@@ -57,7 +57,7 @@ def afm_trays(afm, switch_addrs: set[str]) -> dict[int, dict]:
 
 
 def draft(rack: str, switches: list[dict], user_switch: str, user_compute: str, afm_url: str | None,
-          trays_from_afm: dict[int, dict] | None, key_file: str | None = None) -> str:
+          trays_from_afm: dict[int, dict] | None, key_file: str | None = None, jump: dict | None = None) -> str:
     slots = sorted({s for sw in switches for s in sw["slots"]})
     sw_entries = []
     for i, sw in enumerate(switches, 1):
@@ -74,6 +74,8 @@ def draft(rack: str, switches: list[dict], user_switch: str, user_compute: str, 
            "switches": sw_entries, "computes": ct_entries}
     if key_file:
         doc["defaults"]["common"] = {"key_file": key_file}
+    if jump:
+        doc["transport"]["jump"] = jump
     if afm_url:
         doc["afm"] = {"url": afm_url, "verify_tls": False, "auth": {"username": "admin", "password_env": "HELIOS_AFM_PASSWORD"}}
     head = [f"# {rack}: drafted by helios-debug from {', '.join(sw['hostname'] + ' (' + sw['address'] + ')' for sw in switches)}",

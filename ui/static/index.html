@@ -145,7 +145,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
     <button role="tab" data-t="history">Earlier results</button>
     <button role="tab" data-t="access">Access to the rack</button>
     <button role="tab" data-t="config">Config</button>
-    <button role="tab" data-t="newrack">Add a rack</button>
+    <button role="tab" data-t="newrack">Add / edit a rack</button>
     <button role="tab" data-t="topology">Topology</button>
     <button role="tab" data-t="guide">Debug guide</button>
     <div class="navsep exp" data-x>Expert</div>
@@ -460,24 +460,28 @@ body.chat-open main{margin-right:min(460px,100vw)}
   </section>
 
   <section class="card hide" data-p="newrack">
-    <h2>Add a rack</h2>
-    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Builds the rack description (inventory) by reading the switch trays.</dd><dt>When</dt><dd>When a rack is not in the list at the top.</dd><dt>How long</dt><dd>About 10 seconds per switch tray.</dd><dt>Safe?</dt><dd>Yes - it only reads; you save the result.</dd></dl></details>
+    <h2>Add / edit a rack</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Builds the rack description (inventory) by reading the switch trays, or opens a rack's description to change it.</dd><dt>When</dt><dd>When a rack is not in the list at the top, or its description is wrong or incomplete (users, addresses, BMCs, a tray to quarantine).</dd><dt>How long</dt><dd>About 10 seconds per switch tray.</dd><dt>Safe?</dt><dd>Yes - it only reads; you save the result.</dd></dl></details>
     <p class="mut">Give the rack's switch tray address(es): the UI logs in with this machine's SSH key, reads the switch port
       descriptions (which tray slots exist, how many GPU links) and - with the AFM password - AFM's compute nodes (their
       names and addresses), and drafts the inventory. Check it, fill in what it could not know, save. Then the SSH access tab.</p>
+    <div class="row"><button class="sec" id="nr-edit">Edit the rack chosen at the top</button><span class="mut">opens its description below; saving keeps the previous file as a backup</span></div>
     <div class="grid">
       <div><label for="nr-rack">Rack name</label><input id="nr-rack" placeholder="mr4"></div>
       <div><label for="nr-sw">Switch tray address(es)</label><input id="nr-sw" placeholder="10.0.80.52"></div>
       <div><label for="nr-us">Switch user</label><input id="nr-us" value="admin"></div>
       <div><label for="nr-uc">Compute tray user</label><input id="nr-uc" placeholder="hpeadmin1"></div>
       <div><label for="nr-key">SSH key file (empty = this machine's default)</label><input id="nr-key" placeholder="~/.ssh/id_ed25519"></div>
-      <div><label for="nr-afm">AFM URL (empty = https://first switch)</label><input id="nr-afm" placeholder="https://10.0.80.52"></div>
+      <div><label for="nr-jh">Jump host (empty = none: the switches are reachable from here)</label><input id="nr-jh" placeholder="165.204.38.103"></div>
+      <div><label for="nr-jp">Jump host port</label><input id="nr-jp" placeholder="22"></div>
+      <div><label for="nr-ju">Jump host user</label><input id="nr-ju" placeholder="tenant-hpe"></div>
+      <div><label for="nr-afm">AFM URL (empty = https://first switch; reached directly, not through the jump host)</label><input id="nr-afm" placeholder="https://10.0.80.52"></div>
       <div class="checks" style="align-items:end"><label><input type="checkbox" id="nr-useafm">ask AFM for tray names / addresses</label></div>
       <div id="nr-pw-box" class="hide"><label for="nr-afmpw">AFM password (this request only)</label><input id="nr-afmpw" type="password" autocomplete="off"></div>
     </div>
     <div class="row"><button class="go" id="nr-go">Discover</button><span id="nr-msg" class="mut"></span></div>
     <div id="nr-out" class="hide">
-      <label for="nr-yaml">Draft inventory (edit before saving)</label>
+      <label for="nr-yaml" id="nr-ylab">Draft inventory (edit before saving)</label>
       <textarea id="nr-yaml" rows="18" style="width:100%;font:12px ui-monospace,Menlo,Consolas,monospace;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--bg);color:var(--fg)"></textarea>
       <div class="row"><button class="go" id="nr-save">Save as inventory/<span id="nr-fname">rack</span>.local.yaml</button>
         <label class="checks"><input type="checkbox" id="nr-over">overwrite if it exists</label></div>
@@ -652,7 +656,7 @@ var KIND_HELP={
   ok:{t:"Working",m:"The link is up on every layer checked."},
   tray_unreachable:{t:"Compute tray could not be read",m:"This machine could not log in to the tray, so its links could not be checked.",s:["If the message says 'login refused': open Access to the rack and install the key with the tray's password.","Otherwise check the tray is powered on and on the network."]},
   tray_quarantined:{t:"Compute tray is out of service",m:"The rack description marks this tray as quarantined - its links are expected to be down. If the detail says the quarantine ended, its end date has passed: set a new 'until' or remove it.",s:["Nothing to do until the tray is back; then remove the quarantine and check again."]},
-  tray_missing:{t:"No compute tray known for these switch ports",m:"Switch ports are cabled to a tray slot that is not in the rack description.",s:["Add the tray in Add a rack (or the inventory file), then check again."]},
+  tray_missing:{t:"No compute tray known for these switch ports",m:"Switch ports are cabled to a tray slot that is not in the rack description.",s:["Add the tray in Add / edit a rack, then check again."]},
   sw_admin_down:{t:"Switch port is switched off",m:"Someone or something set the switch port administratively down.",s:["Diagnose the link: its timeline shows who switched it off and when.","Switch it on again (config interface startup) if nobody needs it off."]},
   gpu_admin:{t:"GPU port is switched off",m:"The GPU port is administratively disabled on the compute tray.",s:["Enable it with the command shown in the details, then check again."]},
   phys_never_up:{t:"No physical link - never came up",m:"Neither end sees the other since the tray started: typically a cable / optic not seated, damaged or missing.",s:["Ask the site to reseat or replace the cable / optic between the two ports.","If the fault stays with the port after swapping cables, that port (switch or GPU side) is faulty."]},
@@ -1500,14 +1504,25 @@ $("nr-rack").addEventListener("input",function(){$("nr-fname").textContent=$("nr
 $("nr-go").addEventListener("click",function(){
   $("nr-msg").textContent="reading the switch tray(s) ...";$("nr-go").disabled=true;
   var r={rack:$("nr-rack").value.trim(),switches:$("nr-sw").value,switch_user:$("nr-us").value.trim(),compute_user:$("nr-uc").value.trim(),
-    key_file:$("nr-key").value.trim(),afm_url:$("nr-afm").value.trim(),afm:$("nr-useafm").checked,afm_password:$("nr-afmpw").value};
+    key_file:$("nr-key").value.trim(),afm_url:$("nr-afm").value.trim(),afm:$("nr-useafm").checked,afm_password:$("nr-afmpw").value,
+    jump_host:$("nr-jh").value.trim(),jump_port:$("nr-jp").value.trim()||22,jump_user:$("nr-ju").value.trim()};
   api("/api/discover",r).then(function(d){$("nr-afmpw").value="";$("nr-yaml").value=d.yaml;$("nr-out").classList.remove("hide");
+    $("nr-ylab").textContent="Draft inventory (edit before saving)";$("nr-over").checked=false;
     var e=Object.keys(d.errors||{});$("nr-msg").innerHTML=esc(d.switches.length+" switch tray(s) read")+(e.length?' <span class="err">'+esc(e.map(function(k){return k+": "+d.errors[k]}).join("; "))+"</span>":"");
   }).catch(function(e){$("nr-afmpw").value="";$("nr-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"}).then(function(){$("nr-go").disabled=false});
 });
+$("nr-edit").addEventListener("click",function(){
+  var f=$("inv").value;if(!f){$("nr-msg").innerHTML='<span class="err">No rack chosen at the top.</span>';return}
+  fetch("/api/inventory/text?file="+encodeURIComponent(f)).then(function(r){return r.json()}).then(function(d){
+    if(d.error)throw new Error(d.error);
+    $("nr-rack").value=d.name;$("nr-fname").textContent=d.name;$("nr-yaml").value=d.yaml;$("nr-over").checked=true;
+    $("nr-ylab").textContent="Rack description "+d.file+" (edit, then save - the previous file is kept as a backup)";
+    $("nr-out").classList.remove("hide");$("nr-msg").textContent="";$("nr-yaml").focus();
+  }).catch(function(e){$("nr-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
+});
 $("nr-save").addEventListener("click",function(){
   api("/api/inventory/save",{name:$("nr-rack").value.trim(),yaml:$("nr-yaml").value,overwrite:$("nr-over").checked}).then(function(d){
-    $("nr-msg").innerHTML=esc("saved "+d.file+": "+d.switches+" switch(es), "+d.computes+" tray(s)")+(d.fill_me?' <span class="err">'+d.fill_me+" FILL-ME left to fill in</span>":"");
+    $("nr-msg").innerHTML=esc("saved "+d.file+": "+d.switches+" switch(es), "+d.computes+" tray(s)"+(d.backup?" (previous kept as "+d.backup+")":""))+(d.fill_me?' <span class="err">'+d.fill_me+" FILL-ME left to fill in</span>":"");
     return api("/api/state").then(function(s){invs=s.inventories;var cur=d.file;
       $("inv").innerHTML=invs.map(function(i){return '<option value="'+esc(i.file)+'">'+esc((i.rack||i.file)+" ("+i.file+")")+"</option>"}).join("");$("inv").value=cur;fillInv()});
   }).catch(function(e){$("nr-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});

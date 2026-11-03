@@ -48,3 +48,31 @@ def test_discover_request_checks():
         server.discover_rack({"rack": "MR 4", "switches": "10.0.0.1"})
     with pytest.raises(server.BadRequest, match="switch addresses"):
         server.discover_rack({"rack": "mr4", "switches": "10.0.0.1;reboot"})
+
+
+def test_draft_through_a_jump_host_and_discover_passes_it(monkeypatch, tmp_path):
+    jump = {"host": "165.204.38.103", "port": 8059, "user": "tenant-hpe", "via": "exec"}
+    f = tmp_path / "g.local.yaml"
+    f.write_text(discover.draft("g", [SW], "admin", "u", None, None, jump=jump))
+    assert load_inventory(f).transport["jump"] == jump
+    seen = {}
+    monkeypatch.setattr(discover, "read_switch", lambda a, u, key_file=None, jump=None: seen.update(jump=jump) or SW)
+    out = server.discover_rack({"rack": "g", "switches": "10.0.0.1", "jump_host": "165.204.38.103", "jump_port": 8059,
+                                "jump_user": "tenant-hpe"})
+    assert seen["jump"] == jump and "165.204.38.103" in out["yaml"]
+    with pytest.raises(server.BadRequest, match="jump host"):
+        server.discover_rack({"rack": "g", "switches": "10.0.0.1", "jump_host": "a;b"})
+
+
+def test_edit_an_inventory_keeps_the_previous_file(tmp_path):
+    st = server.State(tmp_path, tmp_path / "res")
+    good = "# my notes\n" + discover.draft("lab", [SW], "admin", "u", None, None)
+    server.save_inventory(st, {"name": "lab", "yaml": good})
+    t = server.inventory_text(st, "lab.local.yaml")
+    assert t["name"] == "lab" and t["yaml"] == good                   # comments kept
+    r = server.save_inventory(st, {"name": "lab", "yaml": good.replace("user: u", "user: hpe"), "overwrite": True})
+    assert r["backup"] and (tmp_path / r["backup"]).read_text() == good
+    assert "user: hpe" in (tmp_path / "lab.local.yaml").read_text()
+    assert server.save_inventory(st, {"name": "lab", "yaml": (tmp_path / "lab.local.yaml").read_text(), "overwrite": True})["backup"] is None
+    with pytest.raises(server.BadRequest):
+        server.inventory_text(st, "../etc/passwd.yaml")
