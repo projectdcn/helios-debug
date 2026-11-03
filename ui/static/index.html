@@ -686,10 +686,13 @@ function friendly(msg){
    [/already running/i,"Another run is still going - wait for it or press Stop."],
    [/password not set|no afm\.url/i,"The AFM view needs the AFM admin password (tick AFM view and type it)."],
    [/no scan|run a scan first|run one first/i,"This needs a check of the rack first - open Check all links."],
-   [/type the link/i,"To take a link down you must type the link again exactly, to confirm."]];
+   [/type the link/i,"To take a link down you must type the link again exactly, to confirm."],
+   [/rc=255/,"SSH to it failed without saying why (exit 255). Check it answers: ssh to it from the jump host."]];
   for(var i=0;i<R.length;i++)if(R[i][0].test(m))return R[i][1]+' <span class="mut">('+esc(m.slice(0,160))+")</span>";
   return esc(m);
 }
+/* the reason alone (no raw error), for grouping nodes that failed the same way; null when friendly() has none */
+function friendlyWhy(msg){var h=friendly(msg),k=h.indexOf(' <span class="mut">(');return k>0?h.slice(0,k):null}
 function stampShort(st){var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(st||"");if(!m)return st||"";
   var d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]));
   return (d.getMonth()+1)+"/"+d.getDate()+" "+("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2)}
@@ -952,6 +955,15 @@ $("pp-same").addEventListener("click",function(){$("pp-dt").value=$("pp-st").val
 var live=null,liveSeq=0,liveChanges=[],liveTimer=null,wasLive=false;
 function liveMine(){var i=inv();return live&&live.running&&i&&live.inventory===i.file}
 function mm2(x){x=Math.max(0,Math.round(x));return x>=3600?Math.floor(x/3600)+" h "+Math.floor(x%3600/60)+" min":Math.floor(x/60)+" min"}
+/* '5 not reached - Not on the network ...: st3, st5, st6, ct10, ct17' - one line per reason, not one per node
+   (g02-g17 2 Nov: five copies of the same sentence); the raw errors are in the tooltip */
+function liveBad(f,bad){
+  var groups={},order=[];
+  bad.forEach(function(n){var w=friendlyWhy(f[n].error)||esc(String(f[n].error||"no reason given").slice(0,160));
+    if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
+  return esc(bad.length+" not reached")+" - "+order.map(function(w){
+    var ns=groups[w],raw=ns.map(function(n){return n+": "+String(f[n].error||"")}).join("\n");
+    return '<b title="'+esc(raw)+'">'+esc(ns.map(function(n){return n.replace(/ re-read$/,"")}).join(", "))+"</b>: "+w.replace(/\.$/,"")}).join("; ")}
 function liveBar(){
   var b=$("live-bar");if(!b)return;var i=inv();
   if(liveMine()){
@@ -965,7 +977,7 @@ function liveBar(){
       " · last change "+(live.last_event?esc(new Date(live.last_event).toLocaleTimeString()):"-")+
       " · "+(live.max_s?"stops by itself at "+esc(new Date((live.started+live.max_s)*1000).toLocaleString([],{weekday:"short",hour:"2-digit",minute:"2-digit"})):"runs until turned off")+
       (live.idle_s?" or "+Math.round(live.idle_s/60)+" min after no page is open":"")+"</span>"+
-      (bad.length?'<span class="err">'+esc(bad.length+" not connected: ")+bad.map(function(n){return esc(n)+" ("+friendly(f[n].error)+")"}).join("; ")+"</span>":"")+
+      (bad.length?'<span class="err">'+liveBad(f,bad)+"</span>":"")+
       '<button class="sec" id="live-off">Turn live off</button>';
     $("live-off").addEventListener("click",function(){api("/api/live/stop",{}).then(livePoll)});
   }else{
