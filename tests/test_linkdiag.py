@@ -149,6 +149,9 @@ def test_compare_lists_new_recovered_and_changed():
     d = ld.compare(prev, [a, b])
     assert len(d["recovered"]) == 1 and "Ethernet25" in d["recovered"][0]
     assert len(d["new_problems"]) == 1 and "Ethernet26" in d["new_problems"][0]
+    c = ld.Link("st1", "asic0", "Ethernet1", tray="ct01", gpu_port=1, state="down", kind="phys_went_down")
+    d = ld.compare(prev, [a, b, c])                      # st1 was not in the earlier (partial) scan: not 'new'
+    assert len(d["new_problems"]) == 1 and d["not_in_earlier"] == 1
 
 
 def test_suspects_point_at_a_gpu_with_several_down_links():

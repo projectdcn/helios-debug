@@ -814,6 +814,12 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
                                 [s for s in rack.switches.values() if not sw_res[s.host.name].get("error")]):
         if not exc:
             again[sw.host.name] = val
+            continue
+        try:                                          # once more: without it no error counter of this switch is judged
+            again[sw.host.name] = sample_counters(sw, list(sw_res[sw.host.name]["asics"]))
+        except Exception as e:  # noqa: BLE001 - said in the report (not checked), not 'all links ok'
+            sw_res[sw.host.name]["resample_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+            log(f"  {sw.host.name}: second counter sample failed - its error counters are not judged")
     span = interval_s if interval_s else (time.monotonic() - t1)
     optics = {}
     for name, s in sw_res.items():
@@ -1079,11 +1085,14 @@ def compare(prev_links: list[dict], links: list[Link]) -> dict:
     recovered, still bad with another cause."""
     key = lambda d: f"{d['switch']} {d['asic']} {d['sw_port']}".replace("  ", " ")  # noqa: E731
     before = {key(d): d for d in prev_links}
-    out = {"new_problems": [], "recovered": [], "changed": [], "still_bad": 0}
+    out = {"new_problems": [], "recovered": [], "changed": [], "still_bad": 0, "not_in_earlier": 0}
     for ln in links:
         k = key({"switch": ln.switch, "asic": ln.asic, "sw_port": ln.sw_port})
         b = before.get(k)
-        was = (b or {}).get("state", "ok")
+        if b is None:                     # not in the earlier check (partial / older): no 'new problem' to claim
+            out["not_in_earlier"] += 1
+            continue
+        was = b.get("state", "ok")
         if was == "ok" and ln.state != "ok":
             out["new_problems"].append(f"{k} <-> {ln.tray} port {ln.gpu_port}: {ln.state}, {ln.cause}")
         elif was != "ok" and ln.state == "ok":

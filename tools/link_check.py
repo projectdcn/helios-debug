@@ -343,6 +343,9 @@ def _not_checked(res) -> list[tuple[str, str, str, str]]:
             return "needs sudo without a password prompt for the inventory user"
         return "see the error"
     out = [(n, "switch", s["error"], hint(s["error"])) for n, s in res["switches"].items() if s.get("error")]
+    out += [(n, "switch", f"second counter sample failed ({s['resample_error']})", "its links' error counters (CRC, "
+             "FEC, drops) were not judged - their 'ok' says only that they are up; scan again")
+            for n, s in res["switches"].items() if s.get("resample_error") and not s.get("error")]
     out += [(n, "tray", t["error"], hint(t["error"])) for n, t in res["trays"].items() if t.get("error")]
     return out
 
@@ -588,7 +591,7 @@ pre{{background:var(--card);border:1px solid var(--rule);border-radius:6px;paddi
 <span><b style='color:var(--deg)'>{n['degraded']}</b>degraded</span><span><b style='color:var(--down)'>{n['down']}</b>down</span></div>
 {('<h2 style="color:var(--down)">Not checked</h2><p>The scan could not read these, so their links are missing or incomplete below.</p><ul>' + ''.join(f'<li><b>{esc(r)} {esc(nm)}</b>: {esc(e[:200])}<br><span class="mut">{esc(h)}</span></li>' for nm, r, e, h in _not_checked(res)) + '</ul>') if unreach else ''}
 <h2>Notes</h2><ul class='notes'>{''.join(f'<li>{x}</li>' for x in notes)}</ul>
-{(("<h2>Changes since the earlier scan</h2><p>" + esc(f"{len(res['compare']['new_problems'])} new problem(s), {len(res['compare']['recovered'])} recovered, {res['compare']['still_bad']} still bad") + "</p>" + "".join(f"<div><code>new: {esc(x)}</code></div>" for x in res['compare']['new_problems']) + "".join(f"<div><code>recovered: {esc(x)}</code></div>" for x in res['compare']['recovered'])) if res.get('compare') else '')}
+{(("<h2>Changes since the earlier scan</h2><p>" + esc(f"{len(res['compare']['new_problems'])} new problem(s), {len(res['compare']['recovered'])} recovered, {res['compare']['still_bad']} still bad" + (f", {res['compare']['not_in_earlier']} not in the earlier scan" if res['compare'].get('not_in_earlier') else "")) + "</p>" + "".join(f"<div><code>new: {esc(x)}</code></div>" for x in res['compare']['new_problems']) + "".join(f"<div><code>recovered: {esc(x)}</code></div>" for x in res['compare']['recovered'])) if res.get('compare') else '')}
 {("<h2>Patterns</h2>" + "".join(f"<p>{esc(x)}</p>" for x in res.get('suspects') or [])) if res.get('suspects') else ''}
 <h2>GPU state</h2>{("<div class='wrap'><table><tr><th>State</th><th>Tray</th><th>GPU (BDF)</th><th>Accelerator</th><th>Phase</th><th>AFM</th><th>Cause</th><th>Next step</th></tr>" + gpu_rows + "</table></div>") if gpu_rows else ("<p>Every GPU is ACTIVE on the trays read" + (" and matches AFM." if av.get('checked') else ".") + "</p>" if any(not t.get('error') for t in res['trays'].values()) else "<p class='err'>Not checked: no compute tray could be read.</p>")}
 <h2>Root causes</h2><div class='wrap'><table><tr><th>State</th><th>Links</th><th>Cause</th><th>Owner</th></tr>{summary or "<tr><td colspan=4>No problem links.</td></tr>"}</table></div>
@@ -766,7 +769,8 @@ def scan_cmd(a) -> int:
         diff = linkdiag.compare(prev.get("links") or [], links)
         lines.append("")
         lines.append(f"compared with {a.compare} ({prev.get('time_utc', '?')} UTC): {len(diff['new_problems'])} new problem(s), "
-                     f"{len(diff['recovered'])} recovered, {diff['still_bad']} still bad ({len(diff['changed'])} with another cause)")
+                     f"{len(diff['recovered'])} recovered, {diff['still_bad']} still bad ({len(diff['changed'])} with another cause)"
+                     + (f", {diff['not_in_earlier']} link(s) not in that scan" if diff.get("not_in_earlier") else ""))
         lines += [f"  new:       {x}" for x in diff["new_problems"]] + [f"  recovered: {x}" for x in diff["recovered"]] + \
                  [f"  changed:   {x}" for x in diff["changed"]]
         res["compare"] = diff
