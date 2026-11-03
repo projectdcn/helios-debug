@@ -1002,17 +1002,25 @@ def start_job(state: State, req: dict) -> dict:
         state.current = jid
 
     def pump():
-        for line in proc.stdout:
-            logf.write(line)
-            logf.flush()
+        try:
+            for line in proc.stdout:
+                try:                                  # a full disk must not stop reading the tool's output: its
+                    logf.write(line)                  # pipe would fill and block it (an isolate holding a link down)
+                    logf.flush()
+                except OSError:
+                    pass
+                with state.lock:
+                    job["log"] = (job["log"] + line)[-LOG_KEEP:]
+        finally:
+            rc = proc.wait()
+            try:
+                logf.close()
+            except OSError:
+                pass
             with state.lock:
-                job["log"] = (job["log"] + line)[-LOG_KEEP:]
-        rc = proc.wait()
-        logf.close()
-        with state.lock:
-            job["rc"], job["ended"] = rc, time.time()
-            if job["status"] == "running":
-                job["status"] = {0: "ok", 1: "problems found", 2: "incomplete"}.get(rc, f"failed (rc {rc})")
+                job["rc"], job["ended"] = rc, time.time()
+                job["status"] = ("stopped" if job.get("stopping") else
+                                 {0: "ok", 1: "problems found", 2: "incomplete"}.get(rc, f"failed (rc {rc})"))
     threading.Thread(target=pump, daemon=True).start()
     return public(job)
 
@@ -1022,13 +1030,29 @@ def stop_job(state: State, jid: str) -> dict:
         job = state.jobs.get(jid)
         if not job:
             raise BadRequest("no such job")
-        if job["status"] == "running" and job["proc"]:
+        if job["status"] == "running" and job["proc"] and not job.get("stopping"):
+            # 'running' until the tool has exited: an isolate stopped here still brings its link back (minutes), and
+            # no other run may start meanwhile
+            job["stopping"] = True
             try:
                 os.killpg(job["proc"].pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            job["status"] = "stopped"
+            if job["tool"] != "isolate":              # an isolate is never killed: its restore must finish
+                proc = job["proc"]
+
+                def kill_later():
+                    time.sleep(KILL_AFTER_S)
+                    if proc.poll() is None:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                threading.Thread(target=kill_later, daemon=True).start()
         return public(job)
+
+
+KILL_AFTER_S = 60
 
 
 def public(job: dict, since: int = 0) -> dict:

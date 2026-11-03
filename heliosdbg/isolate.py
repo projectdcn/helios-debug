@@ -28,6 +28,30 @@ def _interrupt(*_):
     raise KeyboardInterrupt("stopped")         # the finally below brings the end back
 
 
+RESTORE_TRIES = 3
+
+
+def _restore(node, up_cmd: str, step, sleep) -> bool:
+    """Enable the end again - retried (a jump-host session refused, a dropped connection, a timeout must not leave the
+    link administratively down); every attempt is a step."""
+    for i in range(1, RESTORE_TRIES + 1):
+        try:
+            r = node.run(up_cmd, sudo=True, timeout=120)
+            step("brought back", cmd=up_cmd, rc=r.rc, attempt=i)
+            if r.rc == 0:
+                return True
+        except Exception as e:  # noqa: BLE001 - recorded; tried again on a fresh connection
+            step("restore failed", cmd=up_cmd, error=f"{type(e).__name__}: {str(e)[:200]}", attempt=i)
+            try:
+                getattr(getattr(node, "t", None), "reset", lambda: None)()
+            except Exception:  # noqa: BLE001
+                pass
+        if i < RESTORE_TRIES:
+            sleep(5)
+    step("RESTORE FAILED - enable it by hand", cmd=up_cmd)
+    return False
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -85,30 +109,35 @@ def run(sw, tray, ln, action: str, hold_s: float, avoid: set[str], log=print, wa
         sleep(hold_s)
         step("held", seconds=hold_s, link=_sw_oper(sw, ns, ln.sw_port))
     finally:
-        r = node.run(up_cmd, sudo=True, timeout=120)
-        restored = r.rc == 0
-        step("brought back", cmd=up_cmd, rc=r.rc)
-        if old is not None:
-            signal.signal(signal.SIGTERM, old)
-    t0, up = time.monotonic(), False
-    reflapped = False
-    while time.monotonic() - t0 < wait_up_s:
-        if _sw_oper(sw, ns, ln.sw_port) == "up":
-            up = True
-            break
-        sleep(5)
-    if not up and restored:
-        step("not up after the restore - flapping once more")
-        node.run(down_cmd, sudo=True, timeout=120)
-        sleep(5)
-        node.run(up_cmd, sudo=True, timeout=120)
-        reflapped = True
-        t1 = time.monotonic()
-        while time.monotonic() - t1 < wait_up_s:
-            if _sw_oper(sw, ns, ln.sw_port) == "up":
-                up = True
-                break
-            sleep(5)
+        if old is not None:                      # a second Stop must not interrupt the restore
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            restored = _restore(node, up_cmd, step, sleep)
+            t0, up = time.monotonic(), False
+            reflapped = False
+            while time.monotonic() - t0 < wait_up_s:
+                if _sw_oper(sw, ns, ln.sw_port) == "up":
+                    up = True
+                    break
+                sleep(5)
+            if not up and restored:
+                step("not up after the restore - flapping once more")
+                try:
+                    r = node.run(down_cmd, sudo=True, timeout=120)
+                    step("taken down again", cmd=down_cmd, rc=r.rc)
+                    sleep(5)
+                finally:                         # whatever happened, the link is enabled again
+                    restored = _restore(node, up_cmd, step, sleep)
+                reflapped = True
+                t1 = time.monotonic()
+                while time.monotonic() - t1 < wait_up_s:
+                    if _sw_oper(sw, ns, ln.sw_port) == "up":
+                        up = True
+                        break
+                    sleep(5)
+        finally:
+            if old is not None:
+                signal.signal(signal.SIGTERM, old)
     step("link after the restore", up=up, reflapped=reflapped)
     lost: list[str] = []
     t2 = time.monotonic()

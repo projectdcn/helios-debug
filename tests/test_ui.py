@@ -137,6 +137,12 @@ def test_one_run_at_a_time(ui, monkeypatch, tmp_path):
     code, body = call(base, "/api/run", {"tool": "scan", "inventory": "lab.local.yaml"})
     assert code == 400 and "already running" in json.loads(body)["error"]
     st = json.loads(call(base, f"/api/job/{j['id']}/stop", {})[1])
+    assert st["status"] == "running" and st["stopping"]          # until the tool has exited: nothing else may start
+    for _ in range(50):
+        st = json.loads(call(base, f"/api/job/{j['id']}")[1])
+        if st["status"] != "running":
+            break
+        time.sleep(0.1)
     assert st["status"] == "stopped"
 
 

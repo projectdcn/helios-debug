@@ -87,3 +87,39 @@ def test_ui_needs_the_typed_confirmation(tmp_path):
         server.build_args(st, req | {"confirm": "st1 Ethernet25"})
     a, _out, _rack = server.build_args(st, req | {"confirm": "st1  Ethernet257", "hold": 999 if False else 20})
     assert "--yes-disruptive" in a and a[1] == "st1 Ethernet257"
+
+
+def test_restore_is_retried_when_the_connection_drops():
+    class Flaky(Sw):
+        def __init__(self):
+            super().__init__()
+            self.fails = 1
+
+        def run(self, cmd, sudo=False, timeout=120):
+            if "startup" in cmd and self.fails:
+                self.fails -= 1
+                raise OSError("Socket is closed")
+            return super().run(cmd, sudo, timeout)
+    sw = Flaky()
+    r = run(sw, link())
+    assert r["restored"] and sw.up["Ethernet257"]
+    assert any(s["what"] == "restore failed" for s in r["steps"])
+
+
+def test_reflap_restores_even_if_its_down_raises():
+    class Stuck(Sw):
+        def __init__(self):
+            super().__init__(stuck=True)
+            self.n = 0
+
+        def run(self, cmd, sudo=False, timeout=120):
+            if "shutdown" in cmd:
+                self.n += 1
+                if self.n == 2:                              # the switch took it, then the connection dropped
+                    super().run(cmd, sudo, timeout)
+                    raise OSError("dropped")
+            return super().run(cmd, sudo, timeout)
+    sw = Stuck()
+    with pytest.raises(OSError):
+        run(sw, link())
+    assert sw.cmds[-1].endswith("startup Ethernet257")       # the last word to the switch: enable it

@@ -624,7 +624,7 @@ function show(j,fresh){
   if(fresh&&j._est)job._est=j._est;
   $("jobinfo").innerHTML=esc(({scan:"Check all links",link:"Diagnose a link",watch:"Watch links",bcm:"Switch signal",path:"GPU-to-GPU path",pingmap:"Ping map",cabling:"Cabling plan",isolate:"Isolate",health:"Node health"})[j.tool]||j.tool)+
     " on "+esc(j.rack)+", started "+esc(new Date(j.started*1000).toLocaleTimeString())+
-    (j.status==="running"?'<span class="progress">running '+mm(el)+(job._est?" (usually about "+mm(job._est)+")":"")+"</span>":" - took "+mm(el));
+    (j.status==="running"?'<span class="progress">'+(j.stopping?"stopping (finishing its restore / clean-up) ":"running ")+mm(el)+(job._est?" (usually about "+mm(job._est)+")":"")+"</span>":" - took "+mm(el));
   $("stop").classList.toggle("hide",j.status!=="running");
   $("logbox").classList.remove("hide");if(j.status==="running"&&fresh)$("logbox").open=false;
   $("joblinks").innerHTML=links(j);
