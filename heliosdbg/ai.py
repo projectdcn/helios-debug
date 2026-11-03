@@ -90,12 +90,22 @@ HEALTH_MODE = (
 SYSTEM_HEALTH = SYSTEM_BASE + GENERAL_MODE + HEALTH_MODE + FORMAT
 
 UNSAFE = re.compile(
-    r"\b((?:flap|bounce|toggle)\s+(?:the\s+|a\s+|its\s+)?(?:fabric\s+)?(?:port|link|interface|ethernet\d+)\w*|"
-    r"shut\s*(?:down)?\s+(?:the\s+)?(?:port|interface|link)s?|config\s+interface\s+\S+\s+(?:shutdown|startup)|"
-    r"ip\s+link\s+set\s+\S+\s+down|reboot(?!ed\b|-cause)\w*|power[\s-]*cycle\w*|config\s+(?:reload|load|save)\b|"
-    r"systemctl\s+(?:stop|restart|disable)|docker\s+(?:stop|restart|rm)|rm\s+-rf|sonic-clear\s+fdb|"
-    r"(?:clear|flush)\s+(?:the\s+)?fdb|decommission\w*|afmctl\s+(?:reset|idle|disable)\w*|sonic-db-cli\s+\S+\s+del\b)\b",
+    r"\b((?:flap|bounce|toggle)\s+(?:the\s+|a\s+|its\s+)?(?:fabric\s+)?(?:port|link|interface|ethernet\d+)\w*(?!\s+counts?\b)|"
+    r"shut\s*(?:down)?\s+(?:the\s+)?(?:port|interface|link)s?|config\s+interface\s+(?:-n\s+\S+\s+)?\S+\s+(?:shutdown|startup)|"
+    r"config\s+interface\s+(?:-n\s+\S+\s+)?(?:shutdown|startup)\b|"          # SONiC's own order: shutdown <port>
+    r"ip\s+link\s+set\s+(?:dev\s+)?\S+\s+down|ifconfig\s+\S+\s+down|"
+    r"reboot(?!ed\b|-cause|\.log|\s+(?:cause|count|history|reason|log)\b)\w*|shutdown\s+(?:-[rhP]\b|now\b)|"
+    r"power[\s-]*cycle\w*|ipmitool\s+(?:chassis\s+)?power\s+(?:off|cycle|reset|soft)|sysrq-trigger|"
+    r"config\s+(?:reload|load|save)\b|config\s+vlan\s+member\s+(?:del|add)|config\s+feature\s+state\s+\S+\s+disabled|"
+    r"config\s+bgp\s+shutdown|sonic-installer\s+(?:install|set-default|set-next-boot|remove)|"
+    r"systemctl\s+(?:stop|restart|disable)|service\s+\S+\s+(?:stop|restart)|docker\s+(?:stop|restart|rm)|"
+    r"kill\s+-9|pkill\b|rm\s+-rf|sonic-clear\s+fdb|(?:clear|flush)\s+(?:the\s+)?fdb|redis-cli\b[^\n]*\bdel\b|"
+    r"decommission(?!ed\b)\w*|afmctl\s+(?:reset|idle|disable|update|set)\w*|sonic-db-cli\s+\S+\s+del\b|"
+    r"amd-smi\s+(?:reset|set)\b|rmmod\b|modprobe\s+-r\b|/remove\b|nicctl\s+(?:reset|update|upgrade)\b|"
+    r"devlink\s+dev\s+reload|mlxfwreset|mstconfig\b[^\n]*\bset\b|ethtool\s+-s\b|bcmcmd\b[^\n]*\ben=0)\b",
     re.I)
+# a mention inside a read: 'last reboot', grep for it, show its log - not a step that changes the rack
+READ_CONTEXT = re.compile(r"(?:\blast\s+|\bgrep\b[^\n|;]*|\bshow\s+logging\b[^\n;]*|\btail\b[^\n|;]*|\bcat\b[^\n|;]*)$", re.I)
 NEGATION = re.compile(r"\b(not|never|don't|do not|avoid|without|unless|no need to|must not|should not)\b[^.;:\n]{0,40}$", re.I)
 
 
@@ -170,7 +180,8 @@ def chat(messages: list[dict], env=None, max_tokens: int = 900, timeout: float =
 def unsafe_text(text: str) -> str | None:
     """The first step that would change the rack the text SUGGESTS (a mention after 'do not / never ...' is a warning)."""
     for m in UNSAFE.finditer(text or ""):
-        if not NEGATION.search(text[max(0, m.start() - 60):m.start()]):
+        before = text[max(0, m.start() - 60):m.start()]
+        if not NEGATION.search(before) and not READ_CONTEXT.search(before.split("\n")[-1]):
             return m.group(0)
     return None
 

@@ -1,6 +1,8 @@
 """reach: why a node could not be reached - the messages ssh prints with LogLevel=ERROR (g02-g17 2 Nov) and the
 exceptions paramiko raises, each named with its next step."""
-from heliosdbg import reach
+import pytest
+
+from heliosdbg import ai, reach
 from heliosdbg.transport import CmdResult, CommandError
 
 
@@ -64,3 +66,20 @@ def test_only_ssh_failures_are_access_problems():
     hung = CommandTimeout("[ct12] timed out after 60s: afmctl show port -b 0002:01:00.1")
     assert reach.classify(hung)["kind"] == "cmd_timeout"
     assert reach.classify("NoValidConnectionsError: Unable to connect to port 22")["kind"] == "timeout"
+
+
+@pytest.mark.parametrize("text", ["config interface shutdown Ethernet8", "config interface -n asic0 startup Ethernet8",
+                                  "ip link set dev eth0 down", "shutdown -r now", "ipmitool chassis power off",
+                                  "amd-smi reset -g 0", "modprobe -r amdgpu", "nicctl reset card", "service swss restart",
+                                  "sonic-installer install x.bin", "config vlan member del 100 Ethernet8",
+                                  'bcmcmd "port ce0 en=0"', "afmctl update port --admin-state idle", "redis-cli DEL k"])
+def test_unsafe_catches_real_changes(text):
+    """3 Nov audit: each of these was missed (SONiC's own 'config interface shutdown <port>' order among them)."""
+    assert ai.unsafe_text(text)
+
+
+@pytest.mark.parametrize("text", ["last reboot", "grep -i reboot /var/log/syslog", "the reboot cause was a watchdog",
+                                  "tail /var/log/reboot.log", "the tray was decommissioned",
+                                  'show logging | grep "config reload"', "flap port count 5"])
+def test_unsafe_leaves_reads_alone(text):
+    assert ai.unsafe_text(text) is None
