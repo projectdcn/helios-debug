@@ -67,11 +67,18 @@ MISSING_RX = re.compile(r"command not found|No such command|Usage: |Traceback \(
                         r"unknown command|invalid choice", re.I)
 
 
+SUDO_RX = re.compile(r"sudo: a password is required|is not in the sudoers|sudo: a terminal is required|sudo: no tty", re.I)
+
+
 def missing(r: dict) -> bool:
-    """The command did not run, does not exist on this node (rc 126 / 127, 'command not found', a usage text) or failed
-    with no output - its check is 'not checked', never 'healthy'. rc 1 with no output is an answer (grep: no match)."""
+    """The command did not run, does not exist on this node (rc 126 / 127, 'command not found', a usage text), sudo
+    refused it, or it failed with no output - its check is 'not checked', never 'healthy'. rc 1 with no output is an
+    answer (grep: no match) - but not when sudo said no (that is rc 1 with no output too: a tray whose sudo broke ran
+    no ECC / amd-smi / nicctl check and was reported 'No problem found')."""
     rc, out, err = r.get("rc"), (r.get("out") or "").strip(), r.get("err") or ""
     if rc is None or rc in (126, 127):
+        return True
+    if rc != 0 and SUDO_RX.search(err):
         return True
     if MISSING_RX.search(err + "\n" + "\n".join(out.splitlines()[:3])) and not (rc == 0 and out and not MISSING_RX.search(out[:200])):
         return True
@@ -154,6 +161,16 @@ def judge(node: str, outs: dict, platforms: list, ctx: dict | None = None) -> li
     for p in platforms:
         if p.judge:
             F += p.judge(node, outs, ctx or {})
+    refused = sorted(k for k, r in outs.items() if (r or {}).get("rc") not in (0, None) and SUDO_RX.search((r or {}).get("err") or ""))
+    if refused:                                   # said, not only listed under 'not checked'
+        f = finding(node, (ctx or {}).get("role", ""), "sudo", "access", WARNING,
+                    f"sudo asks for a password: {len(refused)} check(s) not run ({', '.join(refused[:6])})",
+                    "these read-only commands need sudo without a password for the inventory's user (the sudoers entry "
+                    "was removed or the user changed)", "give the user passwordless sudo for them, or set the right user "
+                    "in the inventory (Add / edit a rack)", [((outs[refused[0]] or {}).get("err") or "")[:300]],
+                    _cmd(outs, refused[0]))
+        f["owner"] = "operator"
+        F.append(f)
     return F
 
 

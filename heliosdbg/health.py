@@ -40,11 +40,11 @@ def collect_compute(tray) -> dict:
 
 
 def judge_switch(node: str, outs: dict, platforms: list | None = None) -> list[dict]:
-    return checks.judge(node, outs, platforms or for_node("switch"))
+    return checks.judge(node, outs, platforms or for_node("switch"), {"role": "switch"})
 
 
 def judge_compute(node: str, outs: dict, expect_gpus: int = 4, platforms: list | None = None) -> list[dict]:
-    return checks.judge(node, outs, platforms or for_node("compute"), {"gpus": expect_gpus})
+    return checks.judge(node, outs, platforms or for_node("compute"), {"gpus": expect_gpus, "role": "compute"})
 
 
 def judge_rack(raw: dict[str, dict], roles: dict[str, str], hosts: dict | None = None) -> list[dict]:

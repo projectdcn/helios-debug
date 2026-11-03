@@ -228,3 +228,14 @@ def test_the_same_finding_on_many_nodes_is_one_rack_wide_finding():
     assert len(k) == 1 and k[0]["node"] == "5 of 17 trays" and k[0]["nodes"] == [f"ct0{i}" for i in range(1, 6)]
     assert k[0]["what"].startswith("on 5 of 17 trays (ct01, ct02, ct03, ct04, ct05): kernel error line(s)")
     assert "ct03: 13 kernel error" in k[0]["evidence"][2] and [f["node"] for f in out if f["check"] == "rdma"] == ["ct09"]
+
+
+def test_sudo_refused_is_not_healthy():
+    """3 Nov audit: sudo -n refused = rc 1, no output - read as 'grep: no match', the tray reported healthy."""
+    from heliosdbg import checks
+    r = {"cmd": "sudo -n amd-smi metric", "rc": 1, "out": "", "err": "sudo: a password is required\n"}
+    assert checks.missing(r) and not checks.missing({"rc": 1, "out": "", "err": ""})
+    fs = health.judge_compute("ct01", {"gpu_ecc": r}, expect_gpus=0)
+    s = [f for f in fs if f["check"] == "sudo"]
+    assert s and "1 check(s) not run (gpu_ecc)" in s[0]["what"] and s[0]["owner"] == "operator"
+    assert health.not_run({"gpu_ecc": r}) == ["gpu_ecc"]
