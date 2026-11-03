@@ -76,3 +76,14 @@ def test_edit_an_inventory_keeps_the_previous_file(tmp_path):
     assert server.save_inventory(st, {"name": "lab", "yaml": (tmp_path / "lab.local.yaml").read_text(), "overwrite": True})["backup"] is None
     with pytest.raises(server.BadRequest):
         server.inventory_text(st, "../etc/passwd.yaml")
+
+
+def test_secret_in_a_flow_map_is_refused(tmp_path):
+    st = server.State(tmp_path, tmp_path / "res")
+    good = discover.draft("lab", [SW], "admin", "u", None, None)
+    bad = good.replace("- name: st1", "- password: hunter2\n  name: st1")
+    with pytest.raises(server.BadRequest, match="password"):
+        server.save_inventory(st, {"name": "lab", "yaml": "rack: lab\nswitches:\n  - {name: st1, host: x, password: hunter2}\n"})
+    with pytest.raises(server.BadRequest, match="password"):
+        server.save_inventory(st, {"name": "lab", "yaml": bad})
+    assert server.save_inventory(st, {"name": "lab", "yaml": good + "afm: {auth: {password_env: X}}\n"})["file"]

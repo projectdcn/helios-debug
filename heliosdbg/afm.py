@@ -34,7 +34,8 @@ class Afm:
             raise AfmUnavailable("no afm.url in the inventory")
         auth = cfg.get("auth") or {}
         self.env = auth.get("password_env") or "HELIOS_AFM_PASSWORD"
-        self._password = os.environ.get(self.env)
+        # 'password' is given in memory by the UI for one run (never from a file: the inventory refuses one); else env
+        self._password = auth.get("password") or os.environ.get(self.env)
         if not self._password:
             raise AfmUnavailable(f"AFM password not set: export {self.env} in this shell to add the AFM view")
         self.username = str(auth.get("username") or "admin")

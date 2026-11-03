@@ -67,6 +67,7 @@ class State:
         self.access_checks: dict[str, dict] = {}     # inventory file -> {time, results} of its last access check
         self.live = None                               # heliosdbg.live.LiveRack of the one rack in live mode
         self.live_inventory = None
+        self.live_starting = False
         self.live_view = 0.0                           # last time a page asked for the live state
         self.current: str | None = None
         from heliosdbg.term import Terminals
@@ -863,16 +864,30 @@ def discover_rack(req: dict) -> dict:
     trays = None
     if req.get("afm") and req.get("afm_password"):
         from heliosdbg.afm import Afm, AfmUnavailable
-        env = "HELIOS_DEBUG_DISCOVER_AFM_PW"
-        os.environ[env] = str(req["afm_password"])
-        try:
-            trays = discover.afm_trays(Afm({"url": afm_url, "auth": {"password_env": env}}), set(addrs))
+        try:                                          # in memory only: os.environ leaked it to any child started
+            trays = discover.afm_trays(Afm({"url": afm_url, "auth": {"password": str(req["afm_password"])}}), set(addrs))
         except AfmUnavailable as e:
             errors["afm"] = str(e)
-        finally:
-            os.environ.pop(env, None)
     text = discover.draft(rack, found, us, uc or "FILL-ME-tray-user", afm_url, trays, key, jump=jump)
     return {"yaml": text, "switches": found, "errors": errors}
+
+
+def _has_secret(text: str) -> bool:
+    """A password / token value anywhere in the YAML - also inside {...} maps the line regex does not see."""
+    import yaml
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False                                  # not valid: refused by the inventory check after this
+
+    def walk(v) -> bool:
+        if isinstance(v, dict):
+            return any((re.fullmatch(r"(password|passwd|token|secret)", str(k), re.I) and v[k] not in (None, ""))
+                       or walk(v[k]) for k in v)
+        if isinstance(v, list):
+            return any(walk(x) for x in v)
+        return False
+    return walk(doc)
 
 
 def inventory_text(state: State, name: str) -> dict:
@@ -892,7 +907,7 @@ def save_inventory(state: State, req: dict) -> dict:
     text = str(req.get("yaml") or "")
     if not text.strip() or len(text) > 500_000:
         raise BadRequest("empty inventory")
-    if SECRET_RX.search(text):
+    if SECRET_RX.search(text) or _has_secret(text):
         raise BadRequest("the inventory holds a password / token - use key login or password_env: VAR")
     f = state.inventory_dir / f"{name}.local.yaml"
     if f.exists() and not req.get("overwrite"):
@@ -908,8 +923,13 @@ def save_inventory(state: State, req: dict) -> dict:
         tmp.unlink(missing_ok=True)
     if f.exists() and f.read_text() != text:          # an edit keeps the previous file beside it
         backup = f.with_name(f"{f.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+        n = 1
+        while backup.exists():                        # two saves in one second: the first backup is kept
+            backup, n = f.with_name(f"{f.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}-{n}"), n + 1
         backup.write_text(f.read_text())
-    f.write_text(text)
+    part = f.with_name(f".{f.name}.saving")           # a full disk mid-write leaves the old file, not half a new one
+    part.write_text(text)
+    os.replace(part, f)
     return {"file": f.name, "backup": backup.name if backup else None, "rack": inv.rack, "switches": len(inv.switches), "computes": len(inv.computes),
             "fill_me": sum(ln.count("FILL-ME") for ln in text.splitlines() if not ln.lstrip().startswith("#"))}
 
@@ -933,33 +953,38 @@ def live_start(state: State, req: dict) -> dict:
             break
     if not links:
         raise BadRequest("no check of this rack has links - run Check all links again")
-    afm = None
-    if req.get("afm") and req.get("afm_password") and (inv.afm or {}).get("url"):
-        from heliosdbg.afm import Afm, AfmUnavailable
-        env = "HELIOS_DEBUG_LIVE_AFM_PW"
-        os.environ[env] = str(req["afm_password"])
-        try:
-            afm = Afm(dict(inv.afm, auth=dict((inv.afm or {}).get("auth") or {}, password_env=env)))
-        except AfmUnavailable as e:
-            raise BadRequest(str(e)) from None
-        finally:
-            os.environ.pop(env, None)
-    with state.lock:
-        old, state.live = state.live, None
-    if old is not None:                               # closing its streams takes seconds: not under the lock
-        old.stop(f"live mode turned on for {inv.rack}" if state.live_inventory != name else "restarted")
-    with state.lock:
-        state.live_view = time.time()
+    reconcile_s, max_h = float(_int(req, "reconcile_s", 60, 3600, 300)), _int(req, "max_h", 0, 168, 8)
+    with state.lock:                                  # one start at a time: two at once left one session running
+        if state.live_starting:                       # unreachable (double click)
+            raise BadRequest("live mode is being started - a moment")
+        state.live_starting = True
+    try:
+        afm = None
+        if req.get("afm") and req.get("afm_password") and (inv.afm or {}).get("url"):
+            from heliosdbg.afm import Afm, AfmUnavailable
+            try:                                      # in memory only, not os.environ (children inherited it)
+                afm = Afm(dict(inv.afm, auth=dict((inv.afm or {}).get("auth") or {}, password=str(req["afm_password"]))))
+            except AfmUnavailable as e:
+                raise BadRequest(str(e)) from None
         jump = (inv.transport or {}).get("jump") or {}
-        state.live = LiveRack(Rack(inv), links, rack_name=inv.rack or f.stem,
-                              ifcp_in_use=bool((d.get("learned") or {}).get("ifcp_in_use", False)),
-                              reconcile_s=float(_int(req, "reconcile_s", 60, 3600, 300)), afm=afm,
-                              max_s=None if _int(req, "max_h", 0, 168, 8) == 0 else _int(req, "max_h", 0, 168, 8) * 3600.0,
-                              idle_s=None if req.get("keep_unwatched") is True else 1800.0,
-                              log_dir=state.results_dir / "live", last_view=lambda: state.live_view,
-                              jump_limited=jump.get("via") == "exec", check_time=d.get("time_utc"))
-        state.live_inventory = name
-        state.live.start()
+        new = LiveRack(Rack(inv), links, rack_name=inv.rack or f.stem,
+                       ifcp_in_use=bool((d.get("learned") or {}).get("ifcp_in_use", False)),
+                       reconcile_s=reconcile_s, afm=afm, max_s=None if max_h == 0 else max_h * 3600.0,
+                       idle_s=None if req.get("keep_unwatched") is True else 1800.0,
+                       log_dir=state.results_dir / "live", last_view=lambda: state.live_view,
+                       jump_limited=jump.get("via") == "exec", check_time=d.get("time_utc"))
+        # everything checked and built: only now is the running session stopped
+        with state.lock:
+            old, state.live = state.live, None
+        if old is not None:                           # closing its streams takes seconds: not under the lock
+            old.stop(f"live mode turned on for {inv.rack}" if state.live_inventory != name else "restarted")
+        with state.lock:
+            state.live_view = time.time()
+            state.live, state.live_inventory = new, name
+            new.start()
+    finally:
+        with state.lock:
+            state.live_starting = False
     return {"started": True, "rack": inv.rack, "links": len(links), "from_check": d.get("time_utc")}
 
 

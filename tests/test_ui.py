@@ -337,7 +337,7 @@ def test_live_start_duration_choices(ui, monkeypatch):
             pass
 
         def stop(self, reason=""):
-            pass
+            seen["stopped"] = seen.get("stopped", 0) + 1
     import heliosdbg.live
     monkeypatch.setattr(heliosdbg.live, "LiveRack", FakeLive)
     d = tmp / "results" / "link-check" / "lab" / "scan-20261019-000000"
@@ -347,7 +347,9 @@ def test_live_start_duration_choices(ui, monkeypatch):
     assert seen["max_s"] is None and seen["idle_s"] is None
     assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 24})[0] == 200
     assert seen["max_s"] == 24 * 3600 and seen["idle_s"] == 1800
+    n = seen.get("stopped", 0)
     assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 999})[0] == 400
+    assert seen.get("stopped", 0) == n                     # a bad value does not end the running session
     # a newer check that read no link (every switch off the network, g02-g17 2 Nov) is not Live's starting point
     e = tmp / "results" / "link-check" / "lab" / "scan-20261103-000000"
     e.mkdir(parents=True)
