@@ -929,7 +929,7 @@ def live_start(state: State, req: dict) -> dict:
                               max_s=None if _int(req, "max_h", 0, 168, 8) == 0 else _int(req, "max_h", 0, 168, 8) * 3600.0,
                               idle_s=None if req.get("keep_unwatched") is True else 1800.0,
                               log_dir=state.results_dir / "live", last_view=lambda: state.live_view,
-                              jump_limited=jump.get("via") == "exec")
+                              jump_limited=jump.get("via") == "exec", check_time=d.get("time_utc"))
         state.live_inventory = name
         state.live.start()
     return {"started": True, "rack": inv.rack, "links": len(links), "from_check": d.get("time_utc")}

@@ -957,6 +957,10 @@ function liveMine(){var i=inv();return live&&live.running&&i&&live.inventory===i
 function mm2(x){x=Math.max(0,Math.round(x));return x>=3600?Math.floor(x/3600)+" h "+Math.floor(x%3600/60)+" min":Math.floor(x/60)+" min"}
 /* '5 not reached - Not on the network ...: st3, st5, st6, ct10, ct17' - one line per reason, not one per node
    (g02-g17 2 Nov: five copies of the same sentence); the raw errors are in the tooltip */
+/* '24 Oct 07:18 AM, 9 days ago' for a check's time_utc (20261024-071833 or ISO) */
+function checkAge(t){if(!t)return "?";var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(t),d=m?new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])):new Date(t);
+  if(isNaN(d))return String(t);var h=(Date.now()-d.getTime())/3600000;
+  return d.toLocaleString([],{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})+", "+(h<1?"under an hour":h<48?Math.round(h)+" h":Math.round(h/24)+" days")+" ago"}
 function liveBad(f,bad){
   var groups={},order=[];
   bad.forEach(function(n){var w=friendlyWhy(f[n].error)||esc(String(f[n].error||"no reason given").slice(0,160));
@@ -983,11 +987,12 @@ function liveBar(){
   }else{
     var other=live&&live.running?' <span class="mut">(live mode is on for '+esc(live.rack)+" - turning it on here turns that off)</span>":"";
     var why=live&&!live.running&&live.stop_reason&&live.inventory===(i&&i.file)?' <span class="mut">Last live session: '+esc(live.stop_reason)+".</span>":"";
-    var key="off|"+(i&&i.file)+"|"+other+"|"+why;
+    var age=mapData&&i&&mapData.rack===i.rack&&mapData.time_utc?checkAge(mapData.time_utc):"";
+    var key="off|"+(i&&i.file)+"|"+other+"|"+why+"|"+age;
     if(b.dataset.key===key)return;                 /* unchanged: keep the user's choices, an open dropdown, an error */
     b.dataset.key=key;
     b.className="live-bar";
-    b.innerHTML='<span class="dot"></span><b>Live: off</b> <span class="mut">The map shows the last check. Live mode follows the switch and tray logs and re-reads every few minutes, '+
+    b.innerHTML='<span class="dot"></span><b>Live: off</b> <span class="mut">The map shows the last check'+(age?" ("+esc(age)+")":"")+' - not what the rack does now. Live mode follows the switch and tray logs and re-reads every few minutes, '+
       'so the map changes as links change. It keeps a connection open to every tray - turn it off when done.</span>'+
       '<label class="checks" style="margin:0">re-read every <select id="live-rec" style="width:auto;margin-left:4px"><option value="60">1 min</option><option value="300" selected>5 min</option><option value="900">15 min</option></select></label>'+
       '<label class="checks" style="margin:0">stop after <select id="live-max" style="width:auto;margin-left:4px"><option value="8" selected>8 h</option><option value="24">24 h</option><option value="72">3 days</option><option value="0">until turned off</option></select></label>'+
@@ -1556,7 +1561,7 @@ function drawMap(){
   var lv=liveMine()&&live.rack===d.rack?live.links:null,fresh={};
   if(lv)liveChanges.forEach(function(c){if(c.link&&c.what==="state"&&Date.now()-new Date(c.t).getTime()<600000)fresh[c.link]=1});
   function cell(l0){
-    var l=l0;if(lv&&lv[lkey(l0)]&&lv[lkey(l0)].state){l=Object.assign({},l0,{state:lv[lkey(l0)].state})}
+    var l=l0,lz=lv&&lv[lkey(l0)];if(lz&&lz.state){l=Object.assign({},l0,{state:lz.state},lz.unread?{cause:"not read now - its switch and tray were not reached (the check of "+checkAge(live.check_time)+" said "+l0.state+")"}:{})}
     var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
     if(mapPrev&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
@@ -1603,7 +1608,8 @@ function drawMap(){
   }else{$("map-banner").classList.add("hide")}
   var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
-    (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+" not known (GPU end not readable - see Access to the rack)</span>":"")+"</span>"+
+    (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?" not known (not read now: their switch and tray were not reached)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
+    (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+"</span>")+
     cableSum(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
   document.querySelectorAll("#map a.dd").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();

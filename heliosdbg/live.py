@@ -62,7 +62,7 @@ def wrap(cmd: str, max_s: float) -> str:
 
 def _why(e: Exception) -> dict:
     """A follower's error: the access reason when SSH failed (login refused / no route ...), else the exception."""
-    acc = reach.classify(str(e))
+    acc = reach.classify(getattr(getattr(e, "result", None), "stderr", None) or str(e))   # ssh's own line, not ours
     return {"error": (f"{acc['what']}: {acc['line']}" if acc else f"{type(e).__name__}: {str(e)[:160]}"),
             "access": acc}
 
@@ -115,18 +115,21 @@ def link_state(lk: dict, ifcp_in_use: bool) -> str:
         return "degraded" if lk.get("scan_kind") == "tray_not_programmed" else "unknown"
     if ifcp_in_use and lk.get("ll_up") not in (None, "yes"):
         return "degraded"
-    if lk.get("scan_state") == "degraded" and lk.get("scan_kind") not in PHYSICAL:
+    if lk.get("scan_state") == "degraded" and lk.get("scan_kind") not in PHYSICAL and not (
+            lk.get("scan_kind") == "ifcp" and lk.get("ll_up") is not None):
         return "degraded"                          # e.g. not programmed, GPU not set up: not a link up/down matter
+                                                   # (no IFCP session at the check: the tray's ll_up now says)
     return "ok"
 
 
 class LiveRack:
     def __init__(self, rack, links: list[dict], *, rack_name: str, ifcp_in_use: bool = False, reconcile_s: float = 300,
                  max_s: float = 8 * 3600, idle_s: float = 1800, afm=None, log_dir: Path | None = None,
-                 last_view=lambda: time.time(), stream_cls=Stream, jump_limited: bool = False):
+                 last_view=lambda: time.time(), stream_cls=Stream, jump_limited: bool = False, check_time=None):
         self.rack, self.rack_name, self.ifcp = rack, rack_name, ifcp_in_use
         self.reconcile_s, self.max_s, self.idle_s, self.afm = reconcile_s, max_s, idle_s, afm
         self.last_view, self.stream_cls, self.jump_limited = last_view, stream_cls, jump_limited
+        self.check_time = check_time                 # the check Live started from (its states until a link is read)
         self.lock = threading.RLock()
         self.stop_ev = threading.Event()
         self.started, self.stopped, self.stop_reason = time.time(), None, None
@@ -138,7 +141,8 @@ class LiveRack:
             self.links[k] = {"switch": ln["switch"], "asic": ln.get("asic"), "sw_port": ln["sw_port"], "tray": ln.get("tray"),
                              "bdf": ln.get("bdf"), "gpu_port": ln.get("gpu_port"), "scan_state": ln.get("state"),
                              "scan_kind": ln.get("kind"), "sw_oper": None, "sw_admin": None, "gpu_link": None,
-                             "gpu_admin": None, "ll_up": None, "state": ln.get("state"), "since": None}
+                             "gpu_admin": None, "ll_up": None, "state": ln.get("state"), "since": None, "read": False,
+                             "unread": False}
             self.by_port[(ln["switch"], ln["sw_port"])] = k
             if ln.get("tray") and ln.get("bdf") and ln.get("gpu_port") is not None:
                 self.by_gpu.setdefault((ln["tray"], ln["bdf"]), []).append(k)
@@ -163,6 +167,8 @@ class LiveRack:
                 return
             old = lk.get(field)
             lk[field] = value
+            if value is not None and field in ("sw_oper", "gpu_link", "ll_up"):
+                lk["read"], lk["unread"] = True, False
             before = lk["state"]
             lk["state"] = link_state(lk, self.ifcp)
             if old is not None:                      # the first fill is not a change
@@ -274,7 +280,24 @@ class LiveRack:
                 self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=True, error=None)
             except Exception as e:  # noqa: BLE001
                 self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=False, **_why(e))
+        self._mark_unread()
         self.reconciles += 1
+
+    def _mark_unread(self) -> None:
+        """Links neither end of which was read (switch and tray not reached) are 'unknown', not the check's state:
+        g02-g17 2 Nov, st6 kept 176 'degraded' links from a 9-day-old check and st3's links to ct10 / ct17 showed
+        'ok' while nothing had been read. A quarantined tray's links keep the check's reason."""
+        with self.lock:
+            n = 0
+            for lk in self.links.values():
+                if lk["read"] or lk["unread"] or lk.get("scan_kind") == "tray_quarantined":
+                    continue
+                lk["unread"], n = True, n + 1
+                if lk["state"] != "unknown":
+                    lk["state"], lk["since"] = "unknown", _now()
+            if n:
+                self._record({"link": None, "what": "note", "from": None, "source": "live",
+                              "to": f"{n} links not read (their switch and tray were not reached): shown as not known"})
 
     def _loop(self) -> None:
         next_rec, next_afm, afm_since = 0.0, 0.0, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -353,5 +376,6 @@ class LiveRack:
                     "max_s": self.max_s, "idle_s": self.idle_s,
                     "followers": {k: dict(v) for k, v in self.followers.items()}, "counts": counts,
                     "links": {k: {"state": v["state"], "since": v["since"], "sw_oper": v["sw_oper"], "sw_admin": v["sw_admin"],
-                                  "gpu_link": v["gpu_link"], "ll_up": v["ll_up"]} for k, v in self.links.items()},
+                                  "gpu_link": v["gpu_link"], "ll_up": v["ll_up"], "unread": v["unread"]}
+                              for k, v in self.links.items()}, "check_time": self.check_time,
                     "changes": [c for c in self.changes if c["seq"] > since_seq][-200:], "seq": self.seq}

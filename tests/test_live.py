@@ -172,3 +172,32 @@ def test_change_log_pauses_on_a_nearly_full_disk(tmp_path, monkeypatch):
         r.note(f"n{i}", "test")
     assert r.log_paused and not r.log_path.exists()
     assert [c["to"] for c in r.changes if "paused" in str(c["to"])] and len(r.changes) == 4   # 3 notes in memory + the pause note
+
+
+def test_ifcp_problem_at_the_check_gives_way_to_the_trays_reading():
+    lk = {"gpu_link": "LINK_UP", "bdf": "x", "scan_state": "degraded", "scan_kind": "ifcp"}
+    assert live.link_state(dict(lk, ll_up="yes"), True) == "ok"          # g02-g17 st6: the session is up now
+    assert live.link_state(dict(lk, ll_up=None), True) == "degraded"     # not read: the check's word stands
+
+
+def test_links_not_read_are_not_known_not_the_checks_state(tmp_path, monkeypatch):
+    """g02-g17 2 Nov: st6 and ct10 off the network; their links kept a 9-day-old check's 'ok' / 'degraded'."""
+    monkeypatch.setattr(live, "Afmctl", FakeAfmctl)
+
+    class Off(Sw):
+        def interfaces_status(self, ns):
+            raise RuntimeError("ssh: connect to host 10.0.0.6 port 22: No route to host")
+    links = LINKS + [{"switch": "st1", "asic": "asic0", "sw_port": "Ethernet9", "tray": "c9", "bdf": "0009:01:00.1",
+                      "gpu_port": 1, "state": "ok", "kind": ""},
+                     {"switch": "st1", "asic": "asic0", "sw_port": "Ethernet10", "tray": "c5", "bdf": None,
+                      "gpu_port": None, "state": "degraded", "kind": "tray_quarantined"}]
+    rack = SimpleNamespace(switches={"st1": Off()}, computes={"c1": Ct("c1"), "c2": Ct("c2")}, close=lambda: None)
+    r = live.LiveRack(rack, links, rack_name="lab", log_dir=tmp_path, stream_cls=Q, check_time="20261024-071833")
+    r.reconcile("first read")
+    st = r.status()
+    assert st["links"]["st1 Ethernet9"]["state"] == "unknown" and st["links"]["st1 Ethernet9"]["unread"]
+    assert st["links"]["st1 Ethernet1"]["state"] != "unknown"           # its tray was read
+    assert st["links"]["st1 Ethernet10"]["state"] == "degraded"         # quarantined: the check's reason stays
+    assert st["check_time"] == "20261024-071833"
+    assert any("1 links not read" in str(c["to"]) for c in st["changes"])
+    assert st["followers"]["st1 re-read"]["error"].startswith("no route to host")
