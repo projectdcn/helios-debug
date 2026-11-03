@@ -901,10 +901,17 @@ def live_start(state: State, req: dict) -> dict:
     runs = sorted((state.results_dir / "link-check" / (inv.rack or f.stem)).glob("scan-*/link_check.json"), reverse=True)
     if not runs:
         raise BadRequest("live mode starts from a check of the rack - run Check all links first")
-    d = json.loads(runs[0].read_text())
-    links = [x for x in d.get("links") or [] if x.get("switch") and x.get("sw_port")]
+    d, links = {}, []
+    for run in runs[:60]:                             # the newest check that read links: one that read nothing
+        try:                                          # (every switch off the network) is no starting point
+            d = json.loads(run.read_text())
+        except (OSError, ValueError):
+            continue
+        links = [x for x in d.get("links") or [] if x.get("switch") and x.get("sw_port")]
+        if links:
+            break
     if not links:
-        raise BadRequest("the latest check of this rack has no links - run Check all links again")
+        raise BadRequest("no check of this rack has links - run Check all links again")
     afm = None
     if req.get("afm") and req.get("afm_password") and (inv.afm or {}).get("url"):
         from heliosdbg.afm import Afm, AfmUnavailable

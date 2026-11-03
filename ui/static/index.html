@@ -1528,20 +1528,25 @@ function loadOverview(){
 }
 // ---------------------------------------------------------------- rack map
 var mapData=null,mapPrev=null,mapScans=[];
+function noLinks(x){return /^0 GPU links/.test(String(x.summary||""))}
 function mapLoadScans(){
   return api("/api/results").then(function(r){
     var i=inv(),rack=i&&i.rack;
     mapScans=r.results.filter(function(x){return x.tool==="scan"&&x.files.indexOf("link_check.json")>=0&&(!rack||x.rack===rack)});
-    var o=mapScans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+"</option>"}).join("");
+    var o=mapScans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+(noLinks(x)?" (no links read)":"")+"</option>"}).join("");
     $("map-scan").innerHTML=o||"<option value=''>no scan yet - run one on the Scan tab</option>";
     $("map-prev").innerHTML='<option value="">-</option>'+o;
-    if(mapScans.length>1)$("map-prev").value=mapScans[1].path;   /* what changed since the scan before, by default */
+    /* the newest check that read links, and the one before it: a check that could read nothing (g02-g17 2 Nov, every
+       switch off the network) must not blank the map */
+    var withLinks=mapScans.filter(function(x){return !noLinks(x)});
+    if(withLinks.length)$("map-scan").value=withLinks[0].path;
+    if(withLinks.length>1)$("map-prev").value=withLinks[1].path;   /* what changed since the scan before, by default */
   });
 }
 function loadMap(){
   mapLoadScans().then(function(){
     var want=(location.hash.match(/scan=([^&]+)/)||[])[1];
-    if(want&&mapScans.some(function(x){return x.path===decodeURIComponent(want)}))$("map-scan").value=decodeURIComponent(want);
+    if(want&&mapScans.some(function(x){return x.path===decodeURIComponent(want)&&!noLinks(x)}))$("map-scan").value=decodeURIComponent(want);
     mapFetch();
   }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }

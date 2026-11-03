@@ -342,6 +342,11 @@ def test_live_start_duration_choices(ui, monkeypatch):
     assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 24})[0] == 200
     assert seen["max_s"] == 24 * 3600 and seen["idle_s"] == 1800
     assert call(base, "/api/live/start", {"inventory": "lab.local.yaml", "max_h": 999})[0] == 400
+    # a newer check that read no link (every switch off the network, g02-g17 2 Nov) is not Live's starting point
+    e = tmp / "results" / "link-check" / "lab" / "scan-20261103-000000"
+    e.mkdir(parents=True)
+    (e / "link_check.json").write_text(json.dumps({"links": [], "time_utc": "20261103-000000"}))
+    assert call(base, "/api/live/start", {"inventory": "lab.local.yaml"})[0] == 200
 
 
 def test_topology_uses_the_latest_full_check(tmp_path):
