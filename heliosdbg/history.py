@@ -18,7 +18,13 @@ def key(f: dict) -> str:
     node = f.get("node", "")
     if " of " in node or node.endswith(" trays"):          # a rack-wide finding: '3 of 18 trays' -> its count changes
         node = re.sub(r"\d+", "#", node)
-    return "|".join([node, f.get("check", ""), f.get("area", ""), re.sub(r"\d+(?:\.\d+)?", "#", f.get("what", ""))])
+    what = re.sub(ID_RX, lambda m: m.group(1) + "~" + m.group(2), f.get("what", ""))   # 'GPU 1' stays itself
+    what = re.sub(r"(?<![A-Za-z~])\d+(?:\.\d+)?", "#", what)       # counts go; 'Ethernet8', 'sda1', 'asic0' stay
+    return "|".join([node, f.get("check", ""), f.get("area", ""), what])
+
+
+# a number that names a thing (two GPUs with the same problem were one finding: 'GPU 0: 3 ...' == 'GPU 1: 5 ...')
+ID_RX = re.compile(r"\b(GPU|gpu|port|Port|card|NIC|nic|slot|disk|lane|accelerator|acc|bus|Ethernet)\s+(\d+)")
 
 
 def _numbers(text: str) -> list[float]:
@@ -42,7 +48,9 @@ def compare(prev: dict | None, res: dict) -> dict:
         return {"since": None, "new": [], "gone": [], "grew": [], "same": 0}
     # only nodes checked both times are compared (a run of three trays after a full-rack run says nothing about the
     # other fifteen), and a node not reached now cannot have 'resolved' its findings
-    both = (set(prev.get("nodes") or {}) & set(res.get("nodes") or {})) - set(res.get("unreachable") or [])
+    # ... nor one not reached last time (it had only its 'not reached' finding then: everything it has now is not new)
+    both = ((set(prev.get("nodes") or {}) & set(res.get("nodes") or {})) - set(res.get("unreachable") or [])
+            - set(prev.get("unreachable") or []))
 
     def ours(f):
         names = f.get("nodes") or [f.get("node")]

@@ -1476,7 +1476,11 @@ def _health_once(a) -> int:
     res = {"rack": inv.rack, "time": time.strftime("%Y-%m-%d %H:%M", time.gmtime()), "nodes": nodes, "findings": findings,
            "summary": health.summary(findings), "unreachable": unreachable,
            "quarantined": [h.name for h in inv.quarantined],
-           "node_findings": [{k: f[k] for k in ("node", "check", "area", "severity", "what")} for f in per_node]}
+           # per node, whole (cause / next / owner / a little evidence): history compares them and the incident API
+           # is sent them - the 5-field cut made every run after the first crash in incidents.to_incident (KeyError)
+           "node_findings": [{k: f.get(k) for k in ("node", "check", "area", "severity", "what", "cause", "next", "owner",
+                                                     "command")} | {"evidence": list(f.get("evidence") or [])[:20]}
+                             for f in per_node]}
     from heliosdbg import history
     res["changes"] = history.compare(history.previous(out.parent, out), res)
     out.mkdir(parents=True, exist_ok=True)

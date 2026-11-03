@@ -29,8 +29,9 @@ def to_incident(f: dict, rack: str, started: str) -> dict:
         evidence.append({"source": f["node"], "title": f.get("command") or f["check"],
                          "text": "\n".join(f["evidence"])[:6000]})
     evidence.append({"source": "helios-debug", "title": f"health rule {f['check']} ({f['area']})",
-                     "text": f"finding: {f['what']}\nlikely cause (rule): {f['cause']}\nnext (rule): {f['next']}"
-                             f"\nowner: {f['owner']}" + (f"\nnodes: {', '.join(f['nodes'])}" if f.get("nodes") else "")})
+                     "text": f"finding: {f['what']}\nlikely cause (rule): {f.get('cause') or '-'}\nnext (rule): "
+                             f"{f.get('next') or '-'}\nowner: {f.get('owner') or '-'}"
+                             + (f"\nnodes: {', '.join(f['nodes'])}" if f.get("nodes") else "")})
     return {"id": incident_id(rack, f), "rack": rack, "title": f"{f['node']}: {f['what']}"[:200], "started": started,
             "alerts": [{"name": f"helios-debug {f['check']}", "severity": f["severity"], "source": "helios-debug",
                         "labels": labels, "summary": f["what"][:300]}],
@@ -38,9 +39,13 @@ def to_incident(f: dict, rack: str, started: str) -> dict:
 
 
 def send(base_url: str, incs: list[dict], timeout: float = 120) -> list[dict]:
-    """POST each incident; [{id, ok, area, summary, problems | error}]. One failure does not stop the rest."""
-    out = []
+    """POST each incident; [{id, ok, area, summary, problems | error}]. One refused incident does not stop the rest;
+    the API not answering at all does (10 x 120 s held a health run - and --every - for 20 minutes)."""
+    out, away = [], None
     for inc in incs:
+        if away:
+            out.append({"id": inc["id"], "ok": False, "error": f"not sent: {away}"})
+            continue
         req = urllib.request.Request(base_url.rstrip("/") + PATH, data=json.dumps(inc).encode(), method="POST",
                                      headers={"Content-Type": "application/json"})
         try:
@@ -53,6 +58,8 @@ def send(base_url: str, incs: list[dict], timeout: float = 120) -> list[dict]:
             out.append({"id": inc["id"], "ok": False, "error": f"HTTP {e.code}: {e.read()[:200].decode(errors='replace')}"})
         except Exception as e:  # noqa: BLE001 - the API away / slow: reported, the health run stands
             out.append({"id": inc["id"], "ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"})
+            if isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, OSError)):
+                away = f"the API did not answer ({type(e).__name__})"
     return out
 
 
@@ -60,6 +67,8 @@ def pick(res: dict, every: bool = False, max_n: int = 10) -> tuple[list[dict], i
     """(findings to send, how many left out): the new ones since the last run (all on a first run, or with every),
     critical first, at most max_n."""
     ch = res.get("changes") or {}
-    pool = res["findings"] if every or not ch.get("since") else ch.get("new") or []
+    # per-node findings on every run (a first run sent the rack-wide '4 of 18 trays' ones, later runs per-node ones:
+    # one problem, two incident ids); older health.json without them: the grouped findings
+    pool = (res.get("node_findings") or res["findings"]) if every or not ch.get("since") else ch.get("new") or []
     pool = sorted(pool, key=lambda f: (f["severity"] != "critical", f["node"], f["check"]))
     return pool[:max_n], max(0, len(pool) - max_n)

@@ -104,7 +104,8 @@ def test_incidents_ids_payload_and_send():
         res = incidents.send(url, [i1, dict(i1, id="x-bad")])
         assert Api.got[0][0] == incidents.PATH and res[0]["ok"] and res[0]["summary"] == "disk filling"
         assert not res[1]["ok"] and res[1]["error"].startswith("HTTP 400")
-        assert not incidents.send("http://127.0.0.1:1", [i1], timeout=2)[0]["ok"]
+        down = incidents.send("http://127.0.0.1:1", [i1, dict(i1, id="x2")], timeout=2)
+        assert not down[0]["ok"] and down[1]["error"].startswith("not sent: the API did not answer")
     finally:
         srv.shutdown()
 
@@ -115,3 +116,26 @@ def test_pick_new_first_critical_first():
     assert incidents.pick(res) == ([b, c], 0)
     assert incidents.pick(res, every=True, max_n=2) == ([b, a], 1)
     assert incidents.pick({"findings": [a], "changes": {"since": None}})[0] == [a]
+
+
+def test_second_run_sends_new_findings_without_crashing():
+    """3 Nov audit: node_findings were cut to 5 fields; the next run's 'new' ones crashed to_incident (KeyError)."""
+    full = f("ct02", "ecc", "GPU 1: 5 uncorrectable", "critical", "gpu")
+    short = {k: full[k] for k in ("node", "check", "area", "severity", "what")}       # an older health.json's form
+    for nf in (full, short):
+        res = {"findings": [], "node_findings": [nf], "changes": {"since": "s", "new": [nf]}}
+        todo, _ = incidents.pick(res)
+        assert incidents.to_incident(todo[0], "g02-g17", "t")["title"] == "ct02: GPU 1: 5 uncorrectable"
+
+
+def test_two_gpus_with_the_same_problem_are_two_findings():
+    a, b = f("ct01", "ecc", "GPU 0: 3 uncorrectable"), f("ct01", "ecc", "GPU 1: 5 uncorrectable")
+    assert history.key(a) != history.key(b)
+    assert history.key(a) == history.key(f("ct01", "ecc", "GPU 0: 9 uncorrectable"))
+
+
+def test_a_node_back_after_being_unreachable_is_not_all_new():
+    prev = {"time": "t0", "nodes": {"ct05": {}, "ct01": {}}, "unreachable": ["ct05"],
+            "findings": [f("ct05", "reach", "not reached")]}
+    cur = {"time": "t1", "nodes": {"ct05": {}, "ct01": {}}, "findings": [f("ct05", "ecc", "old problem")]}
+    assert history.compare(prev, cur)["new"] == []
