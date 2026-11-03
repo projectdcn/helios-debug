@@ -112,7 +112,7 @@ plain words), Simple / Expert mode, Overview of all racks, Rack map (by compute 
 with drill down from rack to tray, GPU, port and link - each level with its connectivity picture, Topology tab for
 the rack chosen at the top (drill down beside the drawing), Diagnose a link (with timeline and what is around it),
 Watch links, Cabling plan, scan / Broadcom / GPU path / ping map, Isolate (disruptive, typed confirmation), History
-with evidence bundles, SSH access with a browser terminal, Config (a node's configuration), Add a rack, the debug
+with evidence bundles, SSH access with a browser terminal, Config (a node's configuration), Add / edit a rack, the debug
 guide, and AI advice (root cause / how to debug / what to do) on link pages, Diagnose results and the Topology tab -
 and on any problem (*Any problem* tab): a helios-tests result with its log (`HELIOS_TESTS_RESULTS`, default
 `~/dev/helios-tests/results`), a saved tool report, or command outputs / logs pasted from any node (`heliosdbg/cases.py`;
