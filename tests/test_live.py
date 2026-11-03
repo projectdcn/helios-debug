@@ -201,3 +201,16 @@ def test_links_not_read_are_not_known_not_the_checks_state(tmp_path, monkeypatch
     assert st["check_time"] == "20261024-071833"
     assert any("1 links not read" in str(c["to"]) for c in st["changes"])
     assert st["followers"]["st1 re-read"]["error"].startswith("no route to host")
+
+
+def test_tray_unreachable_since_the_check_is_not_green(tmp_path, monkeypatch):
+    """3 Nov audit: BDF known from the check, tray unreachable now - the switch side alone showed the link 'ok'."""
+    class Down(FakeAfmctl):
+        def ports_raw(self, bdf):
+            raise RuntimeError("ssh: connect to host 10.0.0.9 port 22: No route to host")
+    monkeypatch.setattr(live, "Afmctl", Down)
+    rack = SimpleNamespace(switches={"st1": Sw()}, computes={"c1": Ct("c1"), "c2": Ct("c2")}, close=lambda: None)
+    r = live.LiveRack(rack, LINKS, rack_name="lab", log_dir=tmp_path, stream_cls=Q)
+    r.reconcile("first read")
+    assert r.status()["links"]["st1 Ethernet1"]["state"] == "unknown"          # switch port up, GPU end not read
+    assert r.status()["links"]["st1 Ethernet292"]["state"] == "down"           # the switch says down: that stands

@@ -109,9 +109,10 @@ def link_state(lk: dict, ifcp_in_use: bool) -> str:
     gpu_down = lk.get("gpu_link") not in (None, "LINK_UP")
     if sw_down or gpu_down:
         return "down"
-    if lk.get("gpu_link") is None and not lk.get("bdf"):
-        # the GPU end was never read (tray unreachable / not matched at the check): a switch port that is up says
-        # nothing about the link - MR2 19 Oct from the switch, trays refusing the login, showed '288 ok'
+    if lk.get("gpu_link") is None and (not lk.get("bdf") or lk.get("gpu_missed")):
+        # the GPU end was not read (tray unreachable at the check / not matched, or its re-read failed now): a switch
+        # port that is up says nothing about the link - MR2 19 Oct from the switch, trays refusing the login, showed
+        # '288 ok'; the same with the BDF known from the check and the tray unreachable since (3 Nov audit)
         return "degraded" if lk.get("scan_kind") == "tray_not_programmed" else "unknown"
     if ifcp_in_use and lk.get("ll_up") not in (None, "yes"):
         return "degraded"
@@ -280,8 +281,22 @@ class LiveRack:
                 self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=True, error=None)
             except Exception as e:  # noqa: BLE001
                 self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=False, **_why(e))
+                self._gpu_missed(tray, bdf, source)
         self._mark_unread()
         self.reconciles += 1
+
+    def _gpu_missed(self, tray: str, bdf: str, source: str) -> None:
+        """The tray's re-read failed: its links have no GPU end now - 'unknown' (not green on the switch side alone)
+        until it is read again."""
+        with self.lock:
+            for k in self.by_gpu.get((tray, bdf), []):
+                lk = self.links[k]
+                if lk["gpu_link"] is None and not lk.get("gpu_missed"):
+                    lk["gpu_missed"] = True
+                    before, lk["state"] = lk["state"], link_state(lk, self.ifcp)
+                    if lk["state"] != before:
+                        lk["since"] = _now()
+                        self._record({"link": k, "what": "state", "from": before, "to": lk["state"], "source": source})
 
     def _mark_unread(self) -> None:
         """Links neither end of which was read (switch and tray not reached) are 'unknown', not the check's state:
