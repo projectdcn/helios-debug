@@ -895,6 +895,17 @@ def _has_secret(text: str) -> bool:
     return walk(doc)
 
 
+def _qint(q: dict, name: str, default: int) -> int:
+    """A number from the query string; not a number = 400, not a 500 with a traceback."""
+    v = (q.get(name) or [""])[0]
+    if not v:
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        raise BadRequest(f"{name}: a whole number") from None
+
+
 def inventory_text(state: State, name: str) -> dict:
     """An inventory file as written (comments kept), for editing in Add / edit a rack - also one that does not load."""
     if not NAME_RX.match(name or "") or not name.endswith(".yaml"):
@@ -1135,7 +1146,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/term/read":                   # long poll: new output of one terminal
                 import base64
                 s = st.terms.get((q.get("id") or [""])[0])
-                r = s.read(int((q.get("since") or ["0"])[0] or 0), wait=15.0)
+                r = s.read(_qint(q, "since", 0), wait=15.0)
                 return self._json(200, {"data": base64.b64encode(r["data"]).decode(), "next": r["next"],
                                         "closed": r["closed"], "dropped": r["dropped"]})
             if u.path == "/api/ai/status":
@@ -1147,7 +1158,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/cases/tests":          # helios-tests results to ask about (any part of the rack)
                 from heliosdbg import cases
                 g = (lambda k: (q.get(k) or [""])[0][:120])
-                rows = cases.tests(int((q.get("limit") or ["400"])[0] or 400), g("outcome"), g("rack"), g("q"))
+                rows = cases.tests(_qint(q, "limit", 400), g("outcome"), g("rack"), g("q"))
                 return self._json(200, {"tests": rows, "dir": str(cases.tests_results())})
             if u.path == "/api/cases/reports":        # saved tool results other than link checks / Diagnose
                 from heliosdbg import cases
@@ -1188,7 +1199,7 @@ class Handler(BaseHTTPRequestHandler):
                     job = st.jobs.get(jid)
                     if not job:
                         return self._json(404, {"error": "no such job"})
-                    return self._json(200, public(job, int((q.get("since") or ["0"])[0] or 0)))
+                    return self._json(200, public(job, _qint(q, "since", 0)))
             if u.path == "/api/access":
                 name = (q.get("inventory") or [""])[0]
                 _f, inv = st.inventory(name)
@@ -1213,7 +1224,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not (run / "health.json").is_file():
                     raise BadRequest("not a node health run")
                 try:
-                    md = ticket.health_finding(json.loads((run / "health.json").read_text()), int((q.get("i") or ["-1"])[0]),
+                    md = ticket.health_finding(json.loads((run / "health.json").read_text()), _qint(q, "i", -1),
                                                f"results/{run.relative_to(st.results_dir)}/report.html")
                 except (IndexError, ValueError) as e:
                     raise BadRequest(str(e)) from None
@@ -1246,7 +1257,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/overview":
                 return self._json(200, {"racks": overview(st)})
             if u.path == "/api/live":
-                return self._json(200, live_status(st, int((q.get("since") or ["0"])[0] or 0)))
+                return self._json(200, live_status(st, _qint(q, "since", 0)))
             if u.path == "/api/gpus":
                 return self._json(200, gpus_view(st, (q.get("inventory") or [""])[0]))
             if u.path == "/api/port":

@@ -591,3 +591,9 @@ def test_health_and_symptom_evidence(tmp_path):
     assert "RDMA" in " ".join(x["text"] for x in ev.items) and rack == "lab"
     ev, subject, rack = cases.context({"blocks": [], "subject": "st3: PSU 2 shows N/A", "rack": "lab"}, tmp_path)
     assert subject == "st3: PSU 2 shows N/A" and rack == "lab" and "nothing collected yet" in ev.items[0]["text"]
+
+
+def test_a_query_number_that_is_not_one_is_a_400(ui):
+    base, _tmp = ui
+    assert call(base, "/api/live?since=abc")[0] == 400
+    assert call(base, "/api/live?since=3")[0] == 200

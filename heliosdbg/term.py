@@ -210,6 +210,7 @@ class Terminals:
     def __init__(self, log_dir: Path | None = None):
         self.lock = threading.Lock()
         self.sessions: dict[str, Session] = {}
+        self.opening = 0
         self.log_path = (log_dir / "sessions.log") if log_dir else None
         threading.Thread(target=self._reaper, daemon=True, name="term-reaper").start()
 
@@ -224,14 +225,18 @@ class Terminals:
             pass
 
     def open(self, host, transport_cfg: dict, cols: int, rows: int) -> Session:
-        with self.lock:
+        with self.lock:                     # the opening ones count too: parallel opens went past the limit
             live = [x for x in self.sessions.values() if not x.closed]
-            if len(live) >= MAX_SESSIONS:
+            if len(live) + self.opening >= MAX_SESSIONS:
                 raise TermError(f"{MAX_SESSIONS} terminals are open already - close one first")
+            self.opening += 1
         try:
             s = open_session(host, transport_cfg, cols, rows)
         except Exception as e:  # noqa: BLE001 - shown in the page
             raise TermError(f"could not open a shell on {host.name}: {type(e).__name__}: {str(e)[:200]}") from None
+        finally:
+            with self.lock:
+                self.opening -= 1
         with self.lock:
             self.sessions[s.id] = s
         self._log(s, "open")
