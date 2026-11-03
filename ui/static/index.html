@@ -634,7 +634,9 @@ function poll(){
   if(!job)return;var keepEst=job._est,keepShown=job._shown;
   api("/api/job/"+job.id+"?since="+since).then(function(j){
     if(j.log){var pre=$("log"),end=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-20;pre.textContent+=j.log;if(end)pre.scrollTop=pre.scrollHeight}
-    since=j.log_len;j._est=keepEst;j._shown=keepShown;show(j,false)}).catch(function(){clearTimeout(timer);timer=setTimeout(poll,3000)})
+    since=j.log_len;j._est=keepEst;j._shown=keepShown;show(j,false)}).catch(function(e){clearTimeout(timer);
+      if(/no such job|not found/i.test(String(e&&e.message)))return;   /* the UI was restarted: that run is gone */
+      timer=setTimeout(poll,3000)})
 }
 function loadHistory(){
   api("/api/results").then(function(r){
@@ -751,6 +753,7 @@ function wireFindingButtons(root){
 function renderHome(){
   var i=inv(),st=$("home-steps"),sum=$("home-sum");if(!st)return;
   if(!invs.length||!i){st.innerHTML='<li class="todo"><span class="n">1</span><div class="body"><b>Describe your rack</b>No rack is known on this machine yet. Give the address of the rack\'s switch tray and the tool reads the rest.<div class="row"><button class="go" data-goto="newrack">Add a rack</button></div></div></li>';sum.innerHTML="";wireGoto(st);return}
+  if(i.error){st.innerHTML='<li class="todo"><span class="n">1</span><div class="body"><b>'+esc(i.file)+' does not load</b><span class="err">'+esc(i.error)+'</span><div class="row"><button class="go" data-goto="newrack">Edit it in Add / edit a rack</button></div></div></li>';sum.innerHTML="";wireGoto(st);return}
   var s1='<li class="done"><span class="n">&#10003;</span><div class="body"><b>Rack: '+esc(i.rack)+"</b>"+i.switches.length+" switch tray(s), "+i.computes.length+' compute tray(s). <a href="#" data-goto="newrack">Add another rack</a></div></li>';
   st.innerHTML=s1+'<li><span class="n">2</span><div class="body"><b>Access</b>checking ...</div></li><li><span class="n">3</span><div class="body"><b>Check all links</b>...</div></li>';
   sum.innerHTML="";
@@ -956,7 +959,7 @@ $("pp-swap").addEventListener("click",function(){var st=$("pp-st").value,sg=$("p
 $("pp-same").addEventListener("click",function(){$("pp-dt").value=$("pp-st").value;ppRefreshDst()});
 
 // ---------------------------------------------------------------- live mode
-var live=null,liveSeq=0,liveChanges=[],liveTimer=null,wasLive=false;
+var live=null,liveSeq=0,liveChanges=[],liveTimer=null,wasLive=false,liveGen=0,liveDown=null;
 function liveMine(){var i=inv();return live&&live.running&&i&&live.inventory===i.file}
 function mm2(x){x=Math.max(0,Math.round(x));return x>=3600?Math.floor(x/3600)+" h "+Math.floor(x%3600/60)+" min":Math.floor(x/60)+" min"}
 /* '5 not reached - Not on the network ...: st3, st5, st6, ct10, ct17' - one line per reason, not one per node
@@ -966,12 +969,13 @@ function checkAge(t){if(!t)return "?";var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\
   if(isNaN(d))return String(t);var h=(Date.now()-d.getTime())/3600000;
   return d.toLocaleString([],{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})+", "+(h<1?"under an hour":h<48?Math.round(h)+" h":Math.round(h/24)+" days")+" ago"}
 function liveBad(f,bad){
-  var groups={},order=[];
-  bad.forEach(function(n){var w=friendlyWhy(f[n].error)||esc(String(f[n].error||"no reason given").slice(0,160));
+  var groups={},order=[],seen={},nodes=0;
+  bad.forEach(function(n){var w=friendlyWhy(f[n].error)||esc(String(f[n].error||"no reason given").slice(0,160)),node=n.split(" ")[0];
+    if(seen[node])return;seen[node]=1;nodes++;      /* 'st3 log' and 'st3 re-read': st3 once */
     if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
-  return esc(bad.length+" not reached")+" - "+order.map(function(w){
+  return esc(nodes+" not reached")+" - "+order.map(function(w){
     var ns=groups[w],raw=ns.map(function(n){return n+": "+String(f[n].error||"")}).join("\n");
-    return '<b title="'+esc(raw)+'">'+esc(ns.map(function(n){return n.replace(/ re-read$/,"")}).join(", "))+"</b>: "+w.replace(/\.$/,"")}).join("; ")}
+    return '<b title="'+esc(raw)+'">'+esc(ns.map(function(n){return n.split(" ")[0]}).join(", "))+"</b>: "+w.replace(/\.$/,"")}).join("; ")}
 function liveBar(){
   var b=$("live-bar");if(!b)return;var i=inv();
   if(liveMine()){
@@ -1010,7 +1014,10 @@ function liveBar(){
 }
 function livePoll(){
   clearTimeout(liveTimer);
+  var g=++liveGen;                                 /* one poll loop: an answer to an older call is dropped (it would
+                                                      add every change twice and start a second loop) */
   api("/api/live?since="+liveSeq).then(function(d){
+    if(g!==liveGen)return;
     var newDown=[];
     if(d.running===false&&!d.rack){live=null}else{
       if(live&&live.started!==d.started){liveSeq=0;liveChanges=[]}
@@ -1022,11 +1029,10 @@ function livePoll(){
         onTopo=!document.querySelector('section[data-p="topology"]').classList.contains("hide");
     if(onTopo&&mapData&&$("topo-dyn")&&$("topo-dyn").firstChild&&((liveMine()&&(d.changes||[]).length)||wasLive!==liveMine())){drawTopoInto();topoHint()}   /* the picture follows Live too */
     wasLive=liveMine();
-    if(onMap){liveBar();if(mapData)drawMap();liveList();
-      if(newDown.length&&liveMine()){$("map-banner").classList.remove("hide");$("map-banner").style.background="var(--downbg)";
-        $("map-banner").innerHTML="<b>Link(s) went down just now:</b> "+esc(newDown.slice(0,8).join(", "))+(newDown.length>8?" ...":"")}}
+    if(newDown.length&&liveMine())liveDown={t:Date.now(),links:newDown};
+    if(onMap){liveBar();if(mapData)drawMap();liveList()}
     liveTimer=setTimeout(livePoll,(live&&live.running&&(onMap||onTopo))?3000:15000);
-  }).catch(function(){liveTimer=setTimeout(livePoll,15000)});
+  }).catch(function(){if(g===liveGen)liveTimer=setTimeout(livePoll,15000)});
 }
 function liveList(){
   var box=$("live-box");if(!box)return;box.classList.toggle("hide",!liveMine());if(!liveMine())return;
@@ -1516,7 +1522,8 @@ $("nr-edit").addEventListener("click",function(){
   fetch("/api/inventory/text?file="+encodeURIComponent(f)).then(function(r){return r.json()}).then(function(d){
     if(d.error)throw new Error(d.error);
     $("nr-rack").value=d.name;$("nr-fname").textContent=d.name;$("nr-yaml").value=d.yaml;$("nr-over").checked=true;
-    $("nr-ylab").textContent="Rack description "+d.file+" (edit, then save - the previous file is kept as a backup)";
+    $("nr-ylab").textContent=/\.local\.yaml$/.test(d.file)?"Rack description "+d.file+" (edit, then save - the previous file is kept as a backup)":
+      "Rack description "+d.file+" - saving writes "+d.name+".local.yaml beside it (a new file; "+d.file+" stays as it is)";
     $("nr-out").classList.remove("hide");$("nr-msg").textContent="";$("nr-yaml").focus();
   }).catch(function(e){$("nr-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 });
@@ -1573,11 +1580,13 @@ function loadMap(){
     mapFetch();
   }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
+var mapGen=0;
 function mapFetch(){
   var p=$("map-scan").value;if(!p){$("map").innerHTML="";$("map-sum").textContent="";return}
-  api("/api/scan?path="+encodeURIComponent(p)).then(fillMissing).then(function(d){mapData=d;
+  var g=++mapGen;                                   /* the last choice wins: an older, slower fetch is dropped */
+  api("/api/scan?path="+encodeURIComponent(p)).then(fillMissing).then(function(d){if(g!==mapGen)return;mapData=d;
     var q=$("map-prev").value;
-    if(q&&q!==p){api("/api/scan?path="+encodeURIComponent(q)).then(function(e){mapPrev=e;drawMap()}).catch(function(){mapPrev=null;drawMap()})}else{mapPrev=null;drawMap()}
+    if(q&&q!==p){api("/api/scan?path="+encodeURIComponent(q)).then(function(e){if(g!==mapGen)return;mapPrev=e;drawMap()}).catch(function(){if(g!==mapGen)return;mapPrev=null;drawMap()})}else{mapPrev=null;drawMap()}
   }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
 function lkey(l){return l.switch+" "+l.sw_port}
@@ -1599,7 +1608,7 @@ function fillMissing(d){
       var when=checkAge(e.time_utc),got={};
       e.links.forEach(function(l){
         var sw=needSw.indexOf(l.switch)>=0,tr=l.tray&&needT.indexOf(l.tray)>=0;
-        if(!(sw||tr)||seen[lkey(l)])return;seen[lkey(l)]=1;got[sw?l.switch:l.tray]=1;
+        if(!(sw||tr)||seen[lkey(l)])return;seen[lkey(l)]=1;if(sw)got[l.switch]=1;if(tr)got[l.tray]=1;
         var who=sw?l.switch:l.tray;
         d.links.push(Object.assign({},l,{state:"unknown",filler:true,
           cause:"not in this check"+(why[who]?" ("+who+": "+why[who]+")":"")+" - the check of "+when+" said "+l.state+(l.cause?": "+l.cause:"")}));
@@ -1636,7 +1645,7 @@ function drawMap(){
     var by={};d.links.forEach(function(l){var t=l.tray||"(no tray)";(by[t]=by[t]||{});var g=gpuLab(l);(by[t][g]=by[t][g]||[]).push(l)});
     Object.keys(by).sort().forEach(function(t){
       var all=[];Object.keys(by[t]).forEach(function(g){all=all.concat(by[t][g])});
-      html+='<div class="mblk"><h3><a href="#" class="dd" data-dt="'+esc(t)+'" title="drill down into this tray">'+esc(trayName(t==="(no tray)"?"":t,d.slots)||t)+"</a>"+counts(all)+"</h3>";
+      html+='<div class="mblk"><h3><a href="#" class="dd" data-dt="'+esc(t)+'" title="drill down into this tray">'+esc(t==="(no tray)"?t:trayName(t,d.slots))+"</a>"+counts(all)+"</h3>";
       Object.keys(by[t]).sort(gOrder(t)).forEach(function(g){
         var ls=by[t][g].sort(function(a,b){return gpuPort(a)-gpuPort(b)});
         html+='<div class="mrow"><a href="#" class="lab dd" data-dg="'+esc(t+"|"+g)+'" title="'+esc(gName(t,g))+' - drill down into this GPU">'+esc(gShort(t,g)+gAcc(t,g))+'</a><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
@@ -1654,9 +1663,13 @@ function drawMap(){
   }
   $("map").innerHTML=html||'<p class="mut">No links in this scan.</p>';
   if(view==="topo")wireTopoSvg($("map"));
-  if(mapPrev){
-    var nw=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p==="ok"&&l.state!=="ok"}),
-        rc=d.links.filter(function(l){var p=prev[lkey(l)];return p!==undefined&&p!=="ok"&&l.state==="ok"});
+  $("map-banner").style.background="";
+  if(liveDown&&liveMine()&&Date.now()-liveDown.t<120000){   /* Live: links that just went down, for 2 minutes */
+    $("map-banner").classList.remove("hide");$("map-banner").style.background="var(--downbg)";
+    $("map-banner").innerHTML="<b>Link(s) went down just now:</b> "+esc(liveDown.links.slice(0,8).join(", "))+(liveDown.links.length>8?" ...":"");
+  }else if(mapPrev){
+    var nw=d.links.filter(function(l){var p=prev[lkey(l)];return !l.filler&&p!==undefined&&p==="ok"&&l.state!=="ok"}),
+        rc=d.links.filter(function(l){var p=prev[lkey(l)];return !l.filler&&p!==undefined&&p!=="ok"&&l.state==="ok"});
     $("map-banner").classList.toggle("hide",!(nw.length||rc.length));
     $("map-banner").innerHTML="Since the check of "+esc(stampLocal(mapPrev.time_utc))+": <b>"+nw.length+" new problem(s)</b>"+
       (nw.length?" ("+nw.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(nw.length>6?", ...":"")+")":"")+", <b>"+rc.length+" recovered</b>"+
