@@ -1531,11 +1531,10 @@ var mapData=null,mapPrev=null,mapScans=[];
 /* switches a check could not read are absent from its map: say which and why (g02-g17 24 Oct: st1, st2, st4 held
    forwarding entries SONiC's show mac fails on, and the map showed 3 of 6 switches without a word) */
 function missingSw(d){
-  var ns=(d.not_checked||[]).filter(function(x){return x.role==="switch"});if(!ns.length)return "";
-  var full=mapScans.filter(function(x){return !noLinks(x)&&x.path!==d.path&&x.mtime<(new Date(checkIso(d.time_utc)).getTime()/1000)})[0];
-  return '<span class="err">Not in this check: '+ns.map(function(x){var e=String(x.error||"");
-      return "<b>"+esc(x.node)+"</b> ("+(/FdbBroken/.test(e)?"its forwarding table has entries SONiC's show mac fails on - see Topology":friendlyWhy(e)||esc(e.slice(0,120)))+")"}).join(", ")+
-    (full?" - pick an earlier check in Scan to see them ("+esc(new Date(full.mtime*1000).toLocaleString())+")":"")+"</span>"}
+  var m=d.missing;if(!m||(!m.switches.length&&!m.trays.length))return "";
+  var all=m.switches.concat(m.trays);
+  return '<span class="err">Not read by this check: '+all.map(function(n){return "<b>"+esc(n)+"</b>"+(m.filled[n]?"":" (in no earlier check either)")}).join(", ")+
+    " - shown grey from the newest earlier check that read them (hover a link)</span>"}
 function checkIso(t){var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(t||"");return m?m[1]+"-"+m[2]+"-"+m[3]+"T"+m[4]+":"+m[5]+":"+m[6]+"Z":t}
 function noLinks(x){return /^0 GPU links/.test(String(x.summary||""))}
 function mapLoadScans(){
@@ -1561,12 +1560,40 @@ function loadMap(){
 }
 function mapFetch(){
   var p=$("map-scan").value;if(!p){$("map").innerHTML="";$("map-sum").textContent="";return}
-  api("/api/scan?path="+encodeURIComponent(p)).then(function(d){mapData=d;
+  api("/api/scan?path="+encodeURIComponent(p)).then(fillMissing).then(function(d){mapData=d;
     var q=$("map-prev").value;
     if(q&&q!==p){api("/api/scan?path="+encodeURIComponent(q)).then(function(e){mapPrev=e;drawMap()}).catch(function(){mapPrev=null;drawMap()})}else{mapPrev=null;drawMap()}
   }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
 function lkey(l){return l.switch+" "+l.sw_port}
+/* every switch and tray of the inventory on the map: one a check could not read (g02-g17 24 Oct: st1, st2, st4) gets
+   its links from the newest earlier check that read it, grey ('not known'), the old state in the tooltip */
+function fillMissing(d){
+  var i=inv();if(!i||i.rack!==d.rack)return d;
+  var hasSw={},hasT={},why={};d.links.forEach(function(l){hasSw[l.switch]=1;if(l.tray)hasT[l.tray]=1});
+  (d.not_checked||[]).forEach(function(x){why[x.node]=/FdbBroken/.test(String(x.error))?"its forwarding table has entries SONiC's show mac fails on":
+    (friendlyWhy(x.error)||String(x.error||"").slice(0,120)).replace(/<[^>]+>/g,"")});
+  var needSw=(i.switches||[]).filter(function(n){return !hasSw[n]}),needT=(i.computes||[]).filter(function(n){return !hasT[n]});
+  d.missing={switches:needSw.slice(),trays:needT.slice(),filled:{}};
+  if(!needSw.length&&!needT.length)return d;
+  var t0=new Date(checkIso(d.time_utc)).getTime()/1000,older=mapScans.filter(function(x){return !noLinks(x)&&x.path!==d.path&&x.mtime<t0}).slice(0,6),seen={};
+  d.links.forEach(function(l){seen[lkey(l)]=1});
+  function next(k){
+    if(k>=older.length||(!needSw.length&&!needT.length))return Promise.resolve(d);
+    return api("/api/scan?path="+encodeURIComponent(older[k].path)).then(function(e){
+      var when=checkAge(e.time_utc),got={};
+      e.links.forEach(function(l){
+        var sw=needSw.indexOf(l.switch)>=0,tr=l.tray&&needT.indexOf(l.tray)>=0;
+        if(!(sw||tr)||seen[lkey(l)])return;seen[lkey(l)]=1;got[sw?l.switch:l.tray]=1;
+        var who=sw?l.switch:l.tray;
+        d.links.push(Object.assign({},l,{state:"unknown",filler:true,
+          cause:"not in this check"+(why[who]?" ("+who+": "+why[who]+")":"")+" - the check of "+when+" said "+l.state+(l.cause?": "+l.cause:"")}));
+      });
+      Object.keys(got).forEach(function(n){d.missing.filled[n]=when});
+      needSw=needSw.filter(function(n){return !got[n]});needT=needT.filter(function(n){return !got[n]});
+      return next(k+1)}).catch(function(){return next(k+1)})}
+  return next(0);
+}
 function drawMap(){
   var d=mapData;if(!d)return;
   var prev={};if(mapPrev)mapPrev.links.forEach(function(l){prev[lkey(l)]=l.state});
@@ -1578,7 +1605,7 @@ function drawMap(){
     var l=l0,lz=lv&&lv[lkey(l0)];if(lz&&lz.state){l=Object.assign({},l0,{state:lz.state},lz.unread?{cause:"not read now - its switch and tray were not reached (the check of "+checkAge(live.check_time)+" said "+l0.state+")"}:{})}
     var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
-    if(mapPrev&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
+    if(mapPrev&&!l0.filler&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
     return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf?gName(l.tray,l.bdf):"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
   }
   var html="";
@@ -1622,7 +1649,7 @@ function drawMap(){
   }else{$("map-banner").classList.add("hide")}
   var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
-    (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?" not known (not read now: their switch and tray were not reached)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
+    (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?" not known (not read now: their switch and tray were not reached)":d.missing&&(d.missing.switches.length||d.missing.trays.length)?" not known (not read by this check)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
     (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+"</span>")+
     cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
