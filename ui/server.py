@@ -1041,6 +1041,9 @@ def start_job(state: State, req: dict) -> dict:
         job["proc"] = proc
         state.jobs[jid] = job
         state.current = jid
+        for old in [j for j in sorted(state.jobs.values(), key=lambda j: j["started"])
+                    if j["status"] != "running"][:-JOBS_KEEP]:       # their logs stay on disk (ui-jobs/)
+            del state.jobs[old["id"]]
 
     def pump():
         try:
@@ -1094,6 +1097,7 @@ def stop_job(state: State, jid: str) -> dict:
 
 
 KILL_AFTER_S = 60
+JOBS_KEEP = 50                                        # finished runs kept in memory (up to 400 KB of log each)
 
 
 def public(job: dict, since: int = 0) -> dict:
