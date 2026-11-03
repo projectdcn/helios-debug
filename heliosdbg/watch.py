@@ -32,6 +32,8 @@ def read_round(rack, links: list) -> dict:
         for asic in by_sw[name]:
             n = asic or None
             st = {r.get("Interface"): r for r in parse_table(sw.sh(f"show interfaces status{_ns(n)} -d all", timeout=120))}
+            if not st:      # a usage text / CLI change / empty output: not 'every port down' (and no flap counted)
+                raise RuntimeError(f"show interfaces status{_ns(n)} gave no port table")
             cnt = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters{_ns(n)} -d all", timeout=120))}
             fec = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters fec-stats{_ns(n)}", timeout=120))}
             res[asic] = (st, cnt, fec)

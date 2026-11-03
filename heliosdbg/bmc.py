@@ -110,7 +110,9 @@ class Redfish:
                     chan.sendall(f'user = "{user}"\n'.encode())
                 chan.shutdown_write()
                 out, deadline = bytearray(), time.monotonic() + self.timeout * len(urls) + 30
-                while not (chan.exit_status_ready() and not chan.recv_ready()):
+                # stop on exit status AND eof: OpenSSH may send the exit status before the last data (the cut that
+                # transport.py fixed - here it lost the last MARK line: 'BMC does not answer', a false no-power)
+                while not (chan.exit_status_ready() and chan.eof_received and not chan.recv_ready()):
                     if chan.recv_ready():
                         out += chan.recv(65536)
                     elif time.monotonic() > deadline:

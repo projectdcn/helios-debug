@@ -265,7 +265,10 @@ class LiveRack:
             asics = {lk["asic"] for lk in self.links.values() if lk["switch"] == name}
             for asic in asics:
                 try:
-                    for r in sw.interfaces_status(asic or None):
+                    rows = sw.interfaces_status(asic or None)
+                    if not rows:    # no table (a usage text, a CLI change): not a successful re-read freezing old states
+                        raise RuntimeError(f"show interfaces status on {asic or 'the switch'} gave no port table")
+                    for r in rows:
                         k = self.by_port.get((name, r.get("Interface")))
                         if k:
                             self._set(k, "sw_oper", str(r.get("Oper", "")).lower() or None, source)
