@@ -1528,6 +1528,15 @@ function loadOverview(){
 }
 // ---------------------------------------------------------------- rack map
 var mapData=null,mapPrev=null,mapScans=[];
+/* switches a check could not read are absent from its map: say which and why (g02-g17 24 Oct: st1, st2, st4 held
+   forwarding entries SONiC's show mac fails on, and the map showed 3 of 6 switches without a word) */
+function missingSw(d){
+  var ns=(d.not_checked||[]).filter(function(x){return x.role==="switch"});if(!ns.length)return "";
+  var full=mapScans.filter(function(x){return !noLinks(x)&&x.path!==d.path&&x.mtime<(new Date(checkIso(d.time_utc)).getTime()/1000)})[0];
+  return '<span class="err">Not in this check: '+ns.map(function(x){var e=String(x.error||"");
+      return "<b>"+esc(x.node)+"</b> ("+(/FdbBroken/.test(e)?"its forwarding table has entries SONiC's show mac fails on - see Topology":friendlyWhy(e)||esc(e.slice(0,120)))+")"}).join(", ")+
+    (full?" - pick an earlier check in Scan to see them ("+esc(new Date(full.mtime*1000).toLocaleString())+")":"")+"</span>"}
+function checkIso(t){var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(t||"");return m?m[1]+"-"+m[2]+"-"+m[3]+"T"+m[4]+":"+m[5]+":"+m[6]+"Z":t}
 function noLinks(x){return /^0 GPU links/.test(String(x.summary||""))}
 function mapLoadScans(){
   return api("/api/results").then(function(r){
@@ -1615,7 +1624,7 @@ function drawMap(){
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
     (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?" not known (not read now: their switch and tray were not reached)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
     (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+"</span>")+
-    cableSum(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
+    cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
   document.querySelectorAll("#map a.dd").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();
     if(a.dataset.dt)drillTray(a.dataset.dt);else if(a.dataset.dg){var x=a.dataset.dg.split("|");drillGpu(x[0],x[1])}
