@@ -346,9 +346,14 @@ def gpus_view(state: State, inventory: str) -> dict:
     that were up - for choosing a GPU-to-GPU path."""
     import gzip
     f, inv = state.inventory(inventory)
-    runs = sorted((state.results_dir / "link-check" / (inv.rack or f.stem)).glob("scan-*/raw/trays.json.gz"), reverse=True)
+    from heliosdbg import scans
+    rd = state.results_dir / "link-check" / (inv.rack or f.stem)
+    _d, folder = scans.newest(rd, need="raw/trays.json.gz")       # a check with links first; else any with trays read
+    if folder is None:
+        _d, folder = scans.newest(rd, need="raw/trays.json.gz", links=False)
+    runs = [folder / "raw" / "trays.json.gz"] if folder else []
     if not runs:
-        raise BadRequest("no check of this rack yet - run one first (Check all links)")
+        raise BadRequest("no check of this rack with links yet - run one first (Check all links)")
     try:
         trays = json.load(gzip.open(runs[0], "rt"))
     except (OSError, ValueError, EOFError) as e:      # truncated copy (full disk): say so instead of a 500
@@ -1231,12 +1236,13 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/cabling.csv":
                 from heliosdbg import cabling
                 f, inv = st.inventory((q.get("inventory") or [""])[0])
-                runs = sorted((st.results_dir / "link-check" / (inv.rack or f.stem)).glob("scan-*/link_check.json"), reverse=True)
-                if not runs:
-                    raise BadRequest("no scan of this rack yet - run one first")
-                text = cabling.export(json.loads(runs[0].read_text()).get("links") or [])
+                from heliosdbg import scans
+                d, _folder = scans.newest(st.results_dir / "link-check" / (inv.rack or f.stem), full=True)
+                if not d:
+                    raise BadRequest("no check of the whole rack with links yet - run Check all links first")
+                text = cabling.export(d.get("links") or [])
                 return self._send(200, text.encode(), "text/csv; charset=utf-8",
-                                  {"Content-Disposition": f'attachment; filename="{inv.rack}-cabling.csv"'})
+                                  {"Content-Disposition": f'attachment; filename="{inv.rack or f.stem}-cabling.csv"'})
             if u.path == "/api/overview":
                 return self._json(200, {"racks": overview(st)})
             if u.path == "/api/live":

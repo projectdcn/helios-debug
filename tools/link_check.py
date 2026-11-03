@@ -793,13 +793,11 @@ def scan_cmd(a) -> int:
 
 # ------------------------------------------------------------------ one link
 
-def _latest_scan(rack_dir: Path) -> dict | None:
-    for f in sorted(rack_dir.glob("scan-*/link_check.json"), reverse=True):
-        try:
-            return json.loads(f.read_text()) | {"_file": str(f)}
-        except (OSError, ValueError):
-            continue
-    return None
+def _latest_scan(rack_dir: Path, full: bool = False) -> dict | None:
+    """The newest check that read links (of the whole rack with full) - not an empty or one-tray one (heliosdbg.scans)."""
+    from heliosdbg import scans
+    d, folder = scans.newest(rack_dir, full=full)
+    return d | {"_file": str(folder / "link_check.json")} if d else None
 
 
 def _hand_commands(ln) -> list[tuple[str, str]]:
@@ -1043,7 +1041,7 @@ def cabling_cmd(a) -> int:
     inv = load_inventory(a.inventory)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     rack_dir = (a.out.parent if a.out else ROOT / "results" / "link-check" / (inv.rack or "rack"))
-    scan = json.loads(Path(a.scan).read_text()) if a.scan else _latest_scan(rack_dir)
+    scan = json.loads(Path(a.scan).read_text()) if a.scan else _latest_scan(rack_dir, full=True)
     if not scan:
         print(f"no scan of {inv.rack} to compare with - run a scan first (or --scan <link_check.json>)", file=sys.stderr)
         return 2
