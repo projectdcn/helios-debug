@@ -535,8 +535,10 @@ function api(path,body){
 function inv(){return invs.filter(function(i){return i.file===$("inv").value})[0]}
 function checks(id,names){$(id).innerHTML=names.map(function(n){return '<label><input type="checkbox" value="'+esc(n)+'">'+esc(n)+'</label>'}).join("")||'<span class="mut">none</span>'}
 function picked(id){return Array.prototype.map.call($(id).querySelectorAll("input:checked"),function(x){return x.value})}
+var accRack=null,liveErr="";
 function fillInv(){
   var i=inv();if(!i)return;
+  if(accRack!==i.file){accState={};accRack=i.file}   /* st1 / ct01 of another rack are other nodes */
   fillNodePick("term-node");fillNodePick("cfg-node");
   $("inverr").classList.toggle("hide",!i.error);$("inverr").textContent=i.error?("Inventory "+i.file+": "+i.error):"";
   if(i.error)return;
@@ -882,7 +884,7 @@ function renderHealth(box,d,out){
   if(ch.since){var li=(ch["new"]||[]).map(function(f){return "<li><b>new</b> "+esc(f.severity)+": "+esc(f.node)+": "+esc(f.what)+"</li>"})
       .concat((ch.grew||[]).map(function(g){return "<li><b>grew</b> "+esc(g.node)+": "+esc(g.before)+" &rarr; "+esc(g.now)+"</li>"}))
       .concat((ch.gone||[]).map(function(f){return "<li><b>gone</b> "+esc(f.node)+": "+esc(f.what)+"</li>"}));
-    head+='<p style="font-size:13px"><b>Since the check of '+esc(ch.since)+' UTC:</b> '+(ch["new"]||[]).length+" new, "+(ch.gone||[]).length+" gone, "+
+    head+='<p style="font-size:13px"><b>Since the check of '+esc(/^\d{4}-\d\d-\d\d \d\d:\d\d$/.test(ch.since)?checkAge(ch.since.replace(" ","T")+":00Z"):ch.since+" UTC")+':</b> '+(ch["new"]||[]).length+" new, "+(ch.gone||[]).length+" gone, "+
       (ch.grew||[]).length+" grew, "+(ch.same||0)+" unchanged</p>"+(li.length?'<ul style="font-size:13px">'+li.join("")+"</ul>":"")}
   if(d.incidents){var ok=(d.incidents.sent||[]).filter(function(x){return x.ok}).length;
     head+='<p class="mut" style="font-size:12px">Sent to the incident API: '+ok+" of "+(d.incidents.sent||[]).length+"</p>"}
@@ -997,7 +999,8 @@ function liveBar(){
     var other=live&&live.running?' <span class="mut">(live mode is on for '+esc(live.rack)+" - turning it on here turns that off)</span>":"";
     var why=live&&!live.running&&live.stop_reason&&live.inventory===(i&&i.file)?' <span class="mut">Last live session: '+esc(live.stop_reason)+".</span>":"";
     var age=mapData&&i&&mapData.rack===i.rack&&mapData.time_utc?checkAge(mapData.time_utc):"";
-    var key="off|"+(i&&i.file)+"|"+other+"|"+why+"|"+age;
+    var key="off|"+(i&&i.file)+"|"+other+"|"+why+"|"+(mapData&&mapData.time_utc)+"|"+liveErr;   /* not the age text: re-drawing
+                                                       hourly reset the user's choices */
     if(b.dataset.key===key)return;                 /* unchanged: keep the user's choices, an open dropdown, an error */
     b.dataset.key=key;
     b.className="live-bar";
@@ -1006,11 +1009,12 @@ function liveBar(){
       '<label class="checks" style="margin:0">re-read every <select id="live-rec" style="width:auto;margin-left:4px"><option value="60">1 min</option><option value="300" selected>5 min</option><option value="900">15 min</option></select></label>'+
       '<label class="checks" style="margin:0">stop after <select id="live-max" style="width:auto;margin-left:4px"><option value="8" selected>8 h</option><option value="24">24 h</option><option value="72">3 days</option><option value="0">until turned off</option></select></label>'+
       '<label class="checks" style="margin:0" title="otherwise Live stops 30 min after the last page showing this UI was closed"><input type="checkbox" id="live-keep">keep on when no page is open</label>'+
-      '<button class="go" id="live-on">Turn live on</button>'+other+why;
+      '<button class="go" id="live-on">Turn live on</button>'+other+why+(liveErr?'<span class="err">'+friendly(liveErr)+"</span>":"");
     $("live-on").addEventListener("click",function(){$("live-on").disabled=true;$("live-on").textContent="starting ...";
+      liveErr="";
       api("/api/live/start",{inventory:i.file,reconcile_s:+$("live-rec").value,max_h:+$("live-max").value,keep_unwatched:$("live-keep").checked}).then(function(){liveSeq=0;liveChanges=[];livePoll()})
-      .catch(function(e){b.insertAdjacentHTML("beforeend",'<span class="err">'+friendly(e.message)+"</span>");$("live-on").disabled=false;$("live-on").textContent="Turn live on"})
-      .then(function(){b.dataset.key=""})});
+      .catch(function(e){liveErr=String(e.message||e)})            /* kept in the bar until the next try */
+      .then(function(){b.dataset.key="";liveBar()})});
   }
 }
 function livePoll(){
@@ -1543,7 +1547,7 @@ function loadOverview(){
     $("ov").innerHTML=d.racks.map(function(r){
       if(r.error&&!r.rack)return '<tr><td>'+esc(r.file)+'</td><td colspan="7" class="err">'+esc(r.error)+"</td></tr>";
       return '<tr><td><a href="#" data-ovinv="'+esc(r.file)+'"><b>'+esc(r.rack)+"</b></a><div class=\"mut\">"+esc(r.file)+"</div></td><td>"+r.switches+" sw / "+r.computes+" ct</td><td>"+
-        (r.latest?esc(r.time_utc||""):'<span class="mut">no scan yet</span>')+"</td><td>"+(r.links!=null?r.links:"")+'</td><td style="color:var(--ok)">'+(r.ok!=null?r.ok:"")+
+        (r.latest?esc(r.time_utc?checkAge(r.time_utc):""):'<span class="mut">no scan yet</span>')+"</td><td>"+(r.links!=null?r.links:"")+'</td><td style="color:var(--ok)">'+(r.ok!=null?r.ok:"")+
         '</td><td style="color:var(--deg)">'+(r.degraded||"")+'</td><td style="color:var(--down)">'+(r.down||"")+"</td><td>"+(r.gpus_not_right?'<span class="err">'+r.gpus_not_right+" GPU(s) not right</span>":"")+"</td></tr>";
     }).join("");
     document.querySelectorAll("a[data-ovinv]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();$("inv").value=a.dataset.ovinv;fillInv();tab("map")})});
