@@ -220,11 +220,22 @@ class SshTransport:
         if self.jump:
             sock = _jump_client(self.jump, self.connect_timeout).get_transport().open_channel(
                 "direct-tcpip", (h.host, h.port), ("127.0.0.1", 0), timeout=self.connect_timeout)
-        client.connect(
-            h.host, port=h.port, username=h.user, password=h.password, key_filename=key_file, sock=sock,
-            timeout=self.connect_timeout, banner_timeout=self.connect_timeout,
-            auth_timeout=self.connect_timeout, look_for_keys=use_keys, allow_agent=use_keys,
-        )
+        try:
+            client.connect(
+                h.host, port=h.port, username=h.user, password=h.password, key_filename=key_file, sock=sock,
+                timeout=self.connect_timeout, banner_timeout=self.connect_timeout,
+                auth_timeout=self.connect_timeout, look_for_keys=use_keys, allow_agent=use_keys,
+            )
+        except Exception:
+            # paramiko keeps the Transport (thread, socket / jump channel) after a refused login or a bad host key:
+            # Live re-reading a refusing tray every 5 min leaked ~100 of them in 8 h
+            client.close()
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
         client.get_transport().set_keepalive(self.keepalive)
         log.debug("[%s] connected %s@%s:%s", h.name, h.user, h.host, h.port)
         return client
@@ -245,6 +256,8 @@ class SshTransport:
 
     def _run(self, cmd: str, *, timeout: float = 120, sudo: bool = False,
              env: dict[str, Any] | None = None) -> CmdResult:
+        import paramiko
+
         full = build_command(cmd, sudo, env)
         # Enforce the timeout on the remote side too: closing the SSH channel does not kill a hung tool
         # (e.g. a GPU workload stuck in the driver), so coreutils `timeout` sends TERM, then KILL.
@@ -254,7 +267,9 @@ class SshTransport:
             target = f"{h.user}@{h.host}" if h.user else h.host
             # LogLevel=ERROR, not -q: -q also hides why a login failed (Permission denied / No route to host), which
             # left only 'rc=255' to show (g02-g17 2 Nov); reach.classify() reads that message
-            remote = ("ssh -o LogLevel=ERROR -o BatchMode=yes -o ControlMaster=auto -o ControlPath=~/.ssh/helios-cm-%C "
+            # ServerAlive: a master connection to a node that lost power stalls every command through it otherwise
+            remote = ("ssh -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "
+                      "-o ControlMaster=auto -o ControlPath=~/.ssh/helios-cm-%C "
                       f"-o ControlPersist=600 -o ConnectTimeout={int(self.connect_timeout)} -p {h.port} "
                       f"{shlex.quote(target)} {shlex.quote(remote)}")
         log.debug("[%s] $ %s", self.host.name, full)
@@ -264,7 +279,11 @@ class SshTransport:
             sem.acquire()
         start = time.monotonic()
         try:
-            chan = client.get_transport().open_session(timeout=self.connect_timeout)
+            try:
+                chan = client.get_transport().open_session(timeout=self.connect_timeout)
+            except paramiko.ChannelException:      # the jump host's sessions-at-once limit: once more, a little later
+                time.sleep(2)
+                chan = client.get_transport().open_session(timeout=self.connect_timeout)
         except Exception:
             if sem:
                 sem.release()
