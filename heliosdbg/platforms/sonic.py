@@ -195,7 +195,9 @@ def _critical(node, outs, F):
         crit, status = parse_supervisor(t)
         if not crit and c == "pmon":        # pmon lists no critical programs: its platform daemons are what matters
             crit = [p for p in PMON_DAEMONS if p in status]
-        down = [f"{p}:{status.get(p, 'not listed')}" for p in crit if status.get(p) != "RUNNING"
+        # a critical program supervisord does not have at all is not configured on this switch (radv's radvd on a
+        # QFX5252 fabric with no IPv6 router advertisement - g02-g17 st5, 4 Nov), not down
+        down = [f"{p}:{status[p]}" for p in crit if p in status and status[p] != "RUNNING"
                 and not (p == "dsserve" and status.get("syncd") == "RUNNING")]
         down += [f"{p}:{s}" for p, s in status.items() if s in BROKEN_STATES and p not in crit]
         if not down:

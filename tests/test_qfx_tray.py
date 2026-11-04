@@ -69,3 +69,12 @@ def test_commands_missing_on_other_platforms_are_not_findings():
     F = _run({k: {"cmd": k, "rc": 127, "out": "", "err": "bmc-manager: command not found"}
               for k in ("leak", "ssd", "ntp", "bmc_health", "bmc_power", "images", "mgmt")})
     assert F == {}
+
+
+def test_a_critical_program_supervisord_does_not_run_at_all_is_not_down():
+    outs = {"critical:radv": {"cmd": "x", "rc": 3, "err": "", "out": "program:radvd\n===\ndependent-startup  EXITED  Oct 29\n"
+                              "rsyslogd   RUNNING   pid 22, uptime 6 days\n"},
+            "critical:bgp": {"cmd": "x", "rc": 3, "err": "", "out": "program:bgpd\n===\nbgpd   EXITED   Oct 29\n"}}
+    F = []
+    sonic._critical("st5", outs, F)
+    assert len(F) == 1 and "bgpd" in F[0]["what"] and "radv" not in F[0]["what"]
