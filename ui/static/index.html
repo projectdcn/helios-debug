@@ -721,8 +721,11 @@ function gName(t,g){var n=gpuNum(t,g,(mapData||{}).gpu_map);return n!=null?"GPU"
 function gShort(t,g){var n=gpuNum(t,g,(mapData||{}).gpu_map);return n!=null?"GPU"+n:g}
 function gOrder(t){return function(a,b){var na=gpuNum(t,a,(mapData||{}).gpu_map),nb=gpuNum(t,b,(mapData||{}).gpu_map);return na!=null&&nb!=null?na-nb:(a<b?-1:1)}}
 /* the physical cable check: each GPU port's IFCP session names the switch port at the other end of its real cable */
-function cableSum(d){var c=d.cabling;if(!c)return "";var t="the GPU port's IFCP peer is the switch port the description and forwarding table say - the cable really lands there";
-  return '<span title="'+esc(t)+'">Cables: <b>'+c.confirmed+"</b> confirmed by IFCP"+(c.miscabled?' · <b class="err">'+c.miscabled+" miscabled</b>":" · 0 miscabled")+(c.unconfirmed?" · "+c.unconfirmed+" not confirmable (link down / tray not read)":"")+"</span>"+
+function cableSum(d){var c=d.cabling;if(!c)return "";
+  /* from the check's IFCP peers, not from Live: say so while Live colours the map (3 Nov: '1017 confirmed' beside
+     Live's 384 ok read as a contradiction) */
+  var at=liveMine()&&live.rack===d.rack?"At the check ("+esc(checkAge(d.time_utc))+"): ":"";var t="the GPU port's IFCP peer is the switch port the description and forwarding table say - the cable really lands there";
+  return '<span title="'+esc(t)+'">'+at+'Cables: <b>'+c.confirmed+"</b> confirmed by IFCP"+(c.miscabled?' · <b class="err">'+c.miscabled+" miscabled</b>":" · 0 miscabled")+(c.unconfirmed?" · "+c.unconfirmed+" not confirmable (link down / tray not read)":"")+"</span>"+
     (c.examples&&c.examples.length?'<span class="err">'+esc(c.examples.slice(0,4).join("; "))+"</span>":"")}
 function swName(sw,ids){var a=((mapData||{}).afm_names||{})[sw];return a?a+" ("+sw+")":sw+(ids&&ids[sw]!=null?" (AFM "+ids[sw]+")":"")}
 function verdictHtml(state,kind,detail,owner,extraSteps){
@@ -975,15 +978,18 @@ function mm2(x){x=Math.max(0,Math.round(x));return x>=3600?Math.floor(x/3600)+" 
 function checkAge(t){if(!t)return "?";var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(t),d=m?new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])):new Date(t);
   if(isNaN(d))return String(t);var h=(Date.now()-d.getTime())/3600000;
   return d.toLocaleString([],{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})+", "+(h<1?"under an hour":h<48?Math.round(h)+" h":Math.round(h/24)+" days")+" ago"}
-/* switches whose GPU links the trays read as up: the switch is powered and running, whatever its SSH says
-   (g02-g17 3 Nov: st1-st4, st6 'not on the network - powered off?' while every tray saw LINK_UP to them) */
+/* nodes the far end of whose links reads them up: powered, whatever their SSH says (g02-g17 3 Nov: st1-st4, st6
+   'not on the network - powered off?' while the trays read every GPU link to them up; ct10 too, while st5 read its
+   24 ports up) */
 function liveAliveSw(){var a={},L=(live&&live.links)||{};
-  for(var k in L){var l=L[k];if(l.read&&/^LINK_UP/i.test(l.gpu_link||""))a[k.split(" ")[0]]=1}return a}
+  for(var k in L){var l=L[k];if(l.read&&/^LINK_UP/i.test(l.gpu_link||""))a[k.split(" ")[0]]=1}
+  if(mapData&&mapData.rack===live.rack)mapData.links.forEach(function(l){var z=L[lkey(l)];if(z&&z.sw_oper==="up"&&l.tray)a[l.tray]=1});
+  return a}
 function liveBad(f,bad){
   var groups={},order=[],seen={},nodes=0,alive=liveAliveSw();
   bad.forEach(function(n){var w=friendlyWhy(f[n].error)||esc(String(f[n].error||"no reason given").slice(0,160)),node=n.split(" ")[0];
     if(alive[node]&&/^(Not on the network|No answer)/.test(w))
-      w="Powered and running (the trays read its GPU links up), but its management address does not answer from here - check the management network / route to it, not its power.";
+      w="Powered - the other end of their GPU links reads them up - but the management address does not answer from here. Check the management network / route to it, not the power.";
     if(seen[node])return;seen[node]=1;nodes++;      /* 'st3 log' and 'st3 re-read': st3 once */
     if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
   return esc(nodes+" not reached")+" - "+order.map(function(w){

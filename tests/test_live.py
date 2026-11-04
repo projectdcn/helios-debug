@@ -197,9 +197,9 @@ def test_links_not_read_are_not_known_not_the_checks_state(tmp_path, monkeypatch
     st = r.status()
     assert st["links"]["st1 Ethernet9"]["state"] == "unknown" and st["links"]["st1 Ethernet9"]["unread"]
     assert st["links"]["st1 Ethernet1"]["state"] != "unknown"           # its tray was read
-    assert st["links"]["st1 Ethernet10"]["state"] == "degraded"         # quarantined: the check's reason stays
+    assert st["links"]["st1 Ethernet10"]["state"] == "unknown"          # quarantined: nothing reads the GPU end either
     assert st["check_time"] == "20261024-071833"
-    assert any("1 links not read" in str(c["to"]) for c in st["changes"])
+    assert any("2 links not read" in str(c["to"]) for c in st["changes"])
     assert st["followers"]["st1 re-read"]["error"].startswith("no route to host")
 
 

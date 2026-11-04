@@ -309,11 +309,12 @@ class LiveRack:
     def _mark_unread(self) -> None:
         """Links neither end of which was read (switch and tray not reached) are 'unknown', not the check's state:
         g02-g17 2 Nov, st6 kept 176 'degraded' links from a 9-day-old check and st3's links to ct10 / ct17 showed
-        'ok' while nothing had been read. A quarantined tray's links keep the check's reason."""
+        'ok' while nothing had been read. A quarantined tray's links too (no GPU to read there): on 3 Nov ct05's links
+        showed 'degraded' from the check on st3 / st6 but 'not known' on st1 / st2 / st4 / st5."""
         with self.lock:
             n = nogpu = 0
             for lk in self.links.values():
-                if lk["read"] or lk["unread"] or lk.get("scan_kind") == "tray_quarantined":
+                if lk["read"] or lk["unread"]:
                     continue
                 lk["unread"], n, nogpu = True, n + 1, nogpu + (not lk.get("bdf"))
                 if lk["state"] != "unknown":
