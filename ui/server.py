@@ -540,7 +540,9 @@ def ai_ask(state: State, req: dict) -> dict:
     q, hist = str(req.get("question") or "")[:2000], req.get("history") or []
     if not isinstance(hist, list):
         raise BadRequest("history: a list of {q, a}")
-    ev, subject, _rack = _ai_subject(state, req, past=True)
+    ev, subject, rack = _ai_subject(state, req, past=True)
+    from heliosdbg import guide
+    guide.steps_evidence(ev, [x for x in (req.get("steps") or []) if isinstance(x, dict)][:24])
     if ai.generic_howto(q):                  # a how-to about a kind of problem: the debug guide, not this problem's cause
         from heliosdbg import docsearch
         docs = docsearch.load()
@@ -548,9 +550,27 @@ def ai_ask(state: State, req: dict) -> dict:
             ev.add_doc(d)
         ev.howto = True
     try:
-        return ai.ask(ev, subject, q, hist)
+        out = ai.ask(ev, subject, q, hist)
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
+    if rack:                                 # the commands it suggests, checked like steps: Run from the answer
+        try:
+            _inv, roles = _rack_nodes(state, rack)
+            out["runnable"] = guide.runnable(out.get("answer") or "", roles, _rack_aliases(state, rack))
+        except BadRequest:
+            out["runnable"] = []
+    return out
+
+
+def _rack_aliases(state: State, rack: str) -> dict:
+    """{AFM name: tray} from the rack's newest check (answers name pod-1-0-ComputeTray as often as c1)."""
+    runs = sorted((state.results_dir / "link-check" / rack).glob("scan-*/link_check.json"), reverse=True)
+    for f in runs[:1]:
+        try:
+            return {v: k for k, v in (scan_view(state, str(f.parent.relative_to(state.results_dir))).get("afm_names") or {}).items()}
+        except Exception:  # noqa: BLE001 - without them only the inventory names are recognised
+            return {}
+    return {}
 
 
 def _ai_subject(state: State, req: dict, past: bool = False):

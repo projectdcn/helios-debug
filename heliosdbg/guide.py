@@ -155,6 +155,48 @@ def step_facts(steps: list[dict]) -> list[str]:
     return facts
 
 
+# 'on st1: `show interfaces status -n asic1 Ethernet257`' / 'on pod-1-0-ComputeTray (c1): `sudo afmctl ...`' in an answer
+_ON_CMD = re.compile(r"\bon\s+(?:the\s+)?([A-Za-z0-9][\w.-]*)(?:\s*\(([\w.-]+)\))?\s*:?\s*`([^`\n]{2,300})`")
+
+
+def runnable(text: str, roles: dict, aliases: dict | None = None) -> list[dict]:
+    """The commands an answer suggests on a named node: [{node, command, allowed, refused}] - each checked against the
+    read-only list exactly like a step, so the person can run it from the answer (and continue step by step)."""
+    al = {n.lower(): n for n in roles} | {str(k).lower(): v for k, v in (aliases or {}).items() if v in roles}
+    out, seen = [], set()
+    for m in _ON_CMD.finditer(text or ""):
+        node = al.get((m.group(2) or "").lower()) or al.get(m.group(1).lower())
+        cmd = m.group(3).strip()
+        if not node or (node, cmd) in seen:
+            continue
+        seen.add((node, cmd))
+        item = {"node": node, "command": cmd, "allowed": False, "refused": None}
+        if re.search(r"<[^<>]*>", cmd):
+            item["refused"] = "it has a placeholder (<...>) - ask for the exact command, or continue step by step"
+        else:
+            try:
+                item["command"], _sudo = check(cmd, roles[node])
+                item["allowed"] = True
+            except GuideError as e:
+                item["refused"] = str(e)
+        out.append(item)
+    return out[:8]
+
+
+def steps_evidence(ev, steps: list[dict]) -> None:
+    """Commands already run (from answers or step by step) as evidence for the next question: what code reads in their
+    outputs first, then each output (cut)."""
+    ran = [(i, s) for i, s in enumerate(steps, 1) if isinstance(s, dict) and str(s.get("rc")) != "skipped"]
+    if not ran:
+        return
+    for f in step_facts([s for _i, s in ran]):
+        ev.add("From the commands run: " + f, "steps")
+    for i, s in ran[-8:]:
+        u = unreachable(s)
+        ev.add(f"Command S{i} run on {s.get('node')}: `{s.get('command')}` - " + (f"not run, could not log in: {u['what']}" if u else
+               f"exit {s.get('rc')}, output: " + compact(str(s.get("output") or "")).strip()[:480]), "steps")
+
+
 def steps_block(steps: list[dict]) -> str:
     out = []
     for i, s in enumerate(steps[-8:], 1):

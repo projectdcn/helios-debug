@@ -1132,37 +1132,48 @@ function aiMd(t,ev){
 /* what an AI request says it is about: a saved check / link / Diagnose (path, link), or any problem (ctx.spec: a
    helios-tests result {test}, outputs collected by hand {blocks, subject, rack}, a tool report {path}) */
 function aiReq(ctx,extra){return Object.assign({path:ctx.path||"",link:ctx.link||""},ctx.spec||{},extra||{})}
-/* an "Ask the AI" panel in box: ctx {path, link?, label} or {spec, rack, label} */
+/* an "Ask the AI" panel in box: ctx {path, link?, label} or {spec, rack, label}. One timeline, in the order things were
+   done: answers, commands run from an answer, step-by-step steps. Every command run is a step (S1..) that the next
+   question and the next step both see. */
 function aiPanel(box,ctx){
-  if(!box)return;var hist=[];
-  box.innerHTML='<div class="ai"><div class="row" style="margin:0;align-items:center"><b>AI: root cause, how to debug, what to do</b><span class="mut" style="font-size:12px">advisory - check its claims against the evidence; it changes nothing</span>'+
+  if(!box)return;var sess={hist:[],steps:[],out:null,ctx:ctx};box._sess=sess;
+  box.innerHTML='<div class="ai"><div class="row" style="margin:0;align-items:center"><b>AI: root cause, how to debug, what to do</b><span class="mut" style="font-size:12px">advisory - check its claims against the evidence; commands run only on your click, read-only</span>'+
     '<span style="flex:1"></span><button class="sec ai-go ai-guide-go"'+(aiState.ok?"":" disabled")+' title="the AI proposes read-only commands one at a time; you click Run">Investigate step by step</button>'+
     (/\/scan-/.test(ctx.path)&&!ctx.link?'<select class="ai-aud" style="width:auto" title="who the ticket is for"><option value="all">ticket for: everyone</option><option value="amd">AMD (GPU / AFM)</option><option value="switch">switch / SONiC owner</option><option value="site">site / cabling</option><option value="operator">operator</option></select><button class="sec ai-ticket-go">Write a ticket</button>':"")+
     '<button class="sec ai-res-go" title="what it turned out to be and what fixed it - the AI learns from these">Record the resolution</button>'+
-    '<button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div><div class="ai-guide"></div><div class="ai-ticket"></div><div class="ai-res"></div>'+
-    '<form class="row ai-more hide" style="margin:6px 0 0"><input class="ai-q" placeholder="Follow-up question (e.g. which command shows the IFCP state on the switch?)" style="flex:1;min-width:240px" maxlength="2000"><button class="sec">Ask</button></form></div>';
+    '<button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div><div class="ai-ticket"></div><div class="ai-res"></div>'+
+    '<form class="row ai-more hide" style="margin:6px 0 0"><input class="ai-q" placeholder="Follow-up question - it sees the commands run so far (e.g. what does port 13 NO_PHY_LINK mean?)" style="flex:1;min-width:240px" maxlength="2000"><button class="sec">Ask</button></form></div>';
   var out=box.querySelector(".ai-out"),go=box.querySelector("button.go.ai-go"),form=box.querySelector(".ai-more");
+  sess.out=out;sess.onActivity=function(){form.classList.remove("hide")};
   if(!aiState.ok)go.title=aiState.error;
   function run(q){
-    go.disabled=true;var wait=document.createElement("p");wait.className="mut";wait.textContent="the model is reading the evidence"+(q?" ("+q+")":"")+" ...";out.appendChild(wait);
-    api("/api/ai/ask",aiReq(ctx,{question:q||"",history:hist})).then(function(a){
-      wait.remove();hist.push({q:q||"root cause / debug / fix of "+(ctx.label||a.subject),a:a.answer});
+    go.disabled=true;var wait=document.createElement("p");wait.className="mut";wait.textContent="the model is reading the evidence"+(sess.steps.length?" and "+sess.steps.length+" command(s) run":"")+(q?" ("+q+")":"")+" ...";out.appendChild(wait);
+    api("/api/ai/ask",aiReq(ctx,{question:q||"",history:sess.hist,steps:sess.steps})).then(function(a){
+      wait.remove();sess.hist.push({q:q||"root cause / debug / fix of "+(ctx.label||a.subject),a:a.answer});
       var d=document.createElement("div");d.className="ans";
-      d.innerHTML=(q?'<p class="mut"><b>Q:</b> '+esc(q)+"</p>":"")+aiMd(a.answer,a.evidence)+
+      d.innerHTML=(q?'<p class="mut"><b>Q:</b> '+esc(q)+"</p>":"")+aiMd(a.answer,a.evidence)+aiCmds(a.runnable)+
         (a.unsafe?'<div class="warn">Careful: the answer suggests a step that changes the rack ("'+esc(a.unsafe)+'") - only with a go-ahead, and not on coupled ports.</div>':"")+
         ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
         (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+" - treat those claims with care.</div>":"")+
         '<details style="margin-top:6px"><summary class="mut">Evidence given to the model ('+a.evidence.length+") · "+esc(String(a.model).split("/").pop())+" · "+a.seconds+" s</summary>"+
         a.evidence.map(function(x){return '<div style="font-size:12px"><span class="cite">'+x.ref+"</span> "+esc(x.text)+"</div>"}).join("")+"</details><div class=\"fb\"></div>";
-      out.appendChild(d);form.classList.remove("hide");fbWire(d.querySelector(".fb"),a,ctx);
+      out.appendChild(d);sess.onActivity();fbWire(d.querySelector(".fb"),a,ctx);
+      d.querySelectorAll(".ai-cmd").forEach(function(b){b.addEventListener("click",function(){var r=a.runnable[+b.dataset.i];stepRun(sess,r.node,r.command,b,false)})});
     }).catch(function(e){wait.className="err";wait.textContent=e.message}).then(function(){go.disabled=!aiState.ok;go.textContent="Ask again"});
   }
   go.addEventListener("click",function(){run("")});
-  var gb=box.querySelector(".ai-guide-go");if(gb)gb.addEventListener("click",function(){guideStart(box.querySelector(".ai-guide"),ctx)});
+  var gb=box.querySelector(".ai-guide-go");if(gb)gb.addEventListener("click",function(){guideNext(sess)});
   box.querySelector(".ai-res-go").addEventListener("click",function(){resolutionForm(box.querySelector(".ai-res"),ctx,function(){
-    return {answer:hist.length?hist[hist.length-1].a:"",steps:box.querySelector(".ai-guide")._steps||[]}})});
+    return {answer:sess.hist.length?sess.hist[sess.hist.length-1].a:"",steps:sess.steps}})});
   var tb=box.querySelector(".ai-ticket-go");if(tb)tb.addEventListener("click",function(){ticketWrite(box.querySelector(".ai-ticket"),ctx,box.querySelector(".ai-aud").value,tb)});
   form.addEventListener("submit",function(e){e.preventDefault();var q=form.querySelector(".ai-q").value.trim();if(q){form.querySelector(".ai-q").value="";run(q)}});
+}
+/* the commands an answer suggests on a named node, checked by the server like a step: Run them from the answer */
+function aiCmds(rs){
+  if(!rs||!rs.length)return "";
+  return '<div class="ai-cmds" style="margin:6px 0"><div class="mut" style="font-size:12px">Run a suggested command on the node (read-only list, same check as a step):</div>'+
+    rs.map(function(r,i){return '<div class="row" style="margin:3px 0;align-items:center;gap:6px"><code>'+esc(nodeLabel(r.node))+": "+esc(r.command)+"</code>"+
+      (r.allowed?'<button class="sec ai-cmd" data-i="'+i+'">Run</button>':'<span class="mut" style="font-size:12px">not runnable here: '+esc(r.refused||"")+"</span>")+"</div>"}).join("")+"</div>";
 }
 
 /* ---------------------------------------------------------------- any problem: a test result, a tool report, outputs collected by hand */
@@ -1245,35 +1256,50 @@ function apReports(){
       apAsk({spec:{path:r.path},path:r.path,rack:r.rack,label:r.tool+" "+r.name},r.tool+" result "+r.name+" ("+r.rack+")")})});
   }).catch(function(e){$("ap-reports").innerHTML='<tr><td colspan="4" class="err">'+esc(e.message)+"</td></tr>"});
 }
-/* guided debugging: the AI proposes one read-only command at a time; nothing runs without a click */
-function guideStart(el,ctx){
-  var steps=[];el._steps=steps;          // a resolution recorded afterwards keeps the commands run and their output
-  el.innerHTML='<div class="ai" style="background:var(--bg)"><b>Step by step</b> <span class="mut" style="font-size:12px">each command is checked against a read-only list for its kind of node and runs only when you click Run</span><div class="g-steps"></div><div class="g-next"></div></div>';
-  var list=el.querySelector(".g-steps"),nx=el.querySelector(".g-next");
-  function ask(){
-    nx.innerHTML='<p class="mut">the AI is choosing the next step ...</p>';
-    api("/api/ai/guide",aiReq(ctx,{steps:steps})).then(function(p){
-      if(p.done){nx.innerHTML='<div class="verdict '+(p.unsafe?"degraded":"ok")+'"><h3>Conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+
-        (p.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(p.unsafe)+'") - only with a go-ahead, and check it against what the outputs show below.</div>':"")+
-        ((p.facts||[]).length?'<div style="margin:6px 0"><b>What the outputs show</b> <span class="mut" style="font-size:12px">read by code, not the AI</span><ul style="margin:4px 0">'+p.facts.map(function(f){return "<li>"+esc(f)+"</li>"}).join("")+"</ul></div>":"")+'<div class="mut" style="font-size:12px">'+steps.length+" step(s) run · advisory - check it against the outputs above</div><div class=\"fb\"></div></div>";
-        fbWire(nx.querySelector(".fb"),p,ctx,"The right conclusion, citing the step outputs [S1].. and evidence [E1].. - then a line starting 'Next:' with what to do and who. This teaches the step-by-step mode.");return}
-      var bad=!p.allowed;
-      nx.innerHTML='<div class="verdict '+(bad?"degraded":"")+'"><h3>Step '+(steps.length+1)+": on "+esc(nodeLabel(p.node||"?"))+"</h3><p><code>"+esc(p.command||"")+"</code></p><p class=\"mut\">"+esc(p.why||"")+"</p>"+
-        (bad?'<p class="err">Not run: '+esc(p.refused||"not allowed")+"</p>":"")+
-        '<div class="row" style="margin:6px 0 0">'+(bad?"":'<button class="go g-run">Run</button>')+'<button class="sec g-other">Another step</button><button class="sec g-stop">Stop</button></div></div>';
-      var rb=nx.querySelector(".g-run");if(rb)rb.addEventListener("click",function(){rb.disabled=true;rb.textContent="running ...";
-        api("/api/ai/run",{path:ctx.path||"",rack:ctx.rack||"",node:p.node,command:p.command}).then(function(o){
-          steps.push({node:o.node,command:o.command,rc:o.rc,output:o.output});
-          var d=document.createElement("details");d.open=steps.length===1;
-          d.innerHTML='<summary><b>S'+steps.length+"</b> "+esc(nodeLabel(o.node))+": <code>"+esc(o.command)+"</code> "+(o.rc===0?'<span class="mut">ok</span>':'<span class="err">exit '+esc(o.rc)+"</span>")+' <span class="mut">'+o.seconds+" s</span></summary><pre style=\"max-height:40vh\">"+esc((o.output||"").trim()||"(no output)")+"</pre>";
-          list.appendChild(d);ask();
-        }).catch(function(e){rb.disabled=false;rb.textContent="Run";nx.insertAdjacentHTML("beforeend",'<p class="err">'+esc(e.message)+"</p>")})});
-      nx.querySelector(".g-other").addEventListener("click",function(){steps.push({node:p.node,command:p.command,rc:"skipped",output:"(skipped by the user - propose something else)"});ask()});
-      nx.querySelector(".g-stop").addEventListener("click",function(){nx.innerHTML='<p class="mut">Stopped after '+steps.length+" step(s).</p>"});
-    }).catch(function(e){nx.innerHTML='<p class="err">'+esc(e.message)+'</p><button class="sec g-retry">Try again</button>';nx.querySelector(".g-retry").addEventListener("click",ask)});
-  }
-  ask();
+/* run one read-only command (a step the AI proposed, or one an answer suggested) - appended to the timeline as S<n> */
+function stepRun(sess,node,command,btn,guided){
+  btn.disabled=true;var t0=btn.textContent;btn.textContent="running ...";
+  return api("/api/ai/run",{path:sess.ctx.path||"",rack:sess.ctx.rack||"",node:node,command:command}).then(function(o){
+    sess.steps.push({node:o.node,command:o.command,rc:o.rc,output:o.output});
+    var n=sess.steps.length;btn.textContent="ran - S"+n;
+    sess.out.querySelectorAll("details.ai-step[open]").forEach(function(x){x.open=false});
+    var d=document.createElement("details");d.className="ai-step";d.open=true;
+    d.innerHTML='<summary><b>S'+n+"</b> "+esc(nodeLabel(o.node))+": <code>"+esc(o.command)+"</code> "+(o.rc===0?'<span class="mut">ok</span>':'<span class="err">exit '+esc(o.rc)+"</span>")+' <span class="mut">'+o.seconds+" s</span></summary><pre style=\"max-height:40vh\">"+esc((o.output||"").trim()||"(no output)")+"</pre>"+
+      (guided?"":'<div class="row g-cont" style="margin:4px 0 6px;align-items:center"><button class="sec">Continue step by step</button><span class="mut" style="font-size:12px">or ask about it below</span></div>');
+    sess.out.appendChild(d);if(sess.onActivity)sess.onActivity();
+    var c=d.querySelector(".g-cont button");if(c)c.addEventListener("click",function(){d.querySelector(".g-cont").remove();guideNext(sess)});
+    if(guided)guideNext(sess);
+  }).catch(function(e){btn.disabled=false;btn.textContent=t0;btn.insertAdjacentHTML("afterend",'<span class="err" style="font-size:12px"> '+esc(e.message)+"</span>")});
 }
+/* guided debugging: the AI proposes the next read-only command; nothing runs without a click. Appended to the timeline,
+   so it continues from whatever was run or asked before. */
+function guideNext(sess){
+  sess.out.querySelectorAll(".ai-gnext.pending").forEach(function(x){x.remove()});    // one open proposal at a time
+  var ctx=sess.ctx,steps=sess.steps,nx=document.createElement("div");nx.className="ai-gnext pending";sess.out.appendChild(nx);
+  sess.out.querySelectorAll(".g-cont").forEach(function(x){x.remove()});
+  nx.innerHTML='<p class="mut">the AI is choosing the next read-only step ...</p>';
+  api("/api/ai/guide",aiReq(ctx,{steps:steps})).then(function(p){
+    if(p.done){nx.classList.remove("pending");nx.innerHTML='<div class="verdict '+(p.unsafe?"degraded":"ok")+'"><h3>Step by step: conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+
+        (p.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(p.unsafe)+'") - only with a go-ahead, and check it against what the outputs show below.</div>':"")+
+        ((p.facts||[]).length?'<div style="margin:6px 0"><b>What the outputs show</b> <span class="mut" style="font-size:12px">read by code, not the AI</span><ul style="margin:4px 0">'+p.facts.map(function(f){return "<li>"+esc(f)+"</li>"}).join("")+"</ul></div>":"")+
+        '<div class="mut" style="font-size:12px">'+steps.length+" command(s) run · advisory - check it against the outputs above</div><div class=\"fb\"></div></div>";
+      sess.hist.push({q:"(step by step) what is the cause?",a:p.conclusion+(p.next?"\nNext: "+p.next:"")});
+      if(sess.onActivity)sess.onActivity();
+      fbWire(nx.querySelector(".fb"),p,ctx,"The right conclusion, citing the step outputs [S1].. and evidence [E1].. - then a line starting 'Next:' with what to do and who. This teaches the step-by-step mode.");return}
+    var bad=!p.allowed;
+    nx.innerHTML='<div class="verdict '+(bad?"degraded":"")+'"><h3>Step '+(steps.length+1)+" (AI): on "+esc(nodeLabel(p.node||"?"))+"</h3><p><code>"+esc(p.command||"")+"</code></p><p class=\"mut\">"+esc(p.why||"")+"</p>"+
+      (bad?'<p class="err">Not run: '+esc(p.refused||"not allowed")+"</p>":"")+
+      '<div class="row" style="margin:6px 0 0;align-items:center">'+(bad?"":'<button class="go g-run">Run</button>')+'<button class="sec g-other">Another step</button><button class="sec g-stop">Stop</button>'+
+      '<span class="mut" style="font-size:12px">checked against the read-only list for its kind of node</span></div></div>';
+    if(sess.onActivity)sess.onActivity();
+    function done(t){nx.classList.remove("pending");nx.querySelector(".row").innerHTML='<span class="mut" style="font-size:12px">'+t+"</span>"}
+    var rb=nx.querySelector(".g-run");if(rb)rb.addEventListener("click",function(){nx.classList.remove("pending");nx.querySelectorAll(".g-other,.g-stop").forEach(function(b){b.remove()});stepRun(sess,p.node,p.command,rb,true)});
+    nx.querySelector(".g-other").addEventListener("click",function(){steps.push({node:p.node,command:p.command,rc:"skipped",output:"(skipped by the user - propose something else)"});done("skipped");guideNext(sess)});
+    nx.querySelector(".g-stop").addEventListener("click",function(){done("stopped - ask a question below, or Investigate step by step to go on")});
+  }).catch(function(e){nx.classList.remove("pending");nx.innerHTML='<p class="err">'+esc(e.message)+'</p><button class="sec g-retry">Try again</button>';nx.querySelector(".g-retry").addEventListener("click",function(){nx.remove();guideNext(sess)})});
+}
+/* step by step in its own box (the chat): the same timeline, in el */
+function guideStart(el,ctx){el.innerHTML="";var sess={hist:[],steps:[],out:el,ctx:ctx};el._steps=sess.steps;guideNext(sess)}
 /* a resolution: what the problem turned out to be and what fixed it, written by the person who debugged it.
    Stored with the evidence the AI saw; shown to the AI for similar problems, and the training data for real root causes. */
 var RES_CAT={cabling:"cable / optic / seating (site)",gpu:"GPU / AFM / IFCP (AMD)",switch:"switch / SONiC (switch owner)",config:"configuration (VLAN, vPOD, forwarding entries)",env:"test environment / tooling",transient:"went away by itself / not reproduced",other:"other"};

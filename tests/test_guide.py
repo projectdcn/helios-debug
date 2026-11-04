@@ -292,3 +292,26 @@ def test_a_general_how_to_is_not_answered_with_the_open_problem():
     assert "general how-to" not in ai.build_messages(ev, "x", "how can i debug port down issues")[-1]["content"]
     ev.howto = True
     assert "general how-to" in ai.build_messages(ev, "x", "how can i debug port down issues")[-1]["content"]
+
+
+def test_commands_suggested_in_an_answer_are_runnable_and_runs_are_evidence():
+    """mr2 4 Nov: the answer's 'Debug next' commands can be run from the answer; what was run feeds the next question."""
+    roles = {"st1": "switch", "c1": "compute"}
+    text = ("1. on st1: `show interfaces status -n asic1 Ethernet257`\n"
+            "2. on pod-1-0-ComputeTray (c1): `sudo afmctl show port -b 0002:01:00.1 --json`\n"
+            "3. on pod-1-0-ComputeTray: `sudo afmctl show port -b <bdf> --json`\n"
+            "4. on st1: `config interface shutdown Ethernet257`\n5. on st9: `show version`\n")
+    rs = guide.runnable(text, roles, {"pod-1-0-ComputeTray": "c1"})
+    assert [(r["node"], r["allowed"]) for r in rs] == [("st1", True), ("c1", True), ("c1", False), ("st1", False)]
+    assert rs[1]["command"] == "afmctl show port -b 0002:01:00.1 --json"
+    assert "placeholder" in rs[2]["refused"]
+    ev = ai.Evidence()
+    guide.steps_evidence(ev, [
+        {"node": "st1", "command": "show interfaces status -n asic1", "rc": 0,
+         "output": "Ethernet257          193,194     400G   9100    N/A  Ethernet449/1   trunk    down       up     N/A         N/A\n"},
+        {"node": "c2", "command": "x", "rc": "skipped", "output": "(skipped)"},
+        {"node": "st6", "command": "show version", "rc": 255, "output": "ssh: connect to host 1.2.3.4 port 22: No route to host"}])
+    t = [x["text"] for x in ev.items]
+    assert any("st1 Ethernet257: admin up, oper down" in x for x in t)
+    assert any(x.startswith("Command S1 run on st1") for x in t) and not any("S2" in x for x in t)
+    assert any("Command S3 run on st6" in x and "could not log in" in x for x in t)
