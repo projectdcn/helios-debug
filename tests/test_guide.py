@@ -279,3 +279,16 @@ def test_step_facts_and_tray_restart_flagged():
     assert "Ethernet473" not in " ".join(f) and f[-1].startswith("Together: one link has no signal")
     assert ai.unsafe_text("one change: start the switch tray again. Next: start the switch tray st1 from the power of the rack")
     assert ai.unsafe_text("reseat the cable between st1 Ethernet257 and the GPU port") is None
+
+
+def test_a_general_how_to_is_not_answered_with_the_open_problem():
+    """mr2 4 Nov: 'how can i debug link failures or port down issues' got the root cause of the open link again."""
+    assert ai.generic_howto("how can i debug link failures or port down issues")
+    assert ai.generic_howto("how do I read the IFCP state of a GPU port?")
+    for q in ("why is this link down ?", "how can I check st1 Ethernet257", "how do I fix it", "what is wrong here"):
+        assert not ai.generic_howto(q), q
+    ev = ai.Evidence()
+    ev.add("st1 asic1 Ethernet257 <-> c1 GPU2 port 13 down")
+    assert "general how-to" not in ai.build_messages(ev, "x", "how can i debug port down issues")[-1]["content"]
+    ev.howto = True
+    assert "general how-to" in ai.build_messages(ev, "x", "how can i debug port down issues")[-1]["content"]

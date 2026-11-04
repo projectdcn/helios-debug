@@ -456,6 +456,21 @@ HOWTO_RX = re.compile(r"^\s*(how\s+(do|can|to|does|should)|what\s+(does|is|are|d
 PROBLEM_RX = re.compile(r"\b(wrong|problems?|faults?|failing|failed|broken|down|issues?|fix|why|order|cause|degraded|"
                         r"not\s+working|errors?|changed)\b", re.I)
 _NODE_RX = re.compile(r"\b(st\d+|ct\d{2}|c\d+|pod-\d+-\d+-(?:Switch|Compute)Tray|Ethernet\d+|asic\d)\b", re.I)
+_THIS_RX = re.compile(r"\b(this|that|these|those|it|its|here)\b", re.I)
+
+
+def generic_howto(question: str) -> bool:
+    """'how can I debug link failures or port down issues': a how-to about a kind of problem, not about this one - no
+    node, port or 'this / it' in it (mr2 4 Nov: answered with the root cause of the open link, word for word)."""
+    q = question or ""
+    return bool(HOWTO_RX.search(q)) and not _NODE_RX.search(q) and not _THIS_RX.search(q)
+
+
+HOWTO_ASK = ("\n(This is a general how-to question, not about the evidence's problem. Answer it as a short how-to from the "
+             "documentation passages [D..], citing them: what to look at first (the UI view or tool), then the read-only "
+             "commands on each end and how to read their output, then who owns which kind of cause. Do NOT answer with the "
+             "root cause of the evidence and do not use the Root cause / Remediation headings; at most one closing line on "
+             "how it applies to the [E] evidence. Never write a placeholder like <bdf> when the evidence names the value.)")
 
 
 def chat_context(scan: dict, question: str, link: str = "", live: list | None = None, docs=None,
@@ -465,11 +480,13 @@ def chat_context(scan: dict, question: str, link: str = "", live: list | None = 
     the nodes / ports it names, the newest Live changes, and documentation passages that match it."""
     from . import rackmap
     q0 = question or ""
-    howto = ((bool(HOWTO_RX.search(q0)) or bool(rackmap.TOPO_WORDS.search(q0))) and not PROBLEM_RX.search(q0) and not link)
+    howto = (((bool(HOWTO_RX.search(q0)) or bool(rackmap.TOPO_WORDS.search(q0))) and not PROBLEM_RX.search(q0)
+              or generic_howto(q0)) and not link)
     if howto:                                  # 'how do I / what does / which command': documentation first
         ev, subject = Evidence(), ""
         ls0 = scan.get("links") or []
         ev.add(f"Rack {scan.get('rack')}, check of {scan.get('time_utc')} (UTC): {len(ls0)} GPU links checked", "check")
+        ev.howto = True
     else:
         ev, subject = (link_context(scan, link) if link else check_context(scan))
     mapfacts = rackmap.facts(scan, q0, macs)
@@ -552,6 +569,8 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
         q += ("\n(From the test plan, exactly: " + " | ".join(ev.plan_facts) + ". Start the answer with that LATEST status "
               "word as it is - PARTIAL is not a failure: it passed where it could run. Anything after 'OLDER runs' is history "
               "that the latest run superseded; mention it only as history.)")
+    if getattr(ev, "howto", False):
+        q += HOWTO_ASK
     general = getattr(ev, "mode", "") == "general"          # cases.py: a test result, a tool report, pasted outputs
     gen_sys = SYSTEM_HEALTH if getattr(ev, "kind", "") == "health" else SYSTEM_GENERAL
     system = (SYSTEM_BASE + CHAT_MODE if chat_mode else gen_sys if general else

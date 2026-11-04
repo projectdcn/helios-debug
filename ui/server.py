@@ -541,6 +541,12 @@ def ai_ask(state: State, req: dict) -> dict:
     if not isinstance(hist, list):
         raise BadRequest("history: a list of {q, a}")
     ev, subject, _rack = _ai_subject(state, req, past=True)
+    if ai.generic_howto(q):                  # a how-to about a kind of problem: the debug guide, not this problem's cause
+        from heliosdbg import docsearch
+        docs = docsearch.load()
+        for d in (docs.search(q, k=5) if docs is not None else []):
+            ev.add_doc(d)
+        ev.howto = True
     try:
         return ai.ask(ev, subject, q, hist)
     except ai.AIError as e:
