@@ -1640,6 +1640,11 @@ function drawMap(){
   var q=$("map-q").value.trim().toLowerCase(),view=$("map-view").value,cnt={ok:0,degraded:0,down:0},hits=0,chg=0;
   d.links.forEach(function(l){var st=(liveMine()&&live.rack===d.rack&&live.links[lkey(l)]&&live.links[lkey(l)].state)||l.state;cnt[st]=(cnt[st]||0)+1});
   var lv=liveMine()&&live.rack===d.rack?live.links:null,fresh={};
+  /* Live turned off: the map is the check again, but what Live last read is not dropped without a word (MR2 3 Nov:
+     st1 Ethernet257 read down by both ends, all green again the moment Live was turned off) */
+  var lo=!lv&&live&&!live.running&&inv()&&live.inventory===inv().file&&live.rack===d.rack?live.links:null,odd=[];
+  if(lo)d.links.forEach(function(l){var z=lo[lkey(l)];if(z&&z.read&&z.state&&z.state!=="unknown"&&z.state!==l.state)odd.push([l,z.state])});
+  var oddK={};odd.forEach(function(x){oddK[lkey(x[0])]=x[1]});
   if(lv)liveChanges.forEach(function(c){if(c.link&&c.what==="state"&&Date.now()-new Date(c.t).getTime()<600000)fresh[c.link]=1});
   function cell(l0){
     var l=l0,lz=lv&&lv[lkey(l0)];if(lz&&lz.state){l=Object.assign({},l0,{state:lz.state},
@@ -1648,6 +1653,7 @@ function drawMap(){
     var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
     if(mapPrev&&!l0.filler&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
+    if(oddK[lkey(l0)]){cls+=" chg";l=Object.assign({},l,{cause:"Live last read it "+oddK[lkey(l0)]+" (now off) - this check said "+l.state+(l.cause?": "+l.cause:"")})}
     return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf?gName(l.tray,l.bdf):"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
   }
   var html="";
@@ -1685,6 +1691,11 @@ function drawMap(){
   if(liveDown&&liveMine()&&Date.now()-liveDown.t<120000){   /* Live: links that just went down, for 2 minutes */
     $("map-banner").classList.remove("hide");$("map-banner").style.background="var(--downbg)";
     $("map-banner").innerHTML="<b>Link(s) went down just now:</b> "+esc(liveDown.links.slice(0,8).join(", "))+(liveDown.links.length>8?" ...":"");
+  }else if(odd.length){
+    $("map-banner").classList.remove("hide");$("map-banner").style.background=odd.some(function(x){return x[1]==="down"})?"var(--downbg)":"";
+    $("map-banner").innerHTML="<b>Live (off since "+esc(new Date(live.stopped*1000).toLocaleTimeString())+") last read "+odd.length+" link(s) not as this check shows them:</b> "+
+      odd.slice(0,8).map(function(x){return esc(lkey(x[0]))+" "+esc(x[1])+" (check: "+esc(x[0].state)+")"}).join(", ")+(odd.length>8?" ...":"")+
+      " - the map below is the check of "+esc(checkAge(d.time_utc))+"; run Check all links to record the state now (outlined).";
   }else if(mapPrev){
     var nw=d.links.filter(function(l){var p=prev[lkey(l)];return !l.filler&&p!==undefined&&p==="ok"&&l.state!=="ok"}),
         rc=d.links.filter(function(l){var p=prev[lkey(l)];return !l.filler&&p!==undefined&&p!=="ok"&&l.state==="ok"});
