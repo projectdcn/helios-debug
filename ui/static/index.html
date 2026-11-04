@@ -1638,13 +1638,14 @@ function drawMap(){
   var d=mapData;if(!d)return;
   var prev={};if(mapPrev)mapPrev.links.forEach(function(l){prev[lkey(l)]=l.state});
   var q=$("map-q").value.trim().toLowerCase(),view=$("map-view").value,cnt={ok:0,degraded:0,down:0},hits=0,chg=0;
-  d.links.forEach(function(l){var st=(liveMine()&&live.rack===d.rack&&live.links[lkey(l)]&&live.links[lkey(l)].state)||l.state;cnt[st]=(cnt[st]||0)+1});
   var lv=liveMine()&&live.rack===d.rack?live.links:null,fresh={};
   /* Live turned off: the map is the check again, but what Live last read is not dropped without a word (MR2 3 Nov:
      st1 Ethernet257 read down by both ends, all green again the moment Live was turned off) */
   var lo=!lv&&live&&!live.running&&inv()&&live.inventory===inv().file&&live.rack===d.rack?live.links:null,odd=[];
   if(lo)d.links.forEach(function(l){var z=lo[lkey(l)];if(z&&z.read&&z.state&&z.state!=="unknown"&&z.state!==l.state)odd.push([l,z.state])});
   var oddK={};odd.forEach(function(x){oddK[lkey(x[0])]=x[1]});
+  /* the newest state known: Live's now, else what Live last read (newer than the check), else the check's */
+  d.links.forEach(function(l){var st=(lv&&lv[lkey(l)]&&lv[lkey(l)].state)||oddK[lkey(l)]||l.state;cnt[st]=(cnt[st]||0)+1});
   if(lv)liveChanges.forEach(function(c){if(c.link&&c.what==="state"&&Date.now()-new Date(c.t).getTime()<600000)fresh[c.link]=1});
   function cell(l0){
     var l=l0,lz=lv&&lv[lkey(l0)];if(lz&&lz.state){l=Object.assign({},l0,{state:lz.state},
@@ -1653,11 +1654,11 @@ function drawMap(){
     var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
     if(mapPrev&&!l0.filler&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
-    if(oddK[lkey(l0)]){cls+=" chg";l=Object.assign({},l,{cause:"Live last read it "+oddK[lkey(l0)]+" (now off) - this check said "+l.state+(l.cause?": "+l.cause:"")})}
+    if(oddK[lkey(l0)]){cls=cls.replace(" "+l.state," "+oddK[lkey(l0)])+" chg";l=Object.assign({},l,{state:oddK[lkey(l0)],cause:"Live last read it "+oddK[lkey(l0)]+" (now off) - the check said "+l0.state+(l0.cause?": "+l0.cause:"")})}
     return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf?gName(l.tray,l.bdf):"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
   }
   var html="";
-  function eff(l){return (lv&&lv[lkey(l)]&&lv[lkey(l)].state)||l.state}
+  function eff(l){return (lv&&lv[lkey(l)]&&lv[lkey(l)].state)||oddK[lkey(l)]||l.state}
   function counts(ls){var c={ok:0,degraded:0,down:0,unknown:0};ls.forEach(function(l){var x=eff(l);c[x]=(c[x]||0)+1});
     return '<span class="cnts" title="links of this '+(view==="tray"?"tray / GPU":"switch chip")+'"><span>'+ls.length+" links</span>"+
       (c.ok?'<span class="ok">'+c.ok+" ok</span>":"")+(c.degraded?'<span class="degraded">'+c.degraded+" degraded</span>":"")+
@@ -1695,7 +1696,7 @@ function drawMap(){
     $("map-banner").classList.remove("hide");$("map-banner").style.background=odd.some(function(x){return x[1]==="down"})?"var(--downbg)":"";
     $("map-banner").innerHTML="<b>Live (off since "+esc(new Date(live.stopped*1000).toLocaleTimeString())+") last read "+odd.length+" link(s) not as this check shows them:</b> "+
       odd.slice(0,8).map(function(x){return esc(lkey(x[0]))+" "+esc(x[1])+" (check: "+esc(x[0].state)+")"}).join(", ")+(odd.length>8?" ...":"")+
-      " - the map below is the check of "+esc(checkAge(d.time_utc))+"; run Check all links to record the state now (outlined).";
+      " - shown so below (outlined); the other links are the check of "+esc(checkAge(d.time_utc))+". Run Check all links to record the state now.";
   }else if(mapPrev){
     var nw=d.links.filter(function(l){var p=prev[lkey(l)];return !l.filler&&p!==undefined&&p==="ok"&&l.state!=="ok"}),
         rc=d.links.filter(function(l){var p=prev[lkey(l)];return !l.filler&&p!==undefined&&p!=="ok"&&l.state==="ok"});
@@ -1707,7 +1708,7 @@ function drawMap(){
   var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
     (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?unknownWhy(d,lv):d.missing&&(d.missing.switches.length||d.missing.trays.length)?" not known (not read by this check)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
-    (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+"</span>")+
+    (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+(odd.length?", "+odd.length+" link(s) as Live last read them":"")+"</span>")+
     cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
   document.querySelectorAll("#map a.dd").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();
@@ -1717,7 +1718,9 @@ function drawMap(){
 }
 
 // ---------------------------------------------------------------- drill down
-function mEff(l){var lv=liveMine()&&mapData&&live.rack===mapData.rack?live.links:null;return (lv&&lv[lkey(l)]&&lv[lkey(l)].state)||l.state}
+function mEff(l){var lv=liveMine()&&mapData&&live.rack===mapData.rack?live.links:null;if(lv)return (lv[lkey(l)]&&lv[lkey(l)].state)||l.state;
+  var lo=live&&!live.running&&mapData&&inv()&&live.inventory===inv().file&&live.rack===mapData.rack?live.links:null,z=lo&&lo[lkey(l)];
+  return z&&z.read&&z.state&&z.state!=="unknown"?z.state:l.state}   /* Live off: what it last read (as the map) */
 function mGpu(l){if(l.bdf)return l.bdf;var x=dsc(l);return x?"GPU"+x.gpu+" (described)":"?"}
 function mGpuPort(l){if(l.bdf)return l.gpu_port;var x=dsc(l);return x?x.port:"?"}
 function mCount(ls){var c={ok:0,degraded:0,down:0,unknown:0};ls.forEach(function(l){var x=mEff(l);c[x]=(c[x]||0)+1});return c}
