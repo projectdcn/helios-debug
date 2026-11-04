@@ -1590,8 +1590,18 @@ function missingSw(d){
   var m=d.missing;if(!m||(!m.switches.length&&!m.trays.length))return "";
   var all=m.switches.concat(m.trays);
   return '<span class="err">Not read by this check: '+all.map(function(n){return "<b>"+esc(n)+"</b>"+(m.filled[n]?"":" (in no earlier check either)")}).join(", ")+
-    " - "+(liveMine()&&live.rack===d.rack&&Object.keys(live.filled||{}).length?"Live follows "+Object.keys(live.filled).sort().join(", ")+" (links from an earlier check)":
-      "shown grey from the newest earlier check that read them (hover a link)")+"</span>"}
+    " - "+liveFollows(d,all)+"</span>"}
+/* which of a check's unread nodes Live follows, and from which check's links (g02-g17 3 Nov: the 22:00 check read
+   only st5, but the line said 'Live follows st1, st2, st4' - Live started from 24 Oct and also follows st3 and st6) */
+function liveFollows(d,all){
+  var grey="shown grey from the newest earlier check that read them (hover a link)";
+  if(!(liveMine()&&live.rack===d.rack))return grey;
+  var on={},by={},order=[];for(var k in live.links||{})on[k.split(" ")[0]]=1;
+  var fol=all.filter(function(n){return on[n]}),rest=all.filter(function(n){return !on[n]});
+  if(!fol.length)return grey;
+  fol.sort().forEach(function(n){var t=(live.filled||{})[n]||live.check_time;if(!by[t]){by[t]=[];order.push(t)}by[t].push(n)});
+  return "Live follows "+order.map(function(t){return by[t].join(", ")+" (links of the check of "+checkAge(t)+")"}).join(" and ")+
+    (rest.length?"; "+rest.join(", ")+" "+grey:"")}
 function checkIso(t){var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(t||"");return m?m[1]+"-"+m[2]+"-"+m[3]+"T"+m[4]+":"+m[5]+":"+m[6]+"Z":t}
 function noLinks(x){return /^0 GPU links/.test(String(x.summary||""))}
 function mapLoadScans(){
@@ -1675,6 +1685,18 @@ function unknownWhy(d,lv){
   if(c.nogpu)p.push(c.nogpu+" switch end not reached, and the check found no GPU at the tray end to read");
   if(c.wait)p.push(c.wait+" not read yet");if(c.out)p.push(c.out+" not followed by Live: in no check it could start from");
   return " not known"+(p.length?" ("+p.join("; ")+")":"")}
+/* '52 GPUs PROVIDER (...): all 4 of ct01, ct02, ...' - not 52 'ct01 0001:01:00.1 (PROVIDER)' (g02-g17 3 Nov: a wall
+   of red text); the full list is in the tooltip */
+function gpuStateSum(d){
+  var per={},all={},ph=[];(d.gpus||[]).forEach(function(g){var p=g.phase||"?";if(!per[p]){per[p]={};ph.push(p)}(per[p][g.tray]=per[p][g.tray]||[]).push(g.bdf)});
+  (d.links||[]).forEach(function(l){if(l.tray&&l.bdf)(all[l.tray]=all[l.tray]||{})[l.bdf]=1});
+  var most=0;ph.forEach(function(p){for(var t in per[p])most=Math.max(most,per[p][t].length)});
+  return ph.map(function(p){var ts=Object.keys(per[p]).sort(),n=0,whole=[],part=[];
+    /* a tray's GPU count from its matched links; without forwarding entries none match, then the most any tray lists */
+    ts.forEach(function(t){var b=per[p][t];n+=b.length;var k=Object.keys(all[t]||{}).length||most;
+      if(k&&b.length>=k)whole.push(t);else part.push(t+" "+b.map(function(x){return gShort(t,x)}).join("/"))});
+    return n+" GPU"+(n>1?"s":"")+" "+p+(p==="PROVIDER"?" (not set up: in no vPOD, or reset and not programmed again)":"")+": "+
+      (whole.length?"all GPUs of "+whole.join(", "):"")+(whole.length&&part.length?"; ":"")+part.join(", ")}).join(" · ")}
 function drawMap(){
   var d=mapData;if(!d)return;
   var prev={};if(mapPrev)mapPrev.links.forEach(function(l){prev[lkey(l)]=l.state});
@@ -1747,11 +1769,11 @@ function drawMap(){
       (nw.length?" ("+nw.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(nw.length>6?", ...":"")+")":"")+", <b>"+rc.length+" recovered</b>"+
       (rc.length?" ("+rc.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(rc.length>6?", ...":"")+")":"")+".";
   }else{$("map-banner").classList.add("hide")}
-  var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
+  var gs=gpuStateSum(d);
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
     (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?unknownWhy(d,lv):d.missing&&(d.missing.switches.length||d.missing.trays.length)?" not known (not read by this check)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
     (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+(odd.length?", "+odd.length+" link(s) as Live last read them":"")+"</span>")+
-    cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
+    cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err" title="'+esc((d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join("\n"))+'">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
   document.querySelectorAll("#map a.dd").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();
     if(a.dataset.dt)drillTray(a.dataset.dt);else if(a.dataset.dg){var x=a.dataset.dg.split("|");drillGpu(x[0],x[1])}
