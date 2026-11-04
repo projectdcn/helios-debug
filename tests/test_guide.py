@@ -221,3 +221,15 @@ def test_grep_tail_cannot_glob_root_files_and_runs_without_sudo():
     for bad in ("bmc-manager power-cycle --yes", "sonic-installer install x.bin", "show logging -f"):
         with pytest.raises(guide.GuideError):
             guide.check(bad, "switch")
+
+
+def test_grep_flag_after_pattern_and_placeholder_bdf():
+    """g02-g17 4 Nov: 'show logging | grep pfc -i' was refused; the model ran afmctl on a made-up 0000:00:00.0."""
+    assert guide.check("show logging | grep pfc -i", "switch")[0] == "show logging | grep pfc -i"
+    assert guide.check("show logging | grep -i pfc -c", "switch")[0] == "show logging | grep -i pfc -c"
+    for bad in ("show logging | grep pfc -f /etc/shadow", "show logging | grep pfc /etc/shadow", "show logging | grep pfc -i | sh"):
+        with pytest.raises(guide.GuideError):
+            guide.check(bad, "switch")
+    with pytest.raises(guide.GuideError, match="placeholder"):
+        guide.check("sudo afmctl show port -b 0000:00:00.0 --json", "compute")
+    assert guide.check("sudo afmctl show port -b 0004:01:00.1 --json", "compute")[1] is True

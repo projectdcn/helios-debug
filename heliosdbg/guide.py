@@ -24,11 +24,15 @@ OUTPUT_MAX = 6000
 # the grep pattern: quoted, or one word with no glob / quote characters and no leading '-' - it runs in a shell, and a
 # pattern like /etc/[gs]hadow expanded to file names made grep print them (audit 4 Nov)
 _GREP_PAT = r"(?:'[^'|]{1,80}'|\"[^\"|]{1,80}\"|[A-Za-z0-9_.:/=,@+][A-Za-z0-9_.:/=,@+-]{0,79})"
-_TAIL = rf"(?:\s*\|\s*(?:grep(?:\s+-[iwEFv]+)*\s+{_GREP_PAT}|tail\s+-n?\s*\d+|head\s+-n?\s*\d+))?"
+# flags before or after the pattern ('grep pfc -i' - g02-g17 4 Nov, refused before): flags only, never an argument
+_GREP_FLAGS = r"(?:\s+-[iwEFvc]+)*"
+_TAIL = rf"(?:\s*\|\s*(?:grep{_GREP_FLAGS}\s+{_GREP_PAT}{_GREP_FLAGS}|tail\s+-n?\s*\d+|head\s+-n?\s*\d+))?"
 
 SWITCH_RO = platforms.read_only("switch")     # (pattern, needs sudo), from each platform's READ_ONLY
 COMPUTE_RO = platforms.read_only("compute")
 FORBIDDEN = re.compile(r"[;&`$<>\n\r\\]|\|\|")
+# a PCI address the model made up: 0000:00:00.0 is the host bridge, never a GPU (g02-g17 4 Nov: afmctl 'No such device')
+PLACEHOLDER_BDF = re.compile(r"\b0000:00:00\.0\b")
 
 
 class GuideError(ValueError):
@@ -60,6 +64,9 @@ def check(command: str, role: str) -> tuple[str, bool]:
     rules = SWITCH_RO if role == "switch" else COMPUTE_RO if role == "compute" else []
     for pat, sudo in rules:
         if re.fullmatch(f"(?:{pat}){_TAIL}", c):            # grouped: the tail applies to every alternative
+            if PLACEHOLDER_BDF.search(c):
+                raise GuideError("0000:00:00.0 is a placeholder, not a GPU's PCI address - take the address from "
+                                 "'sudo afmctl show device --json' (or 'sudo amd-smi list --json') on that tray first")
             return c, sudo
     kind = "switch tray (SONiC)" if role == "switch" else "compute tray"
     raise GuideError(f"'{c}' is not on the read-only list for a {kind} - the guided mode runs only show / read commands "
@@ -77,7 +84,8 @@ GUIDE_SYSTEM_ADD = (
     "ibv_devinfo, systemctl status <unit>; health: show system-health detail, crm show resources all, watchdogutil status, "
     "sudo docker exec <container> supervisorctl status, sudo docker logs --tail 100 <container>, show reboot-cause history, "
     "sudo journalctl -k -p err -n 200 --no-pager, sudo amd-smi metric --ecc --json, sudo amd-smi bad-pages -g N). One command, no ; && pipes except '| grep X' or '| tail -N'. "
-    "Do not repeat a command already run. At most 6 steps; conclude earlier when you can."
+    "Use only PCI addresses (-b ..) seen in the evidence or an earlier step; when none is, list them first "
+    "(sudo afmctl show device --json). Do not repeat a command already run. At most 6 steps; conclude earlier when you can."
 )
 
 
@@ -155,7 +163,7 @@ EXAMPLES = {   # exact forms a refused proposal is shown again (models add flags
                "show platform psustatus", "show platform temperature", "show reboot-cause history",
                "docker exec pmon supervisorctl status", "docker logs --tail 100 swss0", "show interfaces status -n asic0",
                "show logging | grep watchdog", "systemctl status watchdog-control"],
-    "compute": ["sudo amd-smi metric --ecc --json", "sudo amd-smi list --json", "sudo afmctl show device --json",
+    "compute": ["sudo afmctl show device --json", "sudo amd-smi list --json", "sudo amd-smi metric --ecc --json",
                 "sudo journalctl -k -p err -n 200 --no-pager", "dmesg | grep -i amdgpu", "lspci -d 1002:", "rdma link show",
                 "systemctl --failed --no-pager", "df -h", "free -m"],
 }
