@@ -1552,8 +1552,11 @@ function cfgCmpHtml(d){
   return '<div class="row" style="margin:10px 0 0;align-items:center"><select id="cfg-cmp" style="min-width:260px">'+o+'</select><button class="sec" id="cfg-cmp-go">Compare</button>'+
     (cfgCmp?'<button class="sec" id="cfg-cmp-off">Back to the config</button>':"")+(dl?'<span class="mut">Saved reads (download): '+dl+"</span>":"")+"</div>"}
 /* every value as path -> text, for the difference of two reads */
-function cfgFlatAll(d){var out={};function walk(v,p){if(v&&typeof v==="object"&&!Array.isArray(v)){Object.keys(v).forEach(function(k){walk(v[k],p?p+" / "+k:k)})}
-  else out[p]=Array.isArray(v)?v.map(function(x){return typeof x==="object"?JSON.stringify(x):String(x)}).join(", "):v==null?"":String(v)}
+/* lists of records (GPUs, ports) are walked item by item, each named by its bdf / id / name - not one row of JSON */
+function cfgFlatAll(d){var out={};function walk(v,p){
+    if(Array.isArray(v)&&v.some(function(x){return x&&typeof x==="object"})){v.forEach(function(x,i){var n=x&&typeof x==="object"?(x.bdf||x.id||x.name||x.station||i):i;walk(x,(p?p+" / ":"")+"["+n+"]")});return}
+    if(v&&typeof v==="object"&&!Array.isArray(v)){Object.keys(v).forEach(function(k){walk(v[k],p?p+" / "+k:k)});return}
+    out[p]=Array.isArray(v)?v.join(", "):v==null?"":String(v)}
   Object.keys(d.sections||{}).forEach(function(k){var x=d.sections[k];walk(x.error?{error:x.error}:x.data,k)});return out}
 function cfgDiffHtml(a,b){
   var A=cfgFlatAll(a),B=cfgFlatAll(b),keys={};Object.keys(A).concat(Object.keys(B)).forEach(function(k){keys[k]=1});
@@ -1608,7 +1611,10 @@ $("cfg-rack").addEventListener("click",function(){
 /* a whole-rack read: what stands out (values few nodes have), forwarding entries no GPU port answers, nodes not
    reached, every node's read (open / download) */
 function cfgRackHtml(r,i){
-  var errs=Object.keys(r.errors||{}),groups={},order=[];errs.forEach(function(n){var w=friendlyWhy(r.errors[n])||esc(String(r.errors[n]).slice(0,120));if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
+  var alive=live&&live.rack===r.rack?liveAliveSw():{};
+  var errs=Object.keys(r.errors||{}),groups={},order=[];errs.forEach(function(n){var w=friendlyWhy(r.errors[n])||esc(String(r.errors[n]).slice(0,120));
+    if(alive[n]&&/^(Not on the network|No answer)/.test(w))w="Powered - Live reads the other end of their GPU links up - but the management address does not answer from here.";
+    if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
   function nl(ns){return ns.length>8?ns.slice(0,8).join(", ")+" and "+(ns.length-8)+" more":ns.join(", ")}
   var odd=(r.odd||[]).map(function(o){return "<li><b>"+esc(o.what)+" = "+esc(o.value===""?"(empty)":o.value)+"</b> on "+o.nodes.length+": "+esc(nl(o.nodes))+' <span class="mut">(the other '+(o.others_n||"")+": "+esc(o.others===""?"(empty)":o.others)+")</span></li>"}).join("");
   var nodes=(r.nodes||[]).slice().sort(function(a,b){return a.node<b.node?-1:1}).map(function(n){var s=n.summary||{},t="";
