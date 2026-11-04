@@ -456,8 +456,8 @@ CHAT_MODE = ("This is an open chat about the rack. Answer the question directly 
              "commands exist - cite them when you use them; the [E] evidence says what this rack is doing. If neither "
              "answers the question, say so and name the read-only command or UI view that would.")
 
-HOWTO_RX = re.compile(r"^\s*(how\s+(do|can|to|does|should)|what\s+(does|is|are|do)\b|which\s+command|explain|where\s+(do|can|is)|"
-                      r"is\s+there\s+a\s+(command|way))", re.I)
+HOWTO_RX = re.compile(r"^\s*(how\s+(do|can|to|does|should)|what\s+(does|is|are|do)\b|which\s+commands?|explain|where\s+(do|can|is)|"
+                      r"is\s+there\s+a\s+(command|way)|(?:please\s+)?(?:list|give\s+me|show\s+me|tell\s+me)\b)", re.I)
 PROBLEM_RX = re.compile(r"\b(wrong|problems?|faults?|failing|failed|broken|down|issues?|fix|why|order|cause|degraded|"
                         r"not\s+working|errors?|changed)\b", re.I)
 _NODE_RX = re.compile(r"\b(st\d+|ct\d{2}|c\d+|pod-\d+-\d+-(?:Switch|Compute)Tray|Ethernet\d+|asic\d)\b", re.I)

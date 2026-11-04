@@ -97,7 +97,7 @@ def test_docsearch_and_chat_context(tmp_path, monkeypatch):
     docsearch._CACHE.clear()
     idx = docsearch.load()
     assert {s["source"] for s in docsearch.sources()} >= {"debug guide", "sonic"}
-    assert idx.search("bcm shell second asic")[0]["source"] == "sonic"
+    assert "sonic" in [h["source"] for h in idx.search("bcm shell second asic")]   # the guide's Broadcom section may lead
     # a test case id named: its own passage first; otherwise no one source fills every slot
     rows = [{"title": f"Test plan TC-AFM-00{i}", "section": "s", "text": f"Test case TC-AFM-00{i}: IFCP session check "
              + ("mentions TC-AFM-002" if i == 3 else ""), "source": "testplan"} for i in range(1, 7)]
@@ -119,7 +119,7 @@ def test_docsearch_and_chat_context(tmp_path, monkeypatch):
                                   docs=idx)
     txt = ev.block()
     assert subject == "the rack (chat)" and "pod-1-5-SwitchTray (st6): 1 links" in txt and "up without an IFCP session" in txt
-    assert "Ethernet170 <-> ct02" in txt and "Live change t1" in txt and "[D1] BCM - BCM shell" in txt
+    assert "Ethernet170 <-> ct02" in txt and "Live change t1" in txt and "] BCM - BCM shell" in txt
     msgs = ai.build_messages(ev, subject, "q")
     assert "open chat" in msgs[0]["content"] and "### Problem" not in msgs[0]["content"].split("open chat")[1][:50]
     r = ai.review("See [E1] and [D1], not [D7].", ev)
@@ -357,3 +357,33 @@ def test_broadcom_reads_are_allowed_read_only_and_bcm_view_reads_the_asic(monkey
     sent.clear()
     guide.run(type("H", (), {"name": "st1"})(), T(), "sudo bcmcmd -n 1 'show pmap' | grep 193", "switch")
     assert sent == ["sudo -n bash -c 'timeout 60 bcmcmd -n 1 '\"'\"'show pmap'\"'\"' </dev/null 2>&1' | grep 193"]
+
+
+def test_placeholders_filled_from_the_evidence_and_commands_without_a_node():
+    """mr2 4 Nov: '<bdf>' with E3 naming 0002:01:00.1, and a Broadcom list with '<logical>' / '-n N' after S1 read 216."""
+    roles = {"st1": "switch", "c1": "compute", "c2": "compute"}
+    ctx = ("st1 asic1 Ethernet257 <-> pod-1-0-ComputeTray (c1) GPU2 (0002:01:00.1) port 13 down\n"
+           "Broadcom cd96 (logical 216): PMD_RX_LOCK 0")
+    ans = ("1. on pod-1-0-ComputeTray: `sudo afmctl show port -b <bdf> --json`\n"
+           "2. `sudo bcmcmd -n N 'show pmap'`\n"
+           "3. `sudo bcmcmd -n N 'bsh -c \"lt PC_PORT_STATUS lookup PORT_ID=<logical> STATUS=STATUS_ALL\"'`\n"
+           "4. `bcm-view -n asicN EthernetX` - the chip's view\n5. never `prbs`")
+    rs = guide.runnable(ans, roles, {"pod-1-0-ComputeTray": "c1"}, ctx)
+    got = [(r["node"], r["command"], r["allowed"]) for r in rs]
+    assert got == [("c1", "afmctl show port -b 0002:01:00.1 --json", True),
+                   ("st1", "bcmcmd -n 1 'show pmap'", True),
+                   ("st1", "bcmcmd -n 1 'bsh -c \"lt PC_PORT_STATUS lookup PORT_ID=216 STATUS=STATUS_ALL\"'", True),
+                   ("st1", "bcm-view -n asic1 Ethernet257", True)]
+    assert "bdf 0002:01:00.1" in rs[0]["why"]
+    two = ctx + "\nst1 asic0 Ethernet8 <-> (c2) GPU0 (0001:01:00.1) port 1 down"
+    assert all(not r["allowed"] for r in guide.runnable("on c1: `sudo afmctl show port -b <bdf> --json`", roles, None, two))
+    assert ai.generic_howto("list the broadcom commands to troubleshooting link issues")
+
+
+
+def test_unit_placeholder_forms():
+    v = guide.context_values("st1 asic1 Ethernet257 <-> (c1) GPU2 (0002:01:00.1) port 13\nBroadcom cd96 (logical 216)")
+    for raw in ("sudo bcmcmd -n <N> 'show pmap'", "sudo bcmcmd -n N 'show pmap'", "sudo bcmcmd -n <unit> 'show pmap'"):
+        assert guide._fill(raw, v)[0] == "sudo bcmcmd -n 1 'show pmap'", raw
+    assert guide._fill("bcmcmd -n <N> 'bsh -c \"lt PC_PHY_STATUS lookup PORT_ID=<logical> LANE_INDEX=<n>\"'", v)[0] == \
+        "bcmcmd -n 1 'bsh -c \"lt PC_PHY_STATUS lookup PORT_ID=216 LANE_INDEX=0\"'"

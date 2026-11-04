@@ -556,7 +556,9 @@ def ai_ask(state: State, req: dict) -> dict:
     if rack:                                 # the commands it suggests, checked like steps: Run from the answer
         try:
             _inv, roles = _rack_nodes(state, rack)
-            out["runnable"] = guide.runnable(out.get("answer") or "", roles, _rack_aliases(state, rack))
+            ctx_text = "\n".join(x["text"] for x in ev.items) + "\n" + "\n".join(
+                str(x.get("output") or "") for x in (req.get("steps") or []) if isinstance(x, dict))
+            out["runnable"] = guide.runnable(out.get("answer") or "", roles, _rack_aliases(state, rack), ctx_text)
         except BadRequest:
             out["runnable"] = []
     return out

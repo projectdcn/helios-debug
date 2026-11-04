@@ -20,7 +20,13 @@ ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "link-debug-guide.md"
 ID_RX = re.compile(r"(?:tc|hc|maint|hw)-[a-z0-9]+(?:-[a-z0-9]+)*-?\d+[a-z]?|(?:tc|hc)-\d+")
 _STOP = set("the a an and or of to in on for is are be by with this that it as at from what how which when where do does "
-            "i you we can my your our not no".split())
+            "i you we can my your our not no list give please me tell".split())
+# the words people use for what the guide calls something else ('brcm' / 'broadcom' -> the Broadcom shell's commands)
+SYNONYMS = {"broadcom": ["bcmcmd", "bsh"], "brcm": ["broadcom", "bcmcmd", "bsh"], "bcm": ["broadcom", "bcmcmd"],
+            "serdes": ["broadcom", "lane", "snr"], "asic": ["broadcom"]}
+GUIDE_BOOST = 1.4         # the debug guide is written for debugging questions; manuals and issue trackers are background
+_DEBUG_Q = re.compile(r"\b(debug\w*|troubleshoot\w*|diagnos\w*|commands?|links?|ports?|down|fail\w*|flap\w*|errors?|fix|"
+                      r"check|signal|broadcom|brcm|bcm\w*)\b", re.I)
 
 
 def tokens(text: str) -> list[str]:
@@ -77,7 +83,9 @@ class Index:
         self.idf = {w: math.log(1 + (n - c + 0.5) / (c + 0.5)) for w, c in df.items()}
 
     def search(self, query: str, k: int = 3, min_score: float = 2.0) -> list[dict]:
-        q = [w for w in dict.fromkeys(tokens(query)) if w in self.idf]
+        boost = GUIDE_BOOST if _DEBUG_Q.search(query or "") else 1.0      # 'what is AFM': the manual, as before
+        q0 = tokens(query)
+        q = [w for w in dict.fromkeys(q0 + [x for w in q0 for x in SYNONYMS.get(w, [])]) if w in self.idf]
         ids = [w for w in q if ID_RX.fullmatch(w)]          # a test case id named: its passages come first
         scored = []
         for i, tf in enumerate(self.tf):
@@ -88,6 +96,8 @@ class Index:
                     s += self.idf[w] * f * (self.k1 + 1) / (f + self.k1 * (1 - self.b + self.b * ln / self.avg))
             if ids and any(w in tf for w in ids):           # its own passage far ahead; one that mentions it, a bit
                 s += 50.0 if any(w in tokens(self.chunks[i].get("title", "")) for w in ids) else 5.0
+            if self.chunks[i].get("source") == "debug guide":
+                s *= boost
             if s >= min_score:
                 scored.append((s, i))
         scored.sort(key=lambda x: -x[0])

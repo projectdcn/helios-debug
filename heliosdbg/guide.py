@@ -168,28 +168,86 @@ def step_facts(steps: list[dict]) -> list[str]:
 _ON_CMD = re.compile(r"\bon\s+(?:the\s+)?([A-Za-z0-9][\w.-]*)(?:\s*\(([\w.-]+)\))?\s*:?\s*`([^`\n]{2,300})`")
 
 
-def runnable(text: str, roles: dict, aliases: dict | None = None) -> list[dict]:
-    """The commands an answer suggests on a named node: [{node, command, allowed, refused}] - each checked against the
-    read-only list exactly like a step, so the person can run it from the answer (and continue step by step)."""
+_CMD_START = re.compile(r"^(?:sudo\s+)?(?:show|bcm-view|bcmcmd|afmctl|amd-smi|sonic-db-cli|docker|dmesg|journalctl|systemctl|"
+                        r"rdma|nicctl|crm|watchdogutil|ip\s|lspci|ibv_devinfo|ipmitool\s+sel)\b")
+_BDF = r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d"
+
+
+def context_values(text: str) -> dict:
+    """The values a placeholder can only mean here, when the evidence / earlier outputs name exactly one: the switch
+    tray, chip and port of the link, the GPU's tray and PCI address, the port's Broadcom logical port."""
+    def one(vals):
+        vals = list(dict.fromkeys(vals))
+        return vals[0] if len(vals) == 1 else None
+    links = re.findall(r"\b(st\d+)\s+(asic\d)\s+(Ethernet\d+)\b", text)
+    gpus = re.findall(rf"\((c\d+|ct\d+)\)\s+GPU\d+\s+\(({_BDF})\)", text)
+    lp = one(re.findall(r"\(logical (\d+)\)", text))
+    v = {"switch": one([x[0] for x in links]), "asic": one([x[1] for x in links]), "port": one([x[2] for x in links]),
+         "tray": one([x[0] for x in gpus]), "bdf": one([x[1] for x in gpus]), "logical": lp}
+    return {k: x for k, x in v.items() if x}
+
+
+def _fill(cmd: str, v: dict) -> tuple[str, list[str]]:
+    """Placeholders replaced by the one value the context gives: <bdf>, <logical>, asicN / -n N, EthernetX."""
+    used = []
+    def sub(rx, key, val=None):
+        nonlocal cmd
+        if key in v and re.search(rx, cmd):
+            cmd = re.sub(rx, val or v[key], cmd)
+            used.append(key)
+    sub(r"<bdf>|<BDF>|<pci(?:[ _-]address)?>", "bdf")
+    sub(r"LANE_INDEX=<[a-z]+>", "logical", "LANE_INDEX=0")          # lane 0 - the output says so; lane 1 by hand
+    sub(r"<logical(?:[ _-]port)?>|<port[ _-]id>|<PORT_ID>", "logical")
+    if "asic" in v:
+        sub(r"\basicN\b|<asic>", "asic")
+        sub(r"(\bbcmcmd\s+-n\s+)(?:N\b|<[nN]>|<unit>|<asic>)", "asic", r"\g<1>" + v["asic"][-1])
+        sub(r"(\s-n\s+)<asic(?:N|\d)?>", "asic", r"\g<1>" + v["asic"])
+    sub(r"\bEthernet(?:X|N|<port>)\b|<port>|<interface>", "port")
+    return cmd, used
+
+
+def runnable(text: str, roles: dict, aliases: dict | None = None, context: str = "") -> list[dict]:
+    """The commands an answer suggests: [{node, command, allowed, refused, why?}] - each checked against the read-only
+    list exactly like a step, so the person can run it from the answer (and continue step by step). 'on st1: `..`'
+    names the node; a command without one goes to the one switch tray / GPU tray the evidence is about. Placeholders
+    (<bdf>, <logical>, asicN, EthernetX) are filled when the evidence or an earlier output names exactly one value."""
     al = {n.lower(): n for n in roles} | {str(k).lower(): v for k, v in (aliases or {}).items() if v in roles}
-    out, seen = [], set()
+    v = context_values(context or "")
+    out, seen, spans = [], set(), []
+    found = []
     for m in _ON_CMD.finditer(text or ""):
         node = al.get((m.group(2) or "").lower()) or al.get(m.group(1).lower())
-        cmd = m.group(3).strip()
-        if not node or (node, cmd) in seen:
+        spans.append(m.span(3))
+        if node:
+            found.append((node, m.group(3).strip()))
+    for m in re.finditer(r"`([^`\n]{2,300})`", text or ""):
+        if any(a <= m.start(1) < b for a, b in spans) or not _CMD_START.match(m.group(1).strip()):
+            continue
+        c = m.group(1).strip()
+        sw = v.get("switch") if v.get("switch") in roles else None
+        tray = v.get("tray") if v.get("tray") in roles else None
+        node = sw if re.match(r"(?:sudo\s+)?(?:show|bcm[\w-]*|sonic-db-cli|crm|watchdogutil|docker)\b", c) else tray if re.match(
+            r"(?:sudo\s+)?(?:afmctl|amd-smi|rdma|nicctl|lspci|ibv_devinfo)\b", c) else None
+        if node:
+            found.append((node, c))
+    for node, cmd in found:
+        if (node, cmd) in seen:
             continue
         seen.add((node, cmd))
-        item = {"node": node, "command": cmd, "allowed": False, "refused": None}
-        if re.search(r"<[^<>]*>", cmd):
+        filled, used = _fill(cmd, v)
+        item = {"node": node, "command": filled, "allowed": False, "refused": None}
+        if used:
+            item["why"] = "filled in from the evidence: " + ", ".join(f"{k} {v[k]}" for k in used)
+        if re.search(r"<[^<>]*>", filled):
             item["refused"] = "it has a placeholder (<...>) - ask for the exact command, or continue step by step"
         else:
             try:
-                item["command"], _sudo = check(cmd, roles[node])
+                item["command"], _sudo = check(filled, roles[node])
                 item["allowed"] = True
             except GuideError as e:
                 item["refused"] = str(e)
         out.append(item)
-        pm = re.search(r"(?:-n\s+(asic\d)\b.*?)?\b(Ethernet\d+)\b", cmd) if roles[node] == "switch" and item["allowed"] else None
+        pm = re.search(r"(?:-n\s+(asic\d)\b.*?)?\b(Ethernet\d+)\b", item["command"]) if roles[node] == "switch" and item["allowed"] else None
         bv = f"bcm-view{' -n ' + pm.group(1) if pm.group(1) else ''} {pm.group(2)}" if pm else ""
         if bv and (node, "bcm", pm.group(2)) not in seen and not item["command"].startswith("bcm"):
             seen.add((node, "bcm", pm.group(2)))
