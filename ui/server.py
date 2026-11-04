@@ -1208,7 +1208,7 @@ def live_start(state: State, req: dict) -> dict:
             break
     if not links:
         raise BadRequest("no check of this rack has links - run Check all links again")
-    filled = fill_missing(inv, links, runs[at + 1:at + 1 + 6])
+    filled = fill_missing(inv, links, runs[at + 1:at + 1 + 30])   # 4 Nov: 6 partial 24 Oct scans hid st1, st2, st4's 19 Oct one
     reconcile_s, max_h = float(_int(req, "reconcile_s", 60, 3600, 300)), _int(req, "max_h", 0, 168, 8)
     with state.lock:                                  # one start at a time: two at once left one session running
         if state.live_starting:                       # unreachable (double click)

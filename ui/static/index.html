@@ -110,6 +110,7 @@ nav button.exp{border-style:dashed}
 body.chat-open main{margin-right:min(460px,100vw)}
 @media (max-width:1100px){body.chat-open main{margin-right:0}}
 .live-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 12px;border:1px solid var(--rule);border-radius:8px;margin:8px 0}
+.live-reach{flex-basis:100%;line-height:1.6}.ok-t{color:var(--ok);font-weight:600}
 .live-bar.on{border-color:var(--ok);background:var(--okbg)}.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:var(--mut)}
 .live-bar.on .dot,#live-ind .dot{background:var(--ok);animation:pulse 1.6s infinite}@keyframes pulse{50%{opacity:.35}}
 #live-ind{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ok);cursor:pointer}
@@ -692,6 +693,7 @@ function kindHelp(k){return KIND_HELP[k]||{t:k||"Problem",m:"",s:[]}}
 function who(owner){return OWNER[owner]||owner||""}
 function friendly(msg){
   var m=String(msg||""),R=[
+   [/rc=\d+: (?:sudo )?afmctl show port -b/i,"Logs in, but afmctl fails on one of its GPUs (the address and exit code are in the tooltip), so Live cannot re-read this tray's links. Run 'sudo afmctl show device --json' on it: is that GPU listed and in a good state?"],
    [/authenticat|permission denied|login refused/i,"Login refused - the node answers but rejects this key for the inventory's user (the key was removed, the account changed, or the user is wrong). Open Access to the rack to install the key again, or fix the user in the inventory."],
    [/host key changed|host key verification|identification has changed/i,"Its SSH host key changed (reinstalled?) - if that is expected, remove the old key with ssh-keygen -R <address> on the machine that logs in (this one, or the jump host when the rack is reached through one), then check again. Not expected: do not log in - someone may be in the path."],
    [/no route|off the network|network is unreachable|host is unreachable/i,"Not on the network - powered off, OS down, or its management link. Check its power and console on its BMC."],
@@ -1004,6 +1006,30 @@ function liveBad(f,bad){
   return esc(nodes+" not reached")+" - "+order.map(function(w){
     var ns=groups[w],raw=ns.map(function(n){return n+": "+String(f[n].error||"")}).join("\n");
     return '<b title="'+esc(raw)+'">'+esc(ns.map(function(n){return n.split(" ")[0]}).join(", "))+"</b>: "+w.replace(/\.$/,"")}).join("; ")}
+/* 'Reach now' - per switch / compute tray of the inventory: read by Live, failing (why), or not followed (in no check Live
+   could start from). 4 Nov g02-g17: the bar said '1 not reached - ct06' while st1, st2, st4 were silently not followed and
+   the counts mixed Live with the morning's check - nobody could tell what was reachable. */
+function liveReach(){
+  var f=live.followers||{},i=inv()||{},fill=live.filled||{};
+  function part(names,what){
+    var ok=[],bad=[],off=[],wait=[];
+    names.forEach(function(n){var fs=[f[n+" re-read"],f[n+" log"]].filter(Boolean);
+      if(fs.some(function(x){return x.ok}))ok.push(n);
+      else if(fs.some(function(x){return x.ok===false}))bad.push(fs.filter(function(x){return x.ok===false}).map(function(x){return x===f[n+" re-read"]?n+" re-read":n+" log"})[0]);
+      else if(fs.length||!live.reconciles)wait.push(n);else off.push(n)});
+    var p=[];
+    if(ok.length)p.push('<span class="ok-t">'+(ok.length>6?ok.length+" of "+names.length:esc(ok.join(", ")))+" read</span>");
+    if(bad.length)p.push('<span class="err">'+liveBad(f,bad).replace(/^\d+ not reached - /,"")+"</span>");
+    if(wait.length)p.push('<span class="mut">'+(wait.length>6?wait.length:esc(wait.join(", ")))+" being read (first re-read)</span>");
+    if(off.length)p.push('<span class="mut" title="Live re-reads the links of the check it started from (and of earlier checks for nodes that check missed); a node in none of them is not read now">'+
+      esc(off.join(", "))+" not followed: in no recent check</span>");
+    return "<b>"+what+"</b> "+(p.join(" · ")||'<span class="mut">none in the inventory</span>')}
+  var filled=Object.keys(fill);
+  return '<div class="live-reach"><b>Reach now:</b> '+part(i.switches||[],"switch trays")+" &nbsp;|&nbsp; "+part(i.computes||[],"compute trays")+
+    '<br><span class="mut">Link states: what Live read now; links it cannot read keep the state of the check of '+esc(checkAge(live.check_time))+
+    (filled.length?" - "+Array.from(new Set(filled.map(function(n){return fill[n]}))).map(function(t){
+      return esc(filled.filter(function(n){return fill[n]===t}).sort().join(", "))+": "+esc(checkAge(t))}).join("; "):"")+
+    (live.jump_limited?". From this laptop Live re-reads every few minutes through the jump host; switch and tray logs are not followed":"")+".</span></div>"}
 /* Live writes nothing by itself: what it read is saved as a check (Scan / Mark lists) or its change log, on request */
 var liveSaved="";
 var liveSaving=false;
@@ -1030,7 +1056,7 @@ function liveBar(){
       " · last change "+(live.last_event?esc(new Date(live.last_event).toLocaleTimeString()):"-")+
       " · "+(live.max_s?"stops by itself at "+esc(new Date((live.started+live.max_s)*1000).toLocaleString([],{weekday:"short",hour:"2-digit",minute:"2-digit"})):"runs until turned off")+
       (live.idle_s?" or "+Math.round(live.idle_s/60)+" min after no page is open":"")+"</span>"+
-      (bad.length?'<span class="err">'+liveBad(f,bad)+"</span>":"")+
+      liveReach()+
       '<button class="sec" id="live-off">Turn live off</button>'+liveSaveHtml();
     $("live-off").addEventListener("click",function(){api("/api/live/stop",{}).then(livePoll)});liveSaveWire();
   }else{
