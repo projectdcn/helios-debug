@@ -99,14 +99,16 @@ UNSAFE = re.compile(
     r"config\s+(?:reload|load|save)\b|config\s+vlan\s+member\s+(?:del|add)|config\s+feature\s+state\s+\S+\s+disabled|"
     r"config\s+bgp\s+shutdown|sonic-installer\s+(?:install|set-default|set-next-boot|remove)|"
     r"systemctl\s+(?:stop|restart|disable)|service\s+\S+\s+(?:stop|restart)|docker\s+(?:stop|restart|rm)|"
-    r"kill\s+-9|pkill\b|rm\s+-rf|sonic-clear\s+fdb|(?:clear|flush)\s+(?:the\s+)?fdb|redis-cli\b[^\n]*\bdel\b|"
+    r"kill\s+-9|pkill\b|rm\s+-r\w*|docker\s+kill|sonic-clear\s+\w+|echo\s+\S+\s*>\s*/sys/\S+|sonic-clear\s+fdb|(?:clear|flush)\s+(?:the\s+)?fdb|redis-cli\b[^\n]*\bdel\b|"
     r"decommission(?!ed\b)\w*|afmctl\s+(?:reset|idle|disable|update|set)\w*|sonic-db-cli\s+\S+\s+del\b|"
     r"amd-smi\s+(?:reset|set)\b|rmmod\b|modprobe\s+-r\b|/remove\b|nicctl\s+(?:reset|update|upgrade)\b|"
     r"devlink\s+dev\s+reload|mlxfwreset|mstconfig\b[^\n]*\bset\b|ethtool\s+-s\b|bcmcmd\b[^\n]*\ben=0)\b",
     re.I)
 # a mention inside a read: 'last reboot', grep for it, show its log - not a step that changes the rack
-READ_CONTEXT = re.compile(r"(?:\blast\s+|\bgrep\b[^\n|;]*|\bshow\s+logging\b[^\n;]*|\btail\b[^\n|;]*|\bcat\b[^\n|;]*)$", re.I)
-NEGATION = re.compile(r"\b(not|never|don't|do not|avoid|without|unless|no need to|must not|should not)\b[^.;:\n]{0,40}$", re.I)
+# the read must be the same command: 'cat the log, then reboot the switch' is a read followed by a change (audit 4 Nov)
+_SAME = r"(?:(?!\b(?:then|and|or)\b)[^\n|;,])*"
+READ_CONTEXT = re.compile(rf"(?:\blast\s+|\bgrep\b{_SAME}|\bshow\s+logging\b{_SAME}|\btail\b{_SAME}|\bcat\b{_SAME})$", re.I)
+NEGATION = re.compile(r"\b(not|never|don't|do not|avoid|without|unless|must not|should not)\b[^.;:,\n]{0,40}$", re.I)
 
 
 class AIError(RuntimeError):

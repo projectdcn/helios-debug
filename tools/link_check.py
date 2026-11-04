@@ -1373,6 +1373,7 @@ def _bmc_health(inv, rack, items, unreachable: set, nodes: dict, raw: dict, heal
     for (role, name, address, _u, pw), snap, err in fan_out(one, todo, workers=3):
         if err is not None:
             print(f"  {name} BMC: not read ({type(err).__name__}: {str(err)[:100]})", flush=True)
+            nodes.setdefault(name, {"role": role}).setdefault("not_run", []).append("bmc")   # not checked, not healthy
             continue
         fs = bmc.judge(name, role, snap, ssh_ok=name not in unreachable, finding=health.finding,
                        critical=health.CRITICAL, warning=health.WARNING)

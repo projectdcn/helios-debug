@@ -142,6 +142,9 @@ def _json(raw) -> dict | None:
 def _split(text: str, base: str, paths: list[str]) -> dict[str, tuple[int, dict | None]]:
     """curl's bodies, each followed by the MARK line, back to {path: (status, JSON)}."""
     out = {p: (0, None) for p in paths}
+    if MARK not in text:                       # curl did not run (missing, channel cut): not 'the BMC does not answer'
+        raise RuntimeError("BMC not checked - the Redfish reads did not run on the jump host: "
+                           + (text.strip().splitlines() or ["no output"])[-1][:200])
     body: list[str] = []
     for line in text.split("\n"):
         if line.startswith(MARK):

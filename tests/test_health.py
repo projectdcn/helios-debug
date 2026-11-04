@@ -252,3 +252,19 @@ def test_memory_without_memavailable_is_not_critical():
     checks._memory("ct01", "compute", {"memory": {"cmd": "grep", "rc": 0, "out": "MemTotal: 16000000 kB\n", "err": ""}},
                    F, "os")
     assert F == []
+
+
+def test_bmc_curl_not_run_is_not_a_power_loss():
+    import pytest
+    from heliosdbg import bmc
+    with pytest.raises(RuntimeError, match="BMC not checked"):
+        bmc._split("bash: curl: command not found\n", "https://10.0.0.1", ["/redfish/v1/"])
+
+
+def test_unsafe_advice_after_a_read_is_still_flagged():
+    from heliosdbg import ai
+    for t in ("Run cat /var/log/syslog, then reboot the switch.", "grep the log for errors and then run config reload on st5.",
+              "No need to wait, reboot the switch now.", "sudo docker kill swss", "sudo rm -r /var/core", "sonic-clear counters"):
+        assert ai.unsafe_text(t), t
+    for t in ("grep reboot /var/log/syslog", "show reboot-cause history", "do not reboot the switch"):
+        assert not ai.unsafe_text(t), t

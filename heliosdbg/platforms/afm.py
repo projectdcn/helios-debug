@@ -77,8 +77,12 @@ def judge_compute(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
         try:
             from ..afmctl import parse_show_device
             devs = parse_show_device(t)
-        except Exception:  # noqa: BLE001 - a non-JSON answer: afmctl is not there or failed
+        except Exception:  # noqa: BLE001 - a non-JSON answer: afmctl is not there or failed - said, not 'healthy'
             devs = []
+            F.append(finding(node, "compute", "afmctl", "afm", WARNING, "afmctl's GPU list could not be read",
+                             "afmctl answered something that is not its JSON (its agent not running, or an error) - the "
+                             "GPUs' AFM state is unknown", "run 'sudo afmctl show device --json' on the tray and read the "
+                             "message", t.splitlines()[:3], _cmd(outs, "afmctl")))
         bad = [d for d in devs if str(d.config_phase).upper() != "ACTIVE"]
         if bad:
             F.append(finding(node, "compute", "afmctl", "afm", CRITICAL if len(bad) == len(devs) else WARNING,
