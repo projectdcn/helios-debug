@@ -95,6 +95,7 @@ UNSAFE = re.compile(
     r"config\s+interface\s+(?:-n\s+\S+\s+)?(?:shutdown|startup)\b|"          # SONiC's own order: shutdown <port>
     r"ip\s+link\s+set\s+(?:dev\s+)?\S+\s+down|ifconfig\s+\S+\s+down|"
     r"reboot(?!ed\b|-cause|\.log|\s+(?:cause|count|history|reason|log)\b)\w*|shutdown\s+(?:-[rhP]\b|now\b)|"
+    r"(?:re)?start\s+(?:the\s+)?(?:switch|compute)\s+tray|(?:from|at|by)\s+the\s+power\b|power\s+(?:off|down)\b|"
     r"power[\s-]*cycle\w*|ipmitool\s+(?:chassis\s+)?power\s+(?:off|cycle|reset|soft)|sysrq-trigger|"
     r"config\s+(?:reload|load|save)\b|config\s+vlan\s+member\s+(?:del|add)|config\s+feature\s+state\s+\S+\s+disabled|"
     r"config\s+bgp\s+shutdown|sonic-installer\s+(?:install|set-default|set-next-boot|remove)|"

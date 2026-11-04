@@ -127,6 +127,34 @@ def compact(output: str) -> str:
     return "\n".join(lines) if lines else output
 
 
+_GPU_PORT = re.compile(r"^\s*port (\d+): (\S+?)(?:, (\S+?))?, admin (\w+)", re.M)
+_SW_PORT = re.compile(r"^(Ethernet\d+)\s+\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+(up|down)\s+(up|down)\b", re.M)
+
+
+def step_facts(steps: list[dict]) -> list[str]:
+    """What the outputs of the steps show, read by code (not the model): GPU ports with no signal against the rest of
+    the GPU, switch ports admin up / oper down. g02-g17 4 Nov (mr2): one link down at both ends, and the model's
+    conclusion was to power the switch tray off and on."""
+    facts, gpu_down, sw_down = [], 0, 0
+    for i, s in enumerate(steps, 1):
+        out, node = str(s.get("output") or ""), s.get("node")
+        for bdf, body in re.findall(r"^GPU (\S+):\n((?:\s+port .*\n?)+)", out, re.M):
+            ports = _GPU_PORT.findall(body)
+            down = [(n, st, extra) for n, st, extra, _a in ports if st != "LINK_UP"]
+            if down and len(down) < len(ports):
+                gpu_down += len(down)
+                facts.append(f"[S{i}] {node} GPU {bdf}: port(s) " + ", ".join(f"{n} {st}" + (f"/{x}" if x else "") for n, st, x in down)
+                             + f" - the other {len(ports) - len(down)} ports of this GPU are up, so the GPU and its tray work")
+        for port, oper, admin in _SW_PORT.findall(out):
+            if oper == "down" and admin == "up":
+                sw_down += 1
+                facts.append(f"[S{i}] {node} {port}: admin up, oper down - enabled, but no link (not shut by configuration)")
+    if gpu_down and sw_down:
+        facts.append("Together: one link has no signal at either end - the cable, a connector or a transceiver (site / "
+                     "cabling: reseat or swap that one cable). Restarting or powering a whole tray is out of proportion for it.")
+    return facts
+
+
 def steps_block(steps: list[dict]) -> str:
     out = []
     for i, s in enumerate(steps[-8:], 1):
@@ -206,7 +234,10 @@ def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=No
     st = parse_step(text)
     st["model"] = model
     if st.get("done"):          # remembered: a 👍 / 👎 on the conclusion teaches the guided mode (helios-slm)
-        return {"done": True, "conclusion": str(st.get("conclusion") or ""), "next": str(st.get("next") or ""), "model": model,
+        from .ai import unsafe_text
+        concl, nxt = str(st.get("conclusion") or ""), str(st.get("next") or "")
+        return {"done": True, "conclusion": concl, "next": nxt, "model": model, "facts": step_facts(steps),
+                "unsafe": unsafe_text(concl + "\n" + nxt),
                 "answer_id": ai.remember(msgs, text, model, subject + " (step by step)")}
     node = str(st.get("node") or "").strip()
     out = {"done": False, "node": node, "command": str(st.get("command") or "").strip(), "why": str(st.get("why") or ""),
@@ -251,6 +282,9 @@ def run(host, transport, command: str, role: str, log_dir: Path | None = None) -
                          f"{round(time.time() - t0, 1)}s {shlex.quote(c)}\n")
         except OSError:
             pass
+    if rc == 0 and not out.strip():
+        out = "(no output - the command printed nothing" + (": afmctl knows no GPU at that address on this tray - list them "
+                                                           "with 'sudo afmctl show device --json'" if " -b " in c else "") + ")"
     u = unreachable({"rc": rc, "output": out, "node": host.name})
     if u:
         out = f"Could not log in to {host.name}: {u['what']}.\nNext: {u['next']} (owner: {u['owner']})\n\n{out}"

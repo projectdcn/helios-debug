@@ -1190,9 +1190,11 @@ function apRules(bs){
   $("ap-rules").innerHTML='<p class="mut">Checking the outputs against the node health rules ...</p>';
   return api("/api/cases/judge",{blocks:bs}).then(function(d){
     var fs=d.findings||[],known=(d.checked||[]).filter(function(c){return c.checks.length}),h="";
-    var unk=(d.checked||[]).filter(function(c){return !c.checks.length}).map(function(c){return c.command||"(no command given)"});
+    var nocmd=(d.checked||[]).filter(function(c){return !c.command}).length;
+    var unk=(d.checked||[]).filter(function(c){return !c.checks.length&&c.command}).map(function(c){return c.command});
     h+='<h3 style="margin:10px 0 4px">What the health rules say</h3>';
-    if(!known.length)h+='<p class="mut">None of these commands is one the health check reads, so only the AI below looks at them'+(unk.length?" ("+esc(unk.slice(0,4).join("; "))+")":"")+".</p>";
+    if(nocmd)h+='<p class="mut">'+(nocmd===1?"One output was":nocmd+" outputs were")+' pasted without the command that printed it, so the rules cannot tell which check it is - put it in the command field beside the node (e.g. <code>show platform fan</code>) to have it checked.</p>';
+    if(!known.length&&unk.length)h+='<p class="mut">The health check reads none of these commands, so only the AI below looks at them: '+esc(unk.slice(0,4).join("; "))+".</p>";
     else h+='<p class="mut">Checked: '+esc(known.map(function(c){return (c.node?c.node+" ":"")+(c.command||c.checks.join(", "))}).join("; "))+(unk.length?' · not a health-check command: '+esc(unk.slice(0,4).join("; ")):"")+"</p>";
     if(known.length&&!fs.length)h+='<div class="verdict ok"><h3>No problem in what the rules read</h3><p class="mut" style="margin:0">Only the outputs above were checked - not the rest of the node.</p></div>';
     fs.forEach(function(f){h+='<div class="finding '+(f.severity==="critical"?"down":"degraded")+'"><span class="cnt">'+(f.severity==="critical"?"!":"?")+'</span><div class="body"><b>'+esc(f.node)+": "+esc(f.what)+'</b><div class="mut">'+esc(f.cause)+"</div><div>Next: "+esc(f.next)+'</div><div class="who">'+esc(f.severity)+" · area "+esc(f.area)+" · who: "+esc(f.owner)+"</div>"+
@@ -1251,7 +1253,9 @@ function guideStart(el,ctx){
   function ask(){
     nx.innerHTML='<p class="mut">the AI is choosing the next step ...</p>';
     api("/api/ai/guide",aiReq(ctx,{steps:steps})).then(function(p){
-      if(p.done){nx.innerHTML='<div class="verdict ok"><h3>Conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+'<div class="mut" style="font-size:12px">'+steps.length+" step(s) run · advisory - check it against the outputs above</div><div class=\"fb\"></div></div>";
+      if(p.done){nx.innerHTML='<div class="verdict '+(p.unsafe?"degraded":"ok")+'"><h3>Conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+
+        (p.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(p.unsafe)+'") - only with a go-ahead, and check it against what the outputs show below.</div>':"")+
+        ((p.facts||[]).length?'<div style="margin:6px 0"><b>What the outputs show</b> <span class="mut" style="font-size:12px">read by code, not the AI</span><ul style="margin:4px 0">'+p.facts.map(function(f){return "<li>"+esc(f)+"</li>"}).join("")+"</ul></div>":"")+'<div class="mut" style="font-size:12px">'+steps.length+" step(s) run · advisory - check it against the outputs above</div><div class=\"fb\"></div></div>";
         fbWire(nx.querySelector(".fb"),p,ctx,"The right conclusion, citing the step outputs [S1].. and evidence [E1].. - then a line starting 'Next:' with what to do and who. This teaches the step-by-step mode.");return}
       var bad=!p.allowed;
       nx.innerHTML='<div class="verdict '+(bad?"degraded":"")+'"><h3>Step '+(steps.length+1)+": on "+esc(nodeLabel(p.node||"?"))+"</h3><p><code>"+esc(p.command||"")+"</code></p><p class=\"mut\">"+esc(p.why||"")+"</p>"+
@@ -1261,7 +1265,7 @@ function guideStart(el,ctx){
         api("/api/ai/run",{path:ctx.path||"",rack:ctx.rack||"",node:p.node,command:p.command}).then(function(o){
           steps.push({node:o.node,command:o.command,rc:o.rc,output:o.output});
           var d=document.createElement("details");d.open=steps.length===1;
-          d.innerHTML='<summary><b>S'+steps.length+"</b> "+esc(nodeLabel(o.node))+": <code>"+esc(o.command)+"</code> "+(o.rc===0?'<span class="mut">ok</span>':'<span class="err">exit '+esc(o.rc)+"</span>")+' <span class="mut">'+o.seconds+" s</span></summary><pre style=\"max-height:40vh\">"+esc(o.output||"(no output)")+"</pre>";
+          d.innerHTML='<summary><b>S'+steps.length+"</b> "+esc(nodeLabel(o.node))+": <code>"+esc(o.command)+"</code> "+(o.rc===0?'<span class="mut">ok</span>':'<span class="err">exit '+esc(o.rc)+"</span>")+' <span class="mut">'+o.seconds+" s</span></summary><pre style=\"max-height:40vh\">"+esc((o.output||"").trim()||"(no output)")+"</pre>";
           list.appendChild(d);ask();
         }).catch(function(e){rb.disabled=false;rb.textContent="Run";nx.insertAdjacentHTML("beforeend",'<p class="err">'+esc(e.message)+"</p>")})});
       nx.querySelector(".g-other").addEventListener("click",function(){steps.push({node:p.node,command:p.command,rc:"skipped",output:"(skipped by the user - propose something else)"});ask()});

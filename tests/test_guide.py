@@ -262,3 +262,20 @@ def test_a_node_that_cannot_be_reached_is_said_and_not_proposed_again():
             return type("R", (), {"rc": 255, "stdout": "", "stderr": "ssh: connect to host 10.255.4.76 port 22: No route to host"})()
     r = guide.run(type("H", (), {"name": "st6"})(), T(), "show platform fan", "switch")
     assert r["output"].startswith("Could not log in to st6: no route to host")
+
+
+def test_step_facts_and_tray_restart_flagged():
+    """mr2 4 Nov: GPU port 13 NO_PHY_LINK and st1 Ethernet257 down/up - the model said to power st1 off and on."""
+    gpu = "GPU 0002:01:00.1:\n" + "".join(f" port {i}: LINK_UP, admin enabled, IFCP ll_up yes peer_enabled yes peer 1/2{i:02d}\n" for i in range(13)) \
+        + " port 13: NO_PHY_LINK, PCS_NO_BLOCK_LOCK, admin enabled, IFCP ll_up no peer_enabled None peer None/None\n" \
+        + " port 14: LINK_UP, admin enabled, IFCP ll_up yes peer_enabled yes peer 1/262\n"
+    sw = ("Ethernet257          193,194     400G   9100    N/A  Ethernet449/1   trunk    down       up     N/A         N/A\n"
+          "Ethernet473              1,2     400G   9100    N/A  Ethernet257/1   trunk      up       up     N/A         N/A\n")
+    steps = [{"node": "c1", "command": "afmctl show port -b 0002:01:00.1 --json", "rc": 0, "output": gpu},
+             {"node": "st1", "command": "show interfaces status -n asic1 -d all | grep Ethernet257", "rc": 0, "output": sw}]
+    f = guide.step_facts(steps)
+    assert any("port(s) 13 NO_PHY_LINK/PCS_NO_BLOCK_LOCK" in x and "other 14 ports" in x for x in f)
+    assert any("st1 Ethernet257: admin up, oper down" in x for x in f)
+    assert "Ethernet473" not in " ".join(f) and f[-1].startswith("Together: one link has no signal")
+    assert ai.unsafe_text("one change: start the switch tray again. Next: start the switch tray st1 from the power of the rack")
+    assert ai.unsafe_text("reseat the cable between st1 Ethernet257 and the GPU port") is None
