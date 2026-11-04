@@ -7,7 +7,7 @@ import json
 import re
 import time
 
-from ..checks import CRITICAL, LIMITS, WARNING, Platform, _cmd, _disk, _memory, _num, _out, _run, finding, missing
+from ..checks import CRITICAL, LIMITS, WARNING, Platform, _cmd, _disk, _memory, _num, _out, _run, finding, missing  # noqa: F401
 from ..checks import _NS, _WORD  # noqa: F401 - the allow-list patterns
 
 READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platform (heliosdbg/guide.py)
@@ -56,6 +56,16 @@ COMMANDS = [
     ('voltage', 'show platform voltage', False),
     ('watchdog', 'watchdogutil status', True),
     ('syslog', "grep -hE ' (ERR|CRIT|ALERT|EMERG) ' /var/log/syslog.1 /var/log/syslog | tail -n 400", True),
+    # QFX5252 switch tray (HPEN SONiC): leak detection, SSD, clock, BMC through bmc-manager, images, management
+    # interface - from the HPE switch tray configuration and management guide (3 Nov 2026), outputs as on g02-g17 st5
+    ('leak', 'show platform leak status', False),
+    ('leak_channels', 'show platform leak channels', False),
+    ('ssd', 'show platform ssdhealth', False),
+    ('ntp', 'show ntp', False),
+    ('bmc_health', 'bmc-manager health', True),
+    ('bmc_power', 'bmc-manager power-status', True),
+    ('images', 'sonic-installer list', True),
+    ('mgmt', "sonic-db-cli CONFIG_DB KEYS 'MGMT_INTERFACE|*'", True),
 ]
 CRITICAL_CONTAINERS = re.compile(r"^(pmon|database\d*|swss\d*|syncd\d*|lldp\d*|bgp\d*|teamd\d*|radv|snmp|gnmi|telemetry)$")
 SUPERVISOR_CMD = "docker exec {c} sh -c 'cat /etc/supervisor/critical_processes; echo ===; supervisorctl status'"
@@ -302,6 +312,107 @@ def _platform(node, outs, F):
                          _cmd(outs, "watchdog")))
 
 
+def _kv(text: str) -> dict:
+    """'Device leak status         Normal' / 'Health       : 100.0%' lines as {key: value}."""
+    out = {}
+    for ln in (text or "").splitlines():
+        m = re.match(r"\s*([A-Za-z][\w ()/.-]*?)\s*(?::\s+|\s{2,})(\S.*)$", ln)
+        if m:
+            out[m.group(1).strip().lower()] = m.group(2).strip()
+    return out
+
+
+def _tray(node, outs, F):
+    """The QFX5252 switch tray beyond PSUs / fans: leak detection, SSD wear, NTP, the BMC (bmc-manager over the internal
+    USB link, so it answers even when the BMC's own address does not), the image the next reboot boots, management."""
+    t = _out(outs, "leak")
+    if t is not None:
+        kv = _kv(t)
+        st, alert = kv.get("device leak status", ""), kv.get("hardware comparator alert", "")
+        if (st and st.lower() != "normal") or alert.lower() == "yes":
+            F.append(finding(node, "switch", "leak", "thermal", CRITICAL, f"leak detection: device leak status {st or '?'}"
+                             + (", hardware comparator alert" if alert.lower() == "yes" else ""),
+                             "a leak sensor of the liquid cooling (manifold / cold plates) reports a leak",
+                             "read 'show platform leak channels' for the location; the site inspects the cooling loop NOW "
+                             "- liquid near powered equipment", t.splitlines()[:6], _cmd(outs, "leak")))
+        bad = [k for k in ("fpga access", "adc access") if kv.get(k) and kv[k].lower() != "good"]
+        if bad:
+            F.append(finding(node, "switch", "leak", "thermal", WARNING, "leak detection cannot read its sensors ("
+                             + ", ".join(f"{k} {kv[k]}" for k in bad) + ")", "a leak would not be detected",
+                             "hardware owner: 'show platform leak status' again, then the BMC event log",
+                             t.splitlines()[:6], _cmd(outs, "leak")))
+    t = _out(outs, "leak_channels")
+    if t is not None:
+        for r in parse_table(t):
+            ds = str(r.get("Data-status", "")).strip()
+            if ds and ds.lower() != "good":
+                F.append(finding(node, "switch", "leak", "thermal", WARNING, f"leak sensor {r.get('Name', '?')} "
+                                 f"({r.get('Location', '?')}): data {ds}", "this sensor is not read - a leak there would "
+                                 "not be detected", "hardware owner checks the sensor and its cable",
+                                 [" ".join(str(v) for v in r.values())[:200]], _cmd(outs, "leak_channels")))
+    t = _out(outs, "ssd")
+    if t is not None:
+        h = _num(_kv(t).get("health"))
+        if h is not None and h < 80:
+            F.append(finding(node, "switch", "ssd", "switch", CRITICAL if h < 50 else WARNING, f"SSD health {h:g} %",
+                             "the switch's SSD (SONiC and its logs) is wearing out", "plan the SSD replacement with the "
+                             "hardware owner; keep the configuration saved off the switch", t.splitlines()[:4], _cmd(outs, "ssd")))
+    t = _out(outs, "ntp")
+    if t is not None and re.search(r"Leap status\s*:\s*Not synchroni[sz]ed", t, re.I):
+        srcs = [ln.split() for ln in t.splitlines() if re.match(r"\s*\^", ln)]      # ^? <addr> stratum poll reach ...
+        silent = [x for x in srcs if len(x) > 4 and x[4] == "0"]
+        F.append(finding(node, "switch", "ntp", "sonic", WARNING, "clock not synchronised to NTP",
+                         ("no NTP source answers" + (f" (all {len(srcs)} configured: reach 0)" if srcs and len(silent) == len(srcs)
+                                                       else "") if not srcs or len(silent) == len(srcs) else
+                          "no NTP source selected")
+                         + ": times in this switch's logs and events cannot be matched with the other nodes', and "
+                         "certificate checks fail once the clock drifts far enough",
+                         "make an NTP server reachable from the management network ('show ntp' lists the configured "
+                         "ones); adding one ('sudo config ntp add') CHANGES THE SWITCH - for the network team",
+                         [x for x in t.splitlines() if re.search(r"Leap status|Stratum|^\s*\^", x)][:6], _cmd(outs, "ntp")))
+    t = _out(outs, "bmc_health")
+    if t is not None:
+        m = re.search(r"BMC STATUS:\s*([A-Z ]+?)\s*[║|]", t)
+        down = [ln.strip() for ln in t.splitlines() if re.match(r"\s+\S+\s+(inactive|failed|activating)\b", ln)]
+        if (m and m.group(1).strip() != "HEALTHY") or down:
+            F.append(finding(node, "switch", "bmc", "bmc", WARNING, "switch BMC: " + (m.group(1).strip().lower() if m else "")
+                             + (" - services " + ", ".join(down[:4]) if down else ""), "the switch's BMC (OpenBMC) is not "
+                             "healthy: out-of-band access, sensors through Redfish and its console may not work",
+                             "'sudo bmc-manager status' and 'sudo bmc-manager journal errors' on the switch; recovering it "
+                             "(power-cycle of the BMC) CHANGES THE SWITCH - hardware owner", down[:6] or t.splitlines()[-6:],
+                             _cmd(outs, "bmc_health")))
+    r = outs.get("bmc_power") or {}
+    if not missing(r):
+        lines = [ln.strip() for ln in ((r.get("out") or "") + "\n" + (r.get("err") or "")).splitlines()]
+        for ln in lines:
+            m = re.match(r"\[(WARN|FAIL)\]\s*(.+)", ln)
+            if m:
+                wdt = re.search(r"WDT|watchdog", m.group(2), re.I)
+                F.append(finding(node, "switch", "bmc", "bmc", CRITICAL if m.group(1) == "FAIL" else WARNING,
+                                 f"switch BMC: {m.group(2)}", "the BMC was restarted by its own watchdog (it hung or "
+                                 "crashed)" if wdt else "the BMC's power / presence check reports a problem",
+                                 "'sudo bmc-manager journal errors' and 'sudo bmc-manager dmesg errors' on the switch; if "
+                                 "it repeats, the hardware owner", [ln], _cmd(outs, "bmc_power")))
+    t = _out(outs, "images")
+    if t is not None:
+        kv = _kv(t)
+        cur, nxt = kv.get("current", ""), kv.get("next", "")
+        if cur and nxt and cur != nxt:
+            F.append(finding(node, "switch", "image", "sonic", WARNING, f"the next reboot boots {nxt}, not the running {cur}",
+                             "an image was installed or set as next and the switch has not rebooted into it",
+                             "confirm with the network team that this is planned before anyone reboots the switch",
+                             t.splitlines()[:4], _cmd(outs, "images")))
+    t = _out(outs, "mgmt")
+    if t is not None:
+        keys = [k.strip() for k in t.splitlines() if k.strip().startswith("MGMT_INTERFACE|")]
+        if len({k.split("|")[1] for k in keys if k.count("|") >= 2}) > 1:
+            F.append(finding(node, "switch", "mgmt", "sonic", WARNING, f"{len(keys)} management interfaces configured",
+                             "more than one management interface with a gateway: the default route flips between them and "
+                             "the switch drops off the management network", "keep one (eth0 or eth1) in "
+                             "MGMT_INTERFACE; changing it CHANGES THE SWITCH - from its console, network team",
+                             keys[:6], _cmd(outs, "mgmt")))
+
+
 SERIOUS_LOG = re.compile(r"TABLE_FULL|crash|core dumped|segfault|Out of memory|oom-kill|Killed process|kernel panic|"
                          r"fatal|abort", re.I)
 
@@ -382,6 +493,7 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
     _cores(node, outs, F)
     _reboot(node, outs, F)
     _platform(node, outs, F)
+    _tray(node, outs, F)
     _syslog(node, outs, F)
     _drift(node, outs, F)
     return F
