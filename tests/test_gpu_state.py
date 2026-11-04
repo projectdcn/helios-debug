@@ -96,3 +96,15 @@ def test_tray_not_programmed_named():
     trays = {"c1": {"gpus": [{}]}, "c2": {"gpus": [{}], "error": None}}
     assert mark_unprogrammed_trays([a, b], trays) == ["c2"]
     assert b.kind == "tray_not_programmed" and "AFM is not programming c2" in b.cause and a.kind == ""
+
+
+def test_tray_not_programmed_names_gpus_reset_to_factory_macs():
+    """g02-g17 3 Nov: the switch held every entry; the tray's GPUs were PROVIDER with factory MACs (00:1f:0e:..)."""
+    from heliosdbg.linkdiag import mark_unprogrammed_trays
+    a = Link("st1", "asic0", "Ethernet1", tray="c1", bdf="0001:01:00.1", gpu_port=1, matched_by="mac")
+    b = Link("st1", "asic0", "Ethernet46", tray="c2", sw_oper="up", matched_by="", kind="gpu_missing", state="degraded")
+    trays = {"c1": {"gpus": [{}]},
+             "c2": {"gpus": [{"config_phase": "PROVIDER", "ports": [{"mac": "00:1f:0e:00:00:00"}]}], "error": None}}
+    assert mark_unprogrammed_trays([a, b], trays) == ["c2"]
+    assert "c2's GPUs are not set up by AFM (config phase PROVIDER, factory port MACs" in b.cause
+    assert "AFM is not programming" not in b.cause

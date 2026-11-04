@@ -31,7 +31,7 @@ input[type=checkbox]{width:auto;margin-right:6px}
 .checks{display:flex;flex-wrap:wrap;gap:4px 12px}.checks label{display:flex;align-items:center;color:var(--fg);font-size:13px;margin:0}
 .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px}
 button.go{background:var(--acc);color:#fff;border:0;padding:7px 16px;border-radius:6px;font:inherit;font-weight:600;cursor:pointer}
-button.go:disabled{opacity:.5;cursor:default}button.sec{background:none;border:1px solid var(--rule);color:var(--fg);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+button.go:disabled{opacity:.5;cursor:default}a.btn.sec{display:inline-block;text-decoration:none;font-weight:400}button.sec,a.btn.sec{background:none;border:1px solid var(--rule);color:var(--fg);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
 pre{background:var(--code);border:1px solid var(--rule);border-radius:6px;padding:10px;max-height:52vh;overflow:auto;margin:8px 0 0;
 font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600}
@@ -451,11 +451,15 @@ body.chat-open main{margin-right:min(460px,100vw)}
   <section class="card hide" data-p="config">
     <h2>Config</h2>
     <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>The configuration of one switch tray (SONiC's configuration database of the host and each switch chip: ports, VLANs, VLAN members, QoS / PFC, buffers, static forwarding entries, ...) or one compute tray (each GPU and its ports as afmctl reports them, the OS).</dd>
-      <dt>When</dt><dd>To see how something is set up, compare one switch or chip with another, or keep a copy (Download).</dd><dt>How long</dt><dd>A few seconds per node.</dd><dt>Safe?</dt><dd>Yes - read only.</dd></dl></details>
+      <dt>When</dt><dd>To see how something is set up, compare one node with another or with an earlier read of itself, find the node that differs from the rest (Read whole rack), or keep a copy (Download). Every read is kept on this machine (newest 30 per node).</dd><dt>How long</dt><dd>A few seconds per node; the whole rack about a minute.</dd><dt>Safe?</dt><dd>Yes - read only.</dd></dl></details>
     <div class="row" style="margin-top:0;align-items:end">
       <div><label for="cfg-node">Node</label><select id="cfg-node" style="min-width:260px"></select></div>
-      <button class="go" id="cfg-read">Read config</button><span id="cfg-msg" class="mut"></span>
+      <button class="go" id="cfg-read">Read config</button>
+      <button class="sec" id="cfg-rack" title="read every switch and compute tray (4 at a time), keep each read, and list what stands out">Read whole rack</button>
+      <a class="btn sec" id="cfg-zip" href="#" title="the newest saved read of every node, as one zip">Download all configs (zip)</a>
+      <span id="cfg-msg" class="mut"></span>
     </div>
+    <div id="cfg-rackout"></div>
     <div id="cfg-out"></div>
   </section>
 
@@ -1386,10 +1390,13 @@ $("chat-q").addEventListener("keydown",function(e){if(e.key==="Enter"&&!e.shiftK
 
 /* ---------------------------------------------------------------- node pickers (terminal, config) */
 function nodeLabel(n){var a=((mapData&&mapData.afm_names)||{})[n];return a?a+" ("+n+")":n}
+/* nodes Live could not reach at its last read: marked in the node pickers (they will not answer Config / terminal) */
+function liveUnreached(){var o={},f=(liveMine()&&live.followers)||{};for(var n in f)if(f[n].error)o[n.split(" ")[0]]=1;return o}
 function fillNodePick(id){
-  var i=inv(),sel=$(id);if(!i||!sel)return;var cur=sel.value;
-  sel.innerHTML='<optgroup label="Switch trays">'+(i.switches||[]).map(function(n){return '<option value="'+esc(n)+'">'+esc(nodeLabel(n))+"</option>"}).join("")+"</optgroup>"+
-    '<optgroup label="Compute trays">'+(i.computes||[]).map(function(n){return '<option value="'+esc(n)+'">'+esc(nodeLabel(n))+"</option>"}).join("")+"</optgroup>";
+  var i=inv(),sel=$(id);if(!i||!sel)return;var cur=sel.value,un=liveUnreached();
+  function opt(n){return '<option value="'+esc(n)+'">'+esc(nodeLabel(n))+(un[n]?" - not reached by Live":"")+"</option>"}
+  sel.innerHTML='<optgroup label="Switch trays">'+(i.switches||[]).map(opt).join("")+"</optgroup>"+
+    '<optgroup label="Compute trays">'+(i.computes||[]).map(opt).join("")+"</optgroup>";
   if(cur)sel.value=cur;
 }
 
@@ -1464,26 +1471,100 @@ var cfgData=null,cfgSeq=0;
 function cfgRead(){
   var node=$("cfg-node").value,i=inv(),seq=++cfgSeq;if(!node||!i)return;
   $("cfg-read").disabled=true;$("cfg-msg").textContent="reading "+nodeLabel(node)+" ...";$("cfg-out").innerHTML="";
-  api("/api/config",{inventory:i.file,node:node}).then(function(d){if(seq!==cfgSeq)return;cfgData=d;cfgSec=null;cfgTable=null;
-    $("cfg-msg").textContent=nodeLabel(d.node)+" ("+d.address+"), read "+new Date(d.time_utc).toLocaleTimeString()+" in "+d.read_s+" s";cfgDraw()})
-  .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"}).then(function(){$("cfg-read").disabled=false});
+  api("/api/config",{inventory:i.file,node:node}).then(function(d){if(seq!==cfgSeq)return;cfgData=d;cfgSec=null;cfgTable=null;cfgCmp=null;
+    var p=cfgPending;cfgPending=null;if(p){if(p.sec&&d.sections[p.sec])cfgSec=p.sec;cfgTable=p.table||null;cfgPreFilter=p.filter||""}
+    $("cfg-msg").textContent=nodeLabel(d.node)+" ("+d.address+"), read "+new Date(d.time_utc).toLocaleTimeString()+" in "+d.read_s+" s - kept";
+    return cfgLoadSaved().then(cfgDraw)})
+  .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+friendly(e.message)+"</span>"}).then(function(){$("cfg-read").disabled=false});
 }
+/* the saved reads of the rack ({node: [{path, stamp}] newest first}), for Compare and the download links */
+var cfgSaved={};
+function cfgLoadSaved(){var i=inv();if(!i)return Promise.resolve();
+  return api("/api/config/saved?inventory="+encodeURIComponent(i.file)).then(function(r){cfgSaved=r.nodes||{}}).catch(function(){})}
+/* show a saved read (from a whole-rack read, or an earlier one) as if just read */
+function cfgOpenSaved(path){
+  return fetch("/results/"+path).then(function(r){if(!r.ok)throw new Error("could not open "+path);return r.json()}).then(function(d){
+    cfgData=d;cfgSec=null;cfgTable=null;cfgCmp=null;$("cfg-node").value=d.node;
+    $("cfg-msg").textContent=nodeLabel(d.node)+" ("+d.address+"), saved read of "+new Date(d.time_utc).toLocaleString();cfgDraw()})
+  .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"})}
+/* from the map: a link's switch port or tray in the Config view */
+var cfgPending=null;
+function cfgOpen(node,sec,table,filter){tab("config");$("cfg-node").value=node;cfgPending={sec:sec,table:table,filter:filter};cfgRead()}
 var cfgSec=null,cfgTable=null;
 function cfgDraw(){
   var d=cfgData;if(!d)return;var secs=Object.keys(d.sections);if(cfgSec==null||!d.sections[cfgSec])cfgSec=secs[0];
-  var sec=d.sections[cfgSec],h='<div class="row" style="margin:10px 0 6px">'+secs.map(function(k){var x=d.sections[k];return '<button class="'+(k===cfgSec?"go":"sec")+'" data-sec="'+esc(k)+'">'+esc(k)+(x.error?" (!)":"")+"</button>"}).join("")+
+  var h=cfgSummaryHtml(d)+cfgCmpHtml(d);
+  if(cfgCmp){$("cfg-out").innerHTML=h+cfgDiffHtml(d,cfgCmp.d);cfgWire();return}
+  var sec=d.sections[cfgSec];h+='<div class="row" style="margin:10px 0 6px">'+secs.map(function(k){var x=d.sections[k];return '<button class="'+(k===cfgSec?"go":"sec")+'" data-sec="'+esc(k)+'">'+esc(k)+(x.error?" (!)":"")+"</button>"}).join("")+
     '<span class="spacer" style="flex:1"></span><button class="sec" id="cfg-dl">Download JSON</button></div>';
   if(sec.error){h+='<p class="err">'+esc(sec.title+": "+sec.error)+"</p>"}
   else if(typeof sec.data==="string"){h+="<pre>"+esc(sec.data)+"</pre>"}
   else if(d.kind==="switch"){h+=cfgTables(sec.data)}
   else{h+=cfgCompute(cfgSec,sec.data)}
-  $("cfg-out").innerHTML=h;
+  $("cfg-out").innerHTML=h;cfgWire();
   $("cfg-out").querySelectorAll("[data-sec]").forEach(function(b){b.addEventListener("click",function(){cfgSec=b.dataset.sec;cfgTable=null;cfgDraw()})});
   $("cfg-dl").addEventListener("click",function(){var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(d,null,1)],{type:"application/json"}));
     a.download=d.node+"-config-"+d.time_utc.replace(/[:]/g,"")+".json";a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},2000)});
   $("cfg-out").querySelectorAll("[data-tbl]").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();cfgTable=b.dataset.tbl;cfgDraw()})});
-  var f=$("cfg-filter");if(f){f.addEventListener("input",function(){cfgFilter(f.value)});f.focus()}
+  var f=$("cfg-filter");if(f){f.addEventListener("input",function(){cfgFilter(f.value)});if(cfgPreFilter){f.value=cfgPreFilter;cfgFilter(cfgPreFilter);cfgPreFilter=""}f.focus()}
 }
+var cfgPreFilter="",cfgCmp=null;
+function cfgWire(){
+  var c=$("cfg-cmp-go");if(c)c.addEventListener("click",function(){var p=$("cfg-cmp").value;if(!p)return;c.disabled=true;
+    fetch("/results/"+p).then(function(r){if(!r.ok)throw new Error("could not open "+p);return r.json()}).then(function(o){cfgCmp={path:p,d:o};cfgDraw()})
+      .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"}).then(function(){c.disabled=false})});
+  var x=$("cfg-cmp-off");if(x)x.addEventListener("click",function(){cfgCmp=null;cfgDraw()});
+  var df=$("cfg-dfilter");if(df)df.addEventListener("input",function(){var q=df.value.toLowerCase();document.querySelectorAll("#cfg-diff tbody tr").forEach(function(tr){tr.style.display=!q||tr.textContent.toLowerCase().indexOf(q)>=0?"":"none"})});
+  $("cfg-out").querySelectorAll("[data-cfgopen]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgOpenSaved(a.dataset.cfgopen)})});
+}
+/* what decides whether the links can work, first: per GPU (phase, mode, vPOD, MACs, ports / IFCP up), per switch chip
+   (ports, forwarding entries, VLAN members) and the forwarding entries no GPU port answers (g02-g17 3 Nov) */
+function cfgSummaryHtml(d){
+  var s=d.summary||{},h="";
+  if(s.gpus&&s.gpus.length){
+    h='<div class="wrap"><table class="dl"><tr><th>GPU</th><th>Config phase</th><th>Mode</th><th>vPOD</th><th>Failover</th><th>Firmware</th><th>Ports up</th><th>IFCP up</th><th>Port MAC(s)</th></tr>'+
+      s.gpus.map(function(g){var macs=(g.macs||[]);return "<tr><td>"+esc(gName(d.node,g.bdf))+'</td><td class="'+(g.phase==="ACTIVE"?"st-ok":"st-down")+'">'+esc(g.phase||"?")+"</td><td>"+esc(g.mode||"")+
+        '</td><td class="'+(g.vpod?"":"st-down")+'">'+esc(g.vpod||"none")+"</td><td>"+esc(g.failover||"")+"</td><td>"+esc(g.firmware||"")+
+        '</td><td class="'+(g.link_up<g.ports?"st-degraded":"")+'">'+g.link_up+" / "+g.ports+'</td><td class="'+(g.ifcp_up<g.ports?"st-degraded":"")+'">'+g.ifcp_up+" / "+g.ports+
+        '</td><td class="'+(g.factory_mac?"st-down":"")+'" title="'+esc(macs.join(", "))+'">'+esc(macs.length>2?macs[0]+" ... ("+macs.length+")":macs.join(", "))+(g.factory_mac?" - factory MAC, not one AFM gave it":"")+"</td></tr>"}).join("")+"</table></div>";
+    var bad=s.gpus.filter(function(g){return g.phase!=="ACTIVE"||g.factory_mac}).length;
+    if(bad)h='<p class="err">'+bad+" of "+s.gpus.length+" GPUs not set up by AFM (phase not ACTIVE or a factory MAC): the switches' forwarding entries point at the MACs AFM gives, so these GPUs' links cannot carry traffic. Reconfigure the tray from AFM if it should be in use.</p>"+h}
+  if(s.asics){var as=Object.keys(s.asics).sort();
+    h='<div class="wrap"><table class="dl"><tr><th>Chip</th><th>Ports</th><th>Forwarding entries</th><th>VLAN members</th><th>VLANs</th><th>MTU</th><th>FEC</th><th>Speed</th></tr>'+
+      as.map(function(a){var x=s.asics[a];function dist(o){return Object.keys(o||{}).map(function(k){return k+(Object.keys(o).length>1?" ("+o[k]+")":"")}).join(", ")}
+        return "<tr><td>"+esc(a)+"</td><td>"+x.ports+"</td><td>"+x.fdb+"</td><td>"+x.vlan_members+"</td><td>"+esc((x.vlans||[]).join(", "))+"</td><td>"+esc(dist(x.mtu))+"</td><td>"+esc(dist(x.fec))+"</td><td>"+esc(dist(x.speed))+"</td></tr>"}).join("")+"</table></div>";
+    h+=cfgFdbHtml(d.fdb_check)}
+  return h?'<div class="card" style="margin-top:10px"><h3 style="margin:0 0 6px;font-size:.95rem">Summary</h3>'+h+"</div>":""}
+function cfgFdbHtml(fc){
+  if(!fc)return "";var sw=fc.switches||{},ks=Object.keys(sw).sort(),from=fc.trays_from||{},fromT=Object.keys(from).map(function(t){return from[t]}).sort();
+  var rows=ks.map(function(k){var x=sw[k],miss=Object.keys(x.no_gpu_port||{});
+    return "<tr><td>"+esc(k)+"</td><td>"+x.matched+'</td><td class="'+(miss.length?"st-down":"st-ok")+'">'+(miss.length?esc(miss.map(function(t){return t+": "+x.no_gpu_port[t]}).join(", ")):"none")+"</td></tr>"}).join("");
+  return '<h4 style="margin:10px 0 4px">Forwarding entries against the GPU ports of the trays</h4><p class="mut" style="margin:0 0 4px">Each static entry names a GPU port MAC; an entry no GPU port has means that GPU lost the MAC AFM gave it (reset, mode change). Trays compared: '+
+    esc((fc.trays_read||[]).join(", ")||"none")+(fromT.length?" (their saved reads, "+esc(new Date(fromT[0]).toLocaleString())+(fromT.length>1&&fromT[0]!==fromT[fromT.length-1]?" - "+esc(new Date(fromT[fromT.length-1]).toLocaleString()):"")+")":"")+
+    '.</p><div class="wrap"><table class="dl"><tr><th>Switch chip</th><th>Entries a GPU port has</th><th>Entries no GPU port has (by tray)</th></tr>'+rows+"</table></div>"}
+/* compare with another node's newest saved read, or an earlier read of this node */
+function cfgCmpHtml(d){
+  var own=(cfgSaved[d.node]||[]).filter(function(x){return x.path!==d.saved}),o='<option value="">compare with ...</option>';
+  if(own.length)o+='<optgroup label="Earlier reads of '+esc(d.node)+'">'+own.slice(0,20).map(function(x,i){return '<option value="'+esc(x.path)+'">'+esc(stampLocal(x.stamp))+(i===0?" (the one before)":"")+"</option>"}).join("")+"</optgroup>";
+  var oth=Object.keys(cfgSaved).filter(function(n){return n!==d.node&&cfgSaved[n].length}).filter(function(n){var a=n[0]==="s",b=d.kind==="switch";return a===b});
+  if(oth.length)o+='<optgroup label="Another node (its newest saved read)">'+oth.sort().map(function(n){return '<option value="'+esc(cfgSaved[n][0].path)+'">'+esc(nodeLabel(n))+" - "+esc(stampLocal(cfgSaved[n][0].stamp))+"</option>"}).join("")+"</optgroup>";
+  var dl=(cfgSaved[d.node]||[]).slice(0,5).map(function(x){return '<a href="/results/'+esc(x.path)+'" download="'+esc(d.node+"-config-"+x.stamp+".json")+'">'+esc(stampShort(x.stamp))+"</a>"}).join(" · ");
+  return '<div class="row" style="margin:10px 0 0;align-items:center"><select id="cfg-cmp" style="min-width:260px">'+o+'</select><button class="sec" id="cfg-cmp-go">Compare</button>'+
+    (cfgCmp?'<button class="sec" id="cfg-cmp-off">Back to the config</button>':"")+(dl?'<span class="mut">Saved reads (download): '+dl+"</span>":"")+"</div>"}
+/* every value as path -> text, for the difference of two reads */
+function cfgFlatAll(d){var out={};function walk(v,p){if(v&&typeof v==="object"&&!Array.isArray(v)){Object.keys(v).forEach(function(k){walk(v[k],p?p+" / "+k:k)})}
+  else out[p]=Array.isArray(v)?v.map(function(x){return typeof x==="object"?JSON.stringify(x):String(x)}).join(", "):v==null?"":String(v)}
+  Object.keys(d.sections||{}).forEach(function(k){var x=d.sections[k];walk(x.error?{error:x.error}:x.data,k)});return out}
+function cfgDiffHtml(a,b){
+  var A=cfgFlatAll(a),B=cfgFlatAll(b),keys={};Object.keys(A).concat(Object.keys(B)).forEach(function(k){keys[k]=1});
+  var diff=Object.keys(keys).filter(function(k){return A[k]!==B[k]}).sort(cfgKeySort),cap=3000;
+  var same=a.node===b.node,lb=same?stampLocal(String(b.time_utc).replace(/[-:TZ]/g,"").replace(/^(\d{8})(\d{6})$/,"$1-$2")):b.node;
+  var only=function(o,k){return o[k]===undefined};
+  return '<div class="card" style="margin-top:10px"><h3 style="margin:0 0 6px;font-size:.95rem">'+esc(a.node)+" ("+esc(new Date(a.time_utc).toLocaleString())+") against "+esc(same?"its read of "+new Date(b.time_utc).toLocaleString():b.node+" ("+new Date(b.time_utc).toLocaleString()+")")+"</h3>"+
+    (diff.length?'<p class="mut" style="margin:0 0 6px">'+diff.length+" value(s) differ"+(diff.length>cap?" - the first "+cap+" shown":"")+(same?"":"; per-node values (MACs, addresses, ids) always differ between nodes")+'.</p><input id="cfg-dfilter" placeholder="filter (e.g. config_phase, Ethernet8, FDB)" style="width:100%;margin-bottom:6px">'+
+      '<div class="wrap" style="max-height:66vh;overflow:auto"><table class="cfg-tbl" id="cfg-diff"><thead><tr><th>Where</th><th>'+esc(a.node)+"</th><th>"+esc(same?"before":b.node)+"</th></tr></thead><tbody>"+
+      diff.slice(0,cap).map(function(k){return "<tr><td><code>"+esc(k)+'</code></td><td class="'+(only(A,k)?"mut":"")+'">'+esc(only(A,k)?"(absent)":A[k])+'</td><td class="'+(only(B,k)?"mut":"")+'">'+esc(only(B,k)?"(absent)":B[k])+"</td></tr>"}).join("")+"</tbody></table></div>"
+      :'<p class="st-ok">No difference.</p>')+"</div>"}
 /* a SONiC CONFIG_DB: the tables on the left (row counts), the picked table as rows x fields, a filter */
 function cfgTables(db){
   var names=Object.keys(db||{}).sort();if(!names.length)return '<p class="mut">empty</p>';
@@ -1517,6 +1598,30 @@ function cfgObjTable(rows,first,noFilter){
     rows.map(function(r){return "<tr>"+cl.map(function(c){return "<td>"+esc(r[c]==null?"":String(r[c]))+"</td>"}).join("")+"</tr>"}).join("")+"</tbody></table></div>";
 }
 $("cfg-read").addEventListener("click",cfgRead);
+$("cfg-zip").addEventListener("click",function(e){var i=inv();if(!i){e.preventDefault();return}this.href="/api/config/zip?inventory="+encodeURIComponent(i.file)});
+$("cfg-rack").addEventListener("click",function(){
+  var i=inv(),b=$("cfg-rack");if(!i)return;b.disabled=true;$("cfg-msg").textContent="reading every node of "+i.rack+" (4 at a time) ...";$("cfg-rackout").innerHTML="";
+  api("/api/config/rack",{inventory:i.file}).then(function(r){$("cfg-msg").textContent="";$("cfg-rackout").innerHTML=cfgRackHtml(r,i);
+    $("cfg-rackout").querySelectorAll("[data-cfgopen]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgLoadSaved().then(function(){cfgOpenSaved(a.dataset.cfgopen)})})});
+    return cfgLoadSaved()})
+  .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+friendly(e.message)+"</span>"}).then(function(){b.disabled=false})});
+/* a whole-rack read: what stands out (values few nodes have), forwarding entries no GPU port answers, nodes not
+   reached, every node's read (open / download) */
+function cfgRackHtml(r,i){
+  var errs=Object.keys(r.errors||{}),groups={},order=[];errs.forEach(function(n){var w=friendlyWhy(r.errors[n])||esc(String(r.errors[n]).slice(0,120));if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
+  function nl(ns){return ns.length>8?ns.slice(0,8).join(", ")+" and "+(ns.length-8)+" more":ns.join(", ")}
+  var odd=(r.odd||[]).map(function(o){return "<li><b>"+esc(o.what)+" = "+esc(o.value)+"</b> on "+esc(nl(o.nodes))+' <span class="mut">(the others: '+esc(o.others)+")</span></li>"}).join("");
+  var nodes=(r.nodes||[]).slice().sort(function(a,b){return a.node<b.node?-1:1}).map(function(n){var s=n.summary||{},t="";
+    if(s.gpus){var na=s.gpus.filter(function(g){return g.phase!=="ACTIVE"}).length,fm=s.gpus.filter(function(g){return g.factory_mac}).length;
+      t=s.gpus.length+" GPUs"+(na?", "+na+" not ACTIVE":"")+(fm?", "+fm+" factory MAC":"")}
+    if(s.asics)t=Object.keys(s.asics).sort().map(function(a){return a+": "+s.asics[a].ports+" ports, "+s.asics[a].fdb+" forwarding entries"}).join("; ");
+    return '<tr><td><a href="#" data-cfgopen="'+esc(n.saved)+'">'+esc(nodeLabel(n.node))+"</a></td><td>"+esc(t)+(Object.keys(n.errors||{}).length?' <span class="err">'+esc(Object.keys(n.errors).join(", "))+" not read</span>":"")+
+      '</td><td><a href="/results/'+esc(n.saved)+'" download="'+esc(n.node+"-config-"+r.stamp+".json")+'">JSON</a></td></tr>'}).join("");
+  return '<div class="card" style="margin-top:10px"><h3 style="margin:0 0 6px;font-size:.95rem">Whole rack '+esc(r.rack)+": "+(r.nodes||[]).length+" node(s) read in "+r.read_s+' s <a class="btn sec" style="margin-left:8px" href="/api/config/zip?inventory='+encodeURIComponent(i.file)+"&stamp="+esc(r.stamp)+'">Download this read (zip)</a></h3>'+
+    (errs.length?'<p class="err">'+errs.length+" not reached - "+order.map(function(w){return "<b>"+esc(groups[w].join(", "))+"</b>: "+w}).join("; ")+"</p>":"")+
+    "<h4 style=\"margin:8px 0 4px\">What stands out</h4>"+(odd?"<ul style=\"margin:0\">"+odd+"</ul>":'<p class="mut" style="margin:0">Nothing: every value read is the same on all nodes (or on most of them).</p>')+
+    cfgFdbHtml(r.fdb_check)+
+    '<h4 style="margin:10px 0 4px">Nodes</h4><div class="wrap"><table class="dl"><tr><th>Node</th><th>Summary</th><th>Download</th></tr>'+nodes+"</table></div></div>"}
 
 function loadAccess(){
   $("acc-msg").textContent="";
@@ -1968,7 +2073,7 @@ function portExtra(k){
   api("/api/port?path="+encodeURIComponent(mapData.path)+"&key="+encodeURIComponent(k)).then(function(v){
     var l=v.link,sw=v.switch||{},st=sw.status||{},c=sw.counters||{},f=sw.fec||{},g=v.gpu||{},i=g.ifcp||{},dv=v.gpu_device||{},lvl=liveMine()&&live.links[k];
     var oper=String(st.Oper||"").toLowerCase(),glink=String(g.link||"");
-    var swCard='<div class="card"><h3 style="margin:0 0 6px;font-size:.95rem">Switch end: '+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port)+"</h3>"+
+    var swCard='<div class="card"><h3 style="margin:0 0 6px;font-size:.95rem">Switch end: '+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port)+' <a href="#" class="mut" data-cfgsw="1" style="font-weight:400">config</a></h3>'+
       (v.switch?kvRows([["Link (oper)",st.Oper,oper==="up"?"st-ok":"st-down"],["Switched on (admin)",st.Admin,String(st.Admin).toLowerCase()==="up"?"":"st-down"],
         ["Speed",st.Speed],["FEC",st.FEC],["MTU",st.MTU],["VLAN mode",st.Vlan],["Lanes",st.Lanes],["Front-panel name",st.Alias],
         ["Cable / optic detected",sw.presence||"not reported by this switch"],
@@ -1977,7 +2082,7 @@ function portExtra(k){
         ["Drops in / out",(c.RX_DRP||"0")+" / "+(c.TX_DRP||"0")],["Packets in / out",(c.RX_OK||"-")+" / "+(c.TX_OK||"-")],
         ["FEC corrected",f.FEC_CORR],["FEC uncorrected",f.FEC_UNCORR,(+String(f.FEC_UNCORR||0).replace(/,/g,""))?"st-down":""],
         ["Totals since","switch start (growth is judged during a check, not here)"]]):'<p class="mut">Not saved with this check.</p>')+"</div>";
-    var gpCard='<div class="card"><h3 style="margin:0 0 6px;font-size:.95rem">GPU end: '+esc(trayName(l.tray,mapData.slots)+" "+gName(l.tray,mGpu(l))+" port "+mGpuPort(l))+"</h3>"+
+    var gpCard='<div class="card"><h3 style="margin:0 0 6px;font-size:.95rem">GPU end: '+esc(trayName(l.tray,mapData.slots)+" "+gName(l.tray,mGpu(l))+" port "+mGpuPort(l))+(l.tray?' <a href="#" class="mut" data-cfgtr="1" style="font-weight:400">config</a>':"")+"</h3>"+
       (v.gpu?kvRows([["Link",g.link,glink==="LINK_UP"?"st-ok":"st-down"],["Switched on (admin)",g.admin,String(g.admin||"").indexOf("enable")===0?"":"st-down"],
         ["Fault",g.fault,g.fault&&g.fault!=="no"?"st-down":""],["Up since boot (total)",dur(g.up_ms)],["Down since boot (total)",dur(g.down_ms)],
         ["Station",g.station],["FEC mode",g.fec_mode],["Loopback",g.loopback],["Port MAC",g.mac],
@@ -2001,6 +2106,8 @@ function portExtra(k){
     box.innerHTML=linkDiagram(l,v)+(lvl?'<p>Live now: <b class="st-'+esc(lvl.state)+'">'+esc(lvl.state)+"</b> · switch port "+esc(lvl.sw_oper||"?")+" · GPU link "+esc(lvl.gpu_link||"?")+(lvl.since?" · since "+esc(new Date(lvl.since).toLocaleTimeString()):"")+"</p>":"")+
       '<div class="ends2">'+swCard+gpCard+"</div>"+hh+rh+'<p class="mut">From the check of '+esc(stampLocal(v.time_utc))+' - "Diagnose now" reads both ends again.</p>';
     box.querySelectorAll("a[data-rel]").forEach(function(a){a.addEventListener("click",function(){mapDetail(a.dataset.rel)})});
+    box.querySelectorAll("a[data-cfgsw]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgOpen(l.switch,l.asic||null,"PORT",l.sw_port)})});
+    box.querySelectorAll("a[data-cfgtr]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgOpen(l.tray,"ports",null,"")})});
     wireDiagrams(box);
     box.querySelectorAll("a[data-hp]").forEach(function(a){a.addEventListener("click",function(){$("map-scan").value=a.dataset.hp;mapFetch();setTimeout(function(){mapDetail(k)},900)})});
   }).catch(function(e){box.innerHTML='<p class="mut">'+friendly(e.message)+"</p>"});

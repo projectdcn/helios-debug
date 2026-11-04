@@ -692,3 +692,43 @@ def test_live_saves_only_on_request(tmp_path):
     assert server.SCAN_RX.match(out["saved"])
     log = server.live_save(st, "log")
     assert log["changes"] >= 1 and (tmp_path / "results" / log["saved"]).is_file()
+
+
+def test_config_reads_are_kept_compared_and_downloadable(ui, monkeypatch):
+    """Each config read is saved per node; a whole-rack read saves every node, lists what stands out and the
+    forwarding entries no GPU port answers; the saved reads list and download as a zip; unreachable nodes are listed."""
+    import io
+    import zipfile
+    from ui import server as srv
+    from tests.test_config_view import _switch, _tray
+    base, tmp = ui
+    (tmp / "inv" / "cfg.local.yaml").write_text(
+        "rack: cfg\nswitches:\n  - {name: st5, host: 10.0.0.5}\n  - {name: st1, host: 10.0.0.1}\n"
+        "computes:\n  - {name: ct01, host: 10.0.0.11, slot: 0}\n  - {name: ct03, host: 10.0.0.13, slot: 2}\n")
+
+    def fake(h, inv, is_sw):
+        if h.name == "st1":
+            raise RuntimeError("ssh: connect to host 10.0.0.1 port 22: No route to host")
+        c = (_switch([("02:00:00:02:00:00", "Ethernet1"), ("02:00:00:00:00:00", "Ethernet2")]) if is_sw else
+             _tray(phase="PROVIDER", mac="00:1f:0e:00:00:00") if h.name == "ct01" else _tray())
+        return c | {"node": h.name, "address": h.host, "read_s": 0.1, "time_utc": "2026-11-04T07:00:00Z"}
+    monkeypatch.setattr(srv, "_read_one", fake)
+    code, body = call(base, "/api/config", {"inventory": "cfg.local.yaml", "node": "ct01"})
+    assert code == 200, body
+    one = json.loads(body)
+    assert one["summary"]["gpus"][0]["phase"] == "PROVIDER" and one["saved"].startswith("config/cfg/ct01/")
+    code, body = call(base, "/api/config/rack", {"inventory": "cfg.local.yaml"})
+    assert code == 200, body
+    r = json.loads(body)
+    assert "No route to host" in r["errors"]["st1"] and {n["node"] for n in r["nodes"]} == {"st5", "ct01", "ct03"}
+    assert r["fdb_check"]["switches"]["st5 asic0"]["no_gpu_port"] == {"ct01": 1}
+    saved = json.loads(call(base, "/api/config/saved?inventory=cfg.local.yaml")[1])["nodes"]
+    assert saved["ct01"] and "st1" not in saved             # (a read in the same second replaces the earlier)
+    code, data = call(base, f"/api/config/zip?inventory=cfg.local.yaml&stamp={r['stamp']}")
+    assert code == 200
+    names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+    assert f"cfg-config/ct01-{r['stamp']}.json" in names and f"cfg-config/rack-summary-{r['stamp']}.json" in names
+    assert call(base, "/api/config/zip?inventory=cfg.local.yaml&stamp=../x")[0] == 400
+    # a switch read alone checks its forwarding entries against the trays' newest saved reads
+    sw = json.loads(call(base, "/api/config", {"inventory": "cfg.local.yaml", "node": "st5"})[1])
+    assert sw["fdb_check"]["switches"]["st5 asic0"]["no_gpu_port"] == {"ct01": 1}

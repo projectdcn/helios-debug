@@ -774,31 +774,167 @@ def ai_chat(state: State, req: dict) -> dict:
                               "live_changes": len(live)}}
 
 
-def node_config(state: State, req: dict) -> dict:
-    """The read-only configuration of one switch / compute tray (Config tab): SONiC CONFIG_DB per ASIC, or afmctl's
-    GPU and port configuration. Read live, over the same transport as the checks."""
+CONFIG_KEEP = 30                                       # saved reads kept per node (the oldest go)
+NODE_RX = re.compile(r"^[\w.-]+$")
+
+
+def _config_dir(state: State, rack: str, node: str = "") -> Path:
+    if not NODE_RX.match(rack) or (node and not NODE_RX.match(node)):
+        raise BadRequest("bad rack / node name")
+    return state.results_dir / "config" / rack / node if node else state.results_dir / "config" / rack
+
+
+def save_config(state: State, rack: str, out: dict, stamp: str) -> str:
+    """Keep a config read as results/config/<rack>/<node>/<UTC>.json (newest CONFIG_KEEP per node): what a node
+    looked like before an AFM reset / reconfigure is otherwise gone. Returns the path under results/."""
+    d = _config_dir(state, rack, out["node"])
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{stamp}.json").write_text(json.dumps(out, default=str))
+    for old in sorted(d.glob("*.json"))[:-CONFIG_KEEP]:
+        old.unlink(missing_ok=True)
+    return f"config/{rack}/{out['node']}/{stamp}.json"
+
+
+def saved_configs(state: State, inventory: str, node: str = "") -> dict:
+    """{node: [{path, time_utc}] newest first} of the saved config reads of a rack (one node, or all)."""
+    f, inv = state.inventory(inventory)
+    rack = inv.rack or f.stem
+    base = _config_dir(state, rack)
+    out = {}
+    for d in sorted(base.glob("*")) if base.is_dir() else []:
+        if d.is_dir() and (not node or d.name == node):
+            out[d.name] = [{"path": f"config/{rack}/{d.name}/{p.name}", "stamp": p.stem}
+                           for p in sorted(d.glob("*.json"), reverse=True)]
+    return {"rack": rack, "nodes": out}
+
+
+def config_zip(state: State, inventory: str, stamp: str = "") -> tuple[bytes, str]:
+    """A zip of a rack's saved config reads: the newest per node, or those of one whole-rack read (stamp)."""
+    import io
+    import zipfile
+    f, inv = state.inventory(inventory)
+    rack = inv.rack or f.stem
+    if stamp and not re.match(r"^\d{8}-\d{6}$", stamp):
+        raise BadRequest("bad stamp")
+    base = _config_dir(state, rack)
+    buf, n = io.BytesIO(), 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for d in sorted(base.glob("*")) if base.is_dir() else []:
+            if not d.is_dir():
+                continue
+            files = [d / f"{stamp}.json"] if stamp else sorted(d.glob("*.json"))[-1:]
+            for p in files:
+                if p.is_file():
+                    z.write(p, f"{rack}-config/{d.name}-{p.stem}.json")
+                    n += 1
+        if stamp and (base / f"rack-{stamp}.json").is_file():
+            z.write(base / f"rack-{stamp}.json", f"{rack}-config/rack-summary-{stamp}.json")
+    if not n:
+        raise BadRequest("no saved config reads for this rack yet - read a node or the whole rack first")
+    return buf.getvalue(), f"{rack}-config-{stamp or 'newest'}.zip"
+
+
+def _read_one(h, inv, is_switch: bool) -> dict:
     from heliosdbg import config_view
     from heliosdbg.compute import ComputeTray
     from heliosdbg.sonic import SonicSwitch
     from heliosdbg.transport import make_transport
-    _f, inv = state.inventory(req.get("inventory", ""))
-    name = str(req.get("node", ""))
-    sw = next((h for h in inv.all_switches if h.name == name), None)
-    ct = next((h for h in inv.all_computes if h.name == name), None)
-    if not (sw or ct):
-        raise BadRequest(f"no switch or compute tray {name!r} in {req.get('inventory')}")
-    h = sw or ct
     t = make_transport(h, inv.transport or {})
     t0 = time.time()
     try:
-        out = config_view.switch_config(SonicSwitch(h, t)) if sw else config_view.compute_config(ComputeTray(h, t))
+        out = config_view.switch_config(SonicSwitch(h, t)) if is_switch else config_view.compute_config(ComputeTray(h, t))
     finally:
         try:
             t.close()
         except Exception:  # noqa: BLE001
             pass
-    return out | {"node": name, "address": h.host, "read_s": round(time.time() - t0, 1),
+    return out | {"node": h.name, "address": h.host, "read_s": round(time.time() - t0, 1),
                   "time_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
+def _tray_slots(inv) -> dict:
+    return {int(h.extra["slot"]): h.name for h in inv.all_computes if (h.extra or {}).get("slot") is not None}
+
+
+def _newest_saved(state: State, rack: str, names) -> dict:
+    """{node: its newest saved config read} for the named nodes that have one."""
+    out = {}
+    for n in names:
+        d = _config_dir(state, rack, n)
+        last = sorted(d.glob("*.json"))[-1:] if d.is_dir() else []
+        if last:
+            try:
+                out[n] = json.loads(last[0].read_text())
+            except (OSError, ValueError):
+                pass
+    return out
+
+
+def node_config(state: State, req: dict) -> dict:
+    """The read-only configuration of one switch / compute tray (Config tab): SONiC CONFIG_DB per ASIC, or afmctl's
+    GPU and port configuration. Read live, over the same transport as the checks; kept (save_config) with a summary,
+    and for a switch its forwarding entries checked against the trays' newest saved reads."""
+    from heliosdbg import config_view
+    f, inv = state.inventory(req.get("inventory", ""))
+    name = str(req.get("node", ""))
+    sw = next((h for h in inv.all_switches if h.name == name), None)
+    ct = next((h for h in inv.all_computes if h.name == name), None)
+    if not (sw or ct):
+        raise BadRequest(f"no switch or compute tray {name!r} in {req.get('inventory')}")
+    rack = inv.rack or f.stem
+    out = _read_one(sw or ct, inv, bool(sw))
+    out["summary"] = config_view.summary(out)
+    if sw:
+        trays = _newest_saved(state, rack, [h.name for h in inv.all_computes])
+        if trays:
+            out["fdb_check"] = config_view.fdb_check({name: out}, trays, _tray_slots(inv)) | {
+                "trays_from": {t: c.get("time_utc") for t, c in trays.items()}}
+    out["saved"] = save_config(state, rack, out, time.strftime("%Y%m%d-%H%M%S", time.gmtime()))
+    return out
+
+
+def rack_config(state: State, req: dict) -> dict:
+    """Every switch and compute tray of the rack read at once (4 at a time: the jump host's session limit), each
+    saved, plus what stands out: values few nodes have (odd_ones) and forwarding entries no GPU port answers."""
+    from concurrent.futures import ThreadPoolExecutor
+    from heliosdbg import config_view
+    f, inv = state.inventory(req.get("inventory", ""))
+    rack = inv.rack or f.stem
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    hosts = [(h, True) for h in inv.all_switches] + [(h, False) for h in inv.all_computes]
+    t0 = time.time()
+
+    def one(x):
+        h, is_sw = x
+        try:
+            return h.name, _read_one(h, inv, is_sw), None
+        except Exception as e:  # noqa: BLE001 - one node off the network does not stop the others
+            return h.name, None, f"{type(e).__name__}: {str(e)[:300]}"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        res = list(pool.map(one, hosts))
+    cfgs, errors, nodes = {}, {}, []
+    for n, out, err in res:
+        if err:
+            errors[n] = err
+            continue
+        bad = {k: v["error"] for k, v in out["sections"].items() if v.get("error")}
+        if len(bad) == len(out["sections"]):          # nothing readable: as unreachable, not as a config
+            errors[n] = next(iter(bad.values()))
+            continue
+        out["summary"] = config_view.summary(out)
+        out["saved"] = save_config(state, rack, out, stamp)
+        cfgs[n] = out
+        nodes.append({"node": n, "kind": out["kind"], "saved": out["saved"], "read_s": out["read_s"],
+                      "errors": bad, "summary": out["summary"]})
+    swc = {n: c for n, c in cfgs.items() if c["kind"] == "switch"}
+    trc = {n: c for n, c in cfgs.items() if c["kind"] == "compute"}
+    result = {"rack": rack, "stamp": stamp, "read_s": round(time.time() - t0, 1), "nodes": nodes, "errors": errors,
+              "odd": config_view.odd_ones(cfgs),
+              "fdb_check": config_view.fdb_check(swc, trc, _tray_slots(inv)) if swc and trc else None}
+    d = _config_dir(state, rack)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"rack-{stamp}.json").write_text(json.dumps(result, default=str))
+    return result
 
 
 def scan_view(state: State, rel: str) -> dict:
@@ -1374,6 +1510,11 @@ class Handler(BaseHTTPRequestHandler):
                 text = cabling.export(d.get("links") or [])
                 return self._send(200, text.encode(), "text/csv; charset=utf-8",
                                   {"Content-Disposition": f'attachment; filename="{inv.rack or f.stem}-cabling.csv"'})
+            if u.path == "/api/config/saved":
+                return self._json(200, saved_configs(st, (q.get("inventory") or [""])[0], (q.get("node") or [""])[0]))
+            if u.path == "/api/config/zip":
+                data, name = config_zip(st, (q.get("inventory") or [""])[0], (q.get("stamp") or [""])[0])
+                return self._send(200, data, "application/zip", {"Content-Disposition": f'attachment; filename="{name}"'})
             if u.path == "/api/overview":
                 return self._json(200, {"racks": overview(st)})
             if u.path == "/api/live":
@@ -1466,6 +1607,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"saved": r["id"], "rating": r["rating"], **feedback.stats(self.state.results_dir)})
             if u.path == "/api/config":
                 return self._json(200, node_config(self.state, req))
+            if u.path == "/api/config/rack":
+                return self._json(200, rack_config(self.state, req))
             if u.path == "/api/term/open":
                 _f, inv = self.state.inventory(req.get("inventory", ""))
                 name = str(req.get("node", ""))

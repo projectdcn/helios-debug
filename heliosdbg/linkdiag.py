@@ -41,7 +41,7 @@ KINDS = {
     "ifcp": "physical link up but no IFCP session",
     "not_programmed": "link up but not programmed by AFM",
     "miscabled": "GPU port reaches a different switch port than described",
-    "tray_not_programmed": "the switch has no forwarding entry for any GPU port of the tray (not programmed by AFM)",
+    "tray_not_programmed": "no forwarding entry of the switch matches any GPU port of the tray (the tray is not set up by AFM)",
     "gpu_not_active": "GPU not configured on the tray (afmctl config_phase not ACTIVE)",
     "gpu_not_programmed": "GPU in a vPOD in AFM but not programmed on the tray",
     "afm_port_failed": "AFM reports the GPU port failed although the link and IFCP are up",
@@ -674,12 +674,26 @@ def mark_unprogrammed_trays(links: list, trays: dict) -> list[str]:
         if t in matched or tr.get("error") or not tr.get("gpus") or not matched:
             continue
         out.append(t)
+        # g02-g17 3 Nov: the switches held all their entries; ct01..ct18's GPUs were in PROVIDER with factory port MACs
+        # (00:1f:0e:..) - the GPUs lost what AFM gave them, the switch was not the one 'not programmed'
+        from .config_view import factory_mac
+        gp = tr.get("gpus") or []
+        phases = sorted({str(g.get("config_phase")) for g in gp if g.get("config_phase")} - {"ACTIVE"})
+        macs = [p.get("mac") for g in gp for p in g.get("ports") or [] if p.get("mac")]
+        fmac = bool(macs) and all(factory_mac(m) for m in macs)
         for ln in ls:
             if ln.kind in ("gpu_missing", ""):
                 ln.state = "down" if str(ln.sw_oper or "").lower() != "up" else "degraded"
                 ln.kind, ln.owner = "tray_not_programmed", OPERATOR
-                ln.cause = (f"the switch has no forwarding entry for any GPU port of {t} (other trays have theirs): AFM is not "
-                            f"programming {t} - its GPUs in no vPOD, or a reconfigure / reset not finished")
+                if phases or fmac:
+                    ln.cause = (f"{t}'s GPUs are not set up by AFM ("
+                                + ", ".join(([f"config phase {'/'.join(phases)}"] if phases else [])
+                                            + ([f"factory port MACs such as {macs[0]}"] if fmac else []))
+                                + f"): the switch's forwarding entries point at the MACs AFM gives, which {t}'s GPU ports "
+                                  "no longer use - a GPU reset or mode change not followed by a reconfigure")
+                else:
+                    ln.cause = (f"the switch has no forwarding entry for any GPU port of {t} (other trays have theirs): AFM "
+                                f"is not programming {t} - its GPUs in no vPOD, or a reconfigure / reset not finished")
                 ln.action = (f"Check {t} in AFM (vPOD membership, admission, a pending reconfigure) and reconfigure the tray from "
                              "AFM if its GPUs should be in use; then check again.")
     return out
