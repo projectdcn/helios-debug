@@ -1562,7 +1562,8 @@ class Handler(BaseHTTPRequestHandler):
                 from heliosdbg import cases
                 g = (lambda k: (q.get(k) or [""])[0][:120])
                 rows = cases.tests(_qint(q, "limit", 400), g("outcome"), g("rack"), g("q"))
-                return self._json(200, {"tests": rows, "dir": str(cases.tests_results())})
+                return self._json(200, {"tests": rows, "dir": str(cases.tests_results()),
+                                        "available": (cases.tests_results() / "index.csv").is_file()})
             if u.path == "/api/cases/reports":        # saved tool results other than link checks / Diagnose
                 from heliosdbg import cases
                 return self._json(200, {"reports": cases.reports(st.results_dir)})
@@ -1746,6 +1747,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, discover_rack(dict(req, afm_password=pw)))
             if u.path == "/api/inventory/save":
                 return self._json(200, save_inventory(self.state, req))
+            if u.path == "/api/cases/judge":          # the health rules on pasted outputs - no AI needed
+                from heliosdbg import ai, cases, pasted
+                try:
+                    bs = cases.clean_blocks(req.get("blocks"))
+                except ai.AIError as e:
+                    raise BadRequest(str(e)) from None
+                found, seen = pasted.judge_blocks(bs)
+                return self._json(200, {"findings": found, "checked": seen})
             if u.path == "/api/ai/chat":
                 return self._json(200, ai_chat(self.state, req))
             if u.path == "/api/ai/guide":

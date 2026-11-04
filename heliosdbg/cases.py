@@ -204,6 +204,11 @@ def blocks_context(blocks, subject: str = "", rack: str = "") -> tuple[Evidence,
                "start with the read-only commands that show it", "symptom")
         return ev, (subject or "").strip()[:160], rack
     ev.add(f"Outputs collected by hand{' on rack ' + rack if rack else ''}: {len(bs)}", "outputs")
+    from .pasted import judge_blocks
+    found, _seen = judge_blocks(bs)
+    for f in found[:12]:                 # the health rules' verdict on these outputs first: the AI builds on it
+        ev.add(f"Health rule on {f['node']} ({f['severity']}): {f['what']} - cause: {f['cause']} - next: {f['next']}",
+               "rules")
     for b in bs:
         where = f"On {b['node']}" if b["node"] else "Output"
         output_items(ev, where + (f": `{b['command']}`" if b["command"] else ""), b["output"], max(4, 54 // len(bs)), "outputs")

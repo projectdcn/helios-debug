@@ -114,9 +114,11 @@ the rack chosen at the top (drill down beside the drawing), Diagnose a link (wit
 Watch links, Cabling plan, scan / Broadcom / GPU path / ping map, Isolate (disruptive, typed confirmation), History
 with evidence bundles, SSH access with a browser terminal, Config (a node's configuration), Add / edit a rack, the debug
 guide, and AI advice (root cause / how to debug / what to do) on link pages, Diagnose results and the Topology tab -
-and on any problem (*Any problem* tab): a helios-tests result with its log (`HELIOS_TESTS_RESULTS`, default
-`~/dev/helios-tests/results`), a saved tool report, or command outputs / logs pasted from any node (`heliosdbg/cases.py`;
-helios-slm's training hub builds its taught cases with the same code).
+and on any problem (*Any problem* tab): command outputs / logs pasted from any node or a test result from any test setup
+(JUnit XML, a CSV with an outcome / status / result column), a saved tool report, or - only where helios-tests runs on
+that machine - a helios-tests result with its log (`HELIOS_TESTS_RESULTS`, default `~/dev/helios-tests/results`)
+(`heliosdbg/cases.py`; helios-slm's training hub builds its taught cases with the same code). Pasted outputs of
+commands the node health check knows are judged by its own rules first (`heliosdbg/pasted.py`), so that part needs no AI.
 The views are a menu down the left. Standard library only: it installs on a SONiC switch tray and runs on the switch's own
 python3, PyYAML and paramiko - no sudo, nothing outside the user's home.
 

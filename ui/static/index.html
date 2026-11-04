@@ -394,26 +394,27 @@ body.chat-open main{margin-right:min(460px,100vw)}
 
   <section class="card hide" data-p="anyprob">
     <h2>Ask about any problem</h2>
-    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>The AI on anything wrong with the rack, not only links: a helios-tests result (GPU, RDMA, BMC, AFM, power ... with its log), a saved report of a tool here (Switch signal, GPU-to-GPU path, Ping map, Watch, Cabling), or command outputs and logs you collected yourself on any node.</dd><dt>When</dt><dd>A test failed, a node misbehaves, or you found something by hand and want a second opinion - and to teach the AI (👍 / 👎 with the right answer, or Record the resolution).</dd><dt>How long</dt><dd>Seconds per answer.</dd><dt>Safe?</dt><dd>Yes - it reads saved results and what you paste; step by step runs only read-only commands, each on your click.</dd></dl></details>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Anything wrong with the rack, not only links: command outputs and logs you collected on any node, a test result from any test setup (JUnit XML, a CSV with an outcome / status / result column, or its log), a saved report of a tool here (Switch signal, GPU-to-GPU path, Ping map, Watch, Cabling), or - where helios-tests runs on this machine - one of its results. Outputs of commands the node health check knows (show platform fan / psustatus / temperature / leak status, show system-health, crm, watchdogutil, sonic-installer list, show ntp, bmc-manager health, amd-smi ... --json, afmctl show device --json, dmesg, systemctl --failed, rdma link, nicctl show port -j ...) are judged by the same rules first - no AI needed for that part; the AI then explains and goes further.</dd><dt>When</dt><dd>A test failed, a node misbehaves, or you found something by hand and want a second opinion - and to teach the AI (👍 / 👎 with the right answer, or Record the resolution).</dd><dt>How long</dt><dd>Seconds per answer.</dd><dt>Safe?</dt><dd>Yes - it reads saved results and what you paste; step by step runs only read-only commands, each on your click.</dd></dl></details>
     <div class="row" role="radiogroup" aria-label="what to ask about" style="gap:14px;align-items:center">
-      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="ap-src" value="test" checked style="width:auto;margin:0">A helios-tests result</label>
-      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="ap-src" value="paste" style="width:auto;margin:0">Outputs / logs I collected</label>
+      <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="ap-src" value="paste" checked style="width:auto;margin:0">Outputs, logs or a test result I have</label>
       <label style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="ap-src" value="report" style="width:auto;margin:0">A saved tool report</label>
+      <label id="ap-test-opt" class="hide" style="display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400"><input type="radio" name="ap-src" value="test" style="width:auto;margin:0">A helios-tests result</label>
     </div>
-    <div id="ap-test">
+    <div id="ap-test" class="hide">
       <div class="row"><select id="ap-t-out" style="width:auto"><option value="">any outcome</option><option value="failed" selected>failed</option><option value="error">error</option><option value="blocked">blocked</option><option value="partial">partial</option><option value="skipped">skipped</option><option value="passed">passed</option></select>
         <select id="ap-t-rack" style="width:auto"><option value="">any rack</option></select>
         <input id="ap-t-q" placeholder="search: TC-GPU-012, rccl, bmc, st3 ..." style="flex:1;min-width:200px"><button class="sec" id="ap-t-go">Search</button></div>
       <div class="wrap" style="max-height:38vh;overflow:auto"><table><thead><tr><th>Started</th><th>Rack</th><th>Case</th><th>Outcome</th><th>Message</th></tr></thead><tbody id="ap-tests"></tbody></table></div>
       <p class="mut" id="ap-t-note" style="font-size:12px"></p>
     </div>
-    <div id="ap-paste" class="hide">
+    <div id="ap-paste">
       <div class="row"><label style="margin:0">Rack <select id="ap-p-rack" style="width:auto"><option value="">(none - no step by step)</option></select></label>
         <input id="ap-p-subj" maxlength="160" placeholder="what it is about, e.g. ct07 GPU2 resets during RCCL all-reduce" style="flex:1;min-width:240px"></div>
       <div id="ap-blocks"></div>
       <div class="row"><button class="sec" id="ap-p-add">+ another output</button><span style="flex:1"></span><button class="go" id="ap-p-use">Use these outputs</button></div>
     </div>
     <div id="ap-report" class="hide"><div class="wrap" style="max-height:38vh;overflow:auto"><table><thead><tr><th>When</th><th>Rack</th><th>Tool</th><th>First line</th></tr></thead><tbody id="ap-reports"></tbody></table></div></div>
+    <div id="ap-rules"></div>
     <div id="ap-sel" class="mut" style="margin-top:8px"></div>
     <div id="ap-ai"></div>
   </section>
@@ -1181,7 +1182,23 @@ function anyProb(){
 function apSrc(){
   var v=document.querySelector('input[name="ap-src"]:checked').value;
   ["test","paste","report"].forEach(function(k){$("ap-"+k).classList.toggle("hide",k!==v)});
+  if(v!=="paste")$("ap-rules").innerHTML="";
   if(v==="report"&&!$("ap-reports").children.length)apReports();
+}
+/* the node health rules on the pasted outputs (server: heliosdbg/pasted.py) - shown whether or not the AI answers */
+function apRules(bs){
+  $("ap-rules").innerHTML='<p class="mut">Checking the outputs against the node health rules ...</p>';
+  return api("/api/cases/judge",{blocks:bs}).then(function(d){
+    var fs=d.findings||[],known=(d.checked||[]).filter(function(c){return c.checks.length}),h="";
+    var unk=(d.checked||[]).filter(function(c){return !c.checks.length}).map(function(c){return c.command||"(no command given)"});
+    h+='<h3 style="margin:10px 0 4px">What the health rules say</h3>';
+    if(!known.length)h+='<p class="mut">None of these commands is one the health check reads, so only the AI below looks at them'+(unk.length?" ("+esc(unk.slice(0,4).join("; "))+")":"")+".</p>";
+    else h+='<p class="mut">Checked: '+esc(known.map(function(c){return (c.node?c.node+" ":"")+(c.command||c.checks.join(", "))}).join("; "))+(unk.length?' · not a health-check command: '+esc(unk.slice(0,4).join("; ")):"")+"</p>";
+    if(known.length&&!fs.length)h+='<div class="verdict ok"><h3>No problem in what the rules read</h3><p class="mut" style="margin:0">Only the outputs above were checked - not the rest of the node.</p></div>';
+    fs.forEach(function(f){h+='<div class="finding '+(f.severity==="critical"?"down":"degraded")+'"><span class="cnt">'+(f.severity==="critical"?"!":"?")+'</span><div class="body"><b>'+esc(f.node)+": "+esc(f.what)+'</b><div class="mut">'+esc(f.cause)+"</div><div>Next: "+esc(f.next)+'</div><div class="who">'+esc(f.severity)+" · area "+esc(f.area)+" · who: "+esc(f.owner)+"</div>"+
+      ((f.evidence||[]).length?'<details><summary class="mut">evidence</summary><pre style="white-space:pre-wrap;font-size:12px">'+esc(f.evidence.join("\n"))+"</pre></details>":"")+"</div></div>"});
+    $("ap-rules").innerHTML=h;
+  }).catch(function(e){$("ap-rules").innerHTML='<p class="err">'+esc(e.message)+"</p>"});
 }
 function apAsk(ctx,label){
   $("ap-sel").innerHTML="<b>Asking about:</b> "+esc(label);
@@ -1191,6 +1208,7 @@ function apTests(){
   var u="/api/cases/tests?limit=400&outcome="+encodeURIComponent($("ap-t-out").value)+"&rack="+encodeURIComponent($("ap-t-rack").value)+"&q="+encodeURIComponent($("ap-t-q").value.trim());
   $("ap-tests").innerHTML='<tr><td colspan="5" class="mut">loading ...</td></tr>';
   api(u).then(function(d){
+    $("ap-test-opt").classList.toggle("hide",!d.available);   /* helios-tests runs on this machine: its results */
     var ts=d.tests||[];
     $("ap-t-note").textContent=ts.length?ts.length+(ts.length>=400?"+":"")+" result(s) from "+d.dir+" - click one to ask the AI about it":"no helios-tests results match (looked in "+d.dir+"; HELIOS_TESTS_RESULTS sets another folder)";
     $("ap-tests").innerHTML=ts.map(function(t,i){return '<tr data-i="'+i+'" style="cursor:pointer"><td>'+esc(String(t.started).slice(0,16))+"</td><td>"+esc(t.rack)+"</td><td><b>"+esc(t.tc_id)+"</b> "+esc(t.test)+'</td><td class="'+(t.outcome==="passed"?"":"err")+'">'+esc(t.outcome)+'</td><td class="mut" style="font-size:12px">'+esc(String(t.message).slice(0,140))+"</td></tr>"}).join("");
@@ -1201,7 +1219,7 @@ function apTests(){
 function apBlock(){
   var d=document.createElement("div");d.className="ai ap-b";d.style.background="var(--bg)";
   d.innerHTML='<div class="row" style="margin:0"><input class="ap-node" maxlength="80" placeholder="node, e.g. ct07 / st3 / ct07-bmc" style="width:200px"><input class="ap-cmd" maxlength="300" placeholder="command, e.g. sudo amd-smi metric -g 2 (or: dmesg, BMC SEL, test log ...)" style="flex:1;min-width:220px"><button class="sec ap-x" title="remove this output">✕</button></div>'+
-    '<textarea class="ap-out" maxlength="200000" placeholder="paste the output or the log here" style="width:100%;height:120px;margin-top:4px;font-family:var(--mono,monospace);font-size:12px"></textarea>'+
+    '<textarea class="ap-out" maxlength="200000" placeholder="paste the output, the log, or a test result (JUnit XML, CSV) here" style="width:100%;height:120px;margin-top:4px;font-family:var(--mono,monospace);font-size:12px"></textarea>'+
     '<div class="row" style="margin:2px 0 0"><label class="mut" style="font-size:12px;margin:0">or a file <input type="file" class="ap-file" style="width:auto"></label></div>';
   $("ap-blocks").appendChild(d);
   d.querySelector(".ap-x").addEventListener("click",function(){if($("ap-blocks").children.length>1)d.remove()});
@@ -1214,6 +1232,7 @@ function apUsePaste(){
     .filter(function(b){return b.output.trim()});
   if(!bs.length){$("ap-sel").innerHTML='<span class="err">Paste at least one output first.</span>';return}
   var rack=$("ap-p-rack").value,subj=$("ap-p-subj").value.trim();
+  apRules(bs);
   apAsk({spec:{blocks:bs,subject:subj,rack:rack},rack:rack,label:subj||"these outputs"},(subj||"the outputs you collected")+" - "+bs.length+" output(s)"+(rack?" on "+rack:""));
 }
 function apReports(){
