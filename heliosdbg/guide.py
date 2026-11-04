@@ -39,6 +39,12 @@ class GuideError(ValueError):
     pass
 
 
+# helios-debug's Broadcom view of one switch port (heliosdbg/bcm.py, the reads Diagnose a link makes): finds the port's
+# Broadcom logical port, reads lock / training / faults / per-lane signal, SNR and eye / FEC histogram, and compares it
+# with a working port of the same chip - one step instead of five bcmcmd lookups the model cannot map by itself
+BCM_VIEW = re.compile(r"bcm-view(?:\s+-n\s+(asic\d))?\s+(Ethernet\d+)")
+
+
 def unreachable(step: dict) -> dict | None:
     """{what, owner, next} when a step could not log in to its node (ssh exit 255: no route, refused, timed out ..)."""
     if str(step.get("rc")) != "255":
@@ -69,6 +75,8 @@ def check(command: str, role: str) -> tuple[str, bool]:
         raise GuideError("no command, or longer than 300 characters")
     if FORBIDDEN.search(c) or _pipe(c) == -2:
         raise GuideError("only a single command (optionally '| grep / tail / head') is allowed - no ; && $( ) ` or redirects")
+    if role == "switch" and BCM_VIEW.fullmatch(c):
+        return c, False
     rules = SWITCH_RO if role == "switch" else COMPUTE_RO if role == "compute" else []
     for pat, sudo in rules:
         if re.fullmatch(f"(?:{pat}){_TAIL}", c):            # grouped: the tail applies to every alternative
@@ -91,7 +99,8 @@ GUIDE_SYSTEM_ADD = (
     "compute trays: sudo afmctl show ..., dmesg, ip -br link, sudo amd-smi metric / static, sudo ipmitool sel list, "
     "ibv_devinfo, systemctl status <unit>; health: show system-health detail, crm show resources all, watchdogutil status, "
     "sudo docker exec <container> supervisorctl status, sudo docker logs --tail 100 <container>, show reboot-cause history, "
-    "sudo journalctl -k -p err -n 200 --no-pager, sudo amd-smi metric --ecc --json, sudo amd-smi bad-pages -g N). One command, no ; && pipes except '| grep X' or '| tail -N'. "
+    "sudo journalctl -k -p err -n 200 --no-pager, sudo amd-smi metric --ecc --json, sudo amd-smi bad-pages -g N; "
+    "the switch ASIC's own view of a link that is down, flaps or has errors: bcm-view -n asicN EthernetX). One command, no ; && pipes except '| grep X' or '| tail -N'. "
     "Use only PCI addresses (-b ..) seen in the evidence or an earlier step; when none is, list them first "
     "(sudo afmctl show device --json). Do not repeat a command already run. At most 6 steps; conclude earlier when you can."
 )
@@ -180,7 +189,13 @@ def runnable(text: str, roles: dict, aliases: dict | None = None) -> list[dict]:
             except GuideError as e:
                 item["refused"] = str(e)
         out.append(item)
-    return out[:8]
+        pm = re.search(r"(?:-n\s+(asic\d)\b.*?)?\b(Ethernet\d+)\b", cmd) if roles[node] == "switch" and item["allowed"] else None
+        bv = f"bcm-view{' -n ' + pm.group(1) if pm.group(1) else ''} {pm.group(2)}" if pm else ""
+        if bv and (node, "bcm", pm.group(2)) not in seen and not item["command"].startswith("bcm"):
+            seen.add((node, "bcm", pm.group(2)))
+            out.append({"node": node, "command": bv, "allowed": True, "refused": None,
+                        "why": "the switch ASIC's own view of that port (signal, lock, SNR, FEC) - helios-debug reads it"})
+    return out[:10]
 
 
 def steps_evidence(ev, steps: list[dict]) -> None:
@@ -245,7 +260,7 @@ EXAMPLES = {   # exact forms a refused proposal is shown again (models add flags
     "switch": ["show system-health detail", "show system-health summary", "watchdogutil status", "crm show resources all",
                "show platform psustatus", "show platform temperature", "show reboot-cause history",
                "docker exec pmon supervisorctl status", "docker logs --tail 100 swss0", "show interfaces status -n asic0",
-               "show logging | grep watchdog", "systemctl status watchdog-control"],
+               "show logging | grep watchdog", "systemctl status watchdog-control", "bcm-view -n asic0 Ethernet8"],
     "compute": ["sudo afmctl show device --json", "sudo amd-smi list --json", "sudo amd-smi metric --ecc --json",
                 "sudo journalctl -k -p err -n 200 --no-pager", "dmesg | grep -i amdgpu", "lspci -d 1002:", "rdma link show",
                 "systemctl --failed --no-pager", "df -h", "free -m"],
@@ -302,18 +317,71 @@ def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=No
     return out
 
 
+_STATUS_ROW = re.compile(r"^(Ethernet\d+)\s+(\S+)\s+\S+\s+\d+\s+\S+\s+\S+\s+(\S+)\s+(up|down)\s+(up|down)\b", re.M)
+
+
+def bcm_view(transport, ns: str | None, port: str) -> tuple[int, str]:
+    """(rc, text): the switch ASIC's own view of one port, judged by bcm.judge against a working port of the chip."""
+    from . import bcm
+    status, used = {}, ns
+    for cand in ([ns] if ns else ["asic0", "asic1", None]):
+        r = transport.run("show interfaces status" + (f" -n {cand}" if cand else ""), timeout=90, sudo=False)
+        if r.rc == 255:                                  # not logged in: say so, as any other step
+            return 255, (r.stdout or "") + "\n[stderr] " + (getattr(r, "stderr", "") or "")
+        status = {m.group(1): {"Lanes": m.group(2), "Vlan": m.group(3), "Oper": m.group(4), "Admin": m.group(5)}
+                  for m in _STATUS_ROW.finditer(r.stdout or "")}
+        if port in status:
+            used = cand
+            break
+    if port not in status:
+        return 1, f"{port} is not in 'show interfaces status{' -n ' + ns if ns else ''}' on this switch tray"
+    st = status[port]
+    ref = bcm.reference_port(status, {port})
+
+    class _Sw:                                           # bcm.read_ports runs its own 'sudo -n timeout 60 bcmcmd ...'
+        def run(self, cmd, timeout=120):
+            return transport.run(cmd, timeout=timeout, sudo=False)
+    views = bcm.read_ports(_Sw(), used, {port: st["Lanes"]} | ({ref[0]: ref[1]} if ref else {}))
+    v, refv = views.get(port) or {}, (views.get(ref[0]) if ref else None)
+    refv = refv if refv and not refv.get("error") else None
+    finding, ev = bcm.judge(v, refv, oper_down=st["Oper"] != "up")
+    unit = bcm.unit_flag(used)
+    lp = v.get("logical", "<logical>")
+    lines = [f"Broadcom view of {port}{' (' + used + ')' if used else ''}: SONiC lanes {st['Lanes']}, oper {st['Oper']}, admin {st['Admin']}",
+             "Verdict (code, heliosdbg/bcm.py): " + (finding or "the switch ASIC sees nothing wrong on this port"), *ev]
+    if refv:
+        lines.append(f"Reference - a working port of the same chip, {ref[0]}: {bcm.brief(refv)}")
+    lines += ["", "Read with (run them yourself the same way):",
+              f"  sudo bcmcmd{unit} 'show pmap'   (physical port {st['Lanes'].split(',')[0]} -> {v.get('bcm_port', '?')}, logical {lp})"]
+    lines += [f"  sudo bcmcmd{unit} 'bsh -c \"lt {t} lookup PORT_ID={lp}{x}\"'" for t, x in (
+        ("PC_PORT_STATUS", " STATUS=STATUS_ALL"), ("PC_PHY_STATUS", " LANE_INDEX=0"),
+        ("PC_PHY_STATUS_2", " LANE_INDEX=0 STATUS=STATUS_2_ALL"), ("PC_PORT_CUMULATIVE_DIAG_STATS", ""))]
+    return (0 if not v.get("error") else 1), "\n".join(lines)
+
+
 def run(host, transport, command: str, role: str, log_dir: Path | None = None) -> dict:
     """Run one allowed read-only command on a node (the allow-list is checked again here)."""
     c, sudo = check(command, role)
     t0 = time.time()
     try:
-        if sudo and _pipe(c) >= 0:                        # sudo for the command only; the grep / tail runs as the user
+        bv = BCM_VIEW.fullmatch(c)
+        if bv:
+            rc, out = bcm_view(transport, bv.group(1), bv.group(2))
+            r = None
+        elif c.startswith("bcmcmd"):                     # it reads stdin: closed, and a time limit
+            from .transport import build_command
+            at = _pipe(c)
+            head, tail = (c[:at], c[at + 1:]) if at >= 0 else (c, "")
+            r = transport.run(build_command(f"timeout 60 {head.strip()} </dev/null 2>&1", sudo=True)
+                              + (" | " + tail.strip() if tail else ""), timeout=90, sudo=False)
+        elif sudo and _pipe(c) >= 0:                      # sudo for the command only; the grep / tail runs as the user
             from .transport import build_command
             head, tail = c[:_pipe(c)], c[_pipe(c) + 1:]
             r = transport.run(build_command(head.strip(), sudo=True) + " | " + tail.strip(), timeout=90, sudo=False)
         else:
             r = transport.run(c, timeout=90, sudo=sudo)
-        rc, out = r.rc, (r.stdout or "") + (("\n[stderr] " + r.stderr) if getattr(r, "stderr", "") else "")
+        if r is not None:
+            rc, out = r.rc, (r.stdout or "") + (("\n[stderr] " + r.stderr) if getattr(r, "stderr", "") else "")
     except Exception as e:  # noqa: BLE001 - shown as the step's output
         rc, out = -1, f"{type(e).__name__}: {str(e)[:300]}"
     if log_dir:

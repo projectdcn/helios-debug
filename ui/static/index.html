@@ -1173,7 +1173,7 @@ function aiCmds(rs){
   if(!rs||!rs.length)return "";
   return '<div class="ai-cmds" style="margin:6px 0"><div class="mut" style="font-size:12px">Run a suggested command on the node (read-only list, same check as a step):</div>'+
     rs.map(function(r,i){return '<div class="row" style="margin:3px 0;align-items:center;gap:6px"><code>'+esc(nodeLabel(r.node))+": "+esc(r.command)+"</code>"+
-      (r.allowed?'<button class="sec ai-cmd" data-i="'+i+'">Run</button>':'<span class="mut" style="font-size:12px">not runnable here: '+esc(r.refused||"")+"</span>")+"</div>"}).join("")+"</div>";
+      (r.allowed?'<button class="sec ai-cmd" data-i="'+i+'">Run</button>'+(r.why?'<span class="mut" style="font-size:12px">'+esc(r.why)+"</span>":""):'<span class="mut" style="font-size:12px">not runnable here: '+esc(r.refused||"")+"</span>")+"</div>"}).join("")+"</div>";
 }
 
 /* ---------------------------------------------------------------- any problem: a test result, a tool report, outputs collected by hand */

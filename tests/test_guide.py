@@ -302,9 +302,11 @@ def test_commands_suggested_in_an_answer_are_runnable_and_runs_are_evidence():
             "3. on pod-1-0-ComputeTray: `sudo afmctl show port -b <bdf> --json`\n"
             "4. on st1: `config interface shutdown Ethernet257`\n5. on st9: `show version`\n")
     rs = guide.runnable(text, roles, {"pod-1-0-ComputeTray": "c1"})
-    assert [(r["node"], r["allowed"]) for r in rs] == [("st1", True), ("c1", True), ("c1", False), ("st1", False)]
-    assert rs[1]["command"] == "afmctl show port -b 0002:01:00.1 --json"
-    assert "placeholder" in rs[2]["refused"]
+    assert [(r["node"], r["command"], r["allowed"]) for r in rs] == [
+        ("st1", "show interfaces status -n asic1 Ethernet257", True), ("st1", "bcm-view -n asic1 Ethernet257", True),
+        ("c1", "afmctl show port -b 0002:01:00.1 --json", True), ("c1", "sudo afmctl show port -b <bdf> --json", False),
+        ("st1", "config interface shutdown Ethernet257", False)]
+    assert "placeholder" in rs[3]["refused"]
     ev = ai.Evidence()
     guide.steps_evidence(ev, [
         {"node": "st1", "command": "show interfaces status -n asic1", "rc": 0,
@@ -315,3 +317,43 @@ def test_commands_suggested_in_an_answer_are_runnable_and_runs_are_evidence():
     assert any("st1 Ethernet257: admin up, oper down" in x for x in t)
     assert any(x.startswith("Command S1 run on st1") for x in t) and not any("S2" in x for x in t)
     assert any("Command S3 run on st6" in x and "could not log in" in x for x in t)
+
+
+
+def test_broadcom_reads_are_allowed_read_only_and_bcm_view_reads_the_asic(monkeypatch):
+    """4 Nov: no Broadcom-level debug in the AI / step by step - bcm-view and the guide's bcmcmd reads now run."""
+    for ok in ("bcm-view -n asic1 Ethernet257", "bcm-view Ethernet8", "sudo bcmcmd -n 1 'show pmap'",
+               "bcmcmd -n 1 'show pmap' | grep 193",
+               "sudo bcmcmd -n 1 'bsh -c \"lt PC_PORT_STATUS lookup PORT_ID=220 STATUS=STATUS_ALL\"'",
+               "sudo bcmcmd -n 1 'bsh -c \"lt PC_PHY_STATUS_2 lookup PORT_ID=220 LANE_INDEX=1 STATUS=STATUS_2_ALL\"'",
+               "sudo bcmcmd -n 0 'bsh -c \"PortStatus 220\"'"):
+        guide.check(ok, "switch")
+    for bad in ("bcmcmd -n 1 'phy diag cd100 prbs set'", "bcmcmd -n 1 'port cd100 en=0'", "bcmcmd -n 1 'eyescan'",
+                "bcmcmd -n 1 'bsh -c \"lt PC_PORT update PORT_ID=220 ENABLE=0\"'", "bcmcmd 'show pmap'; reboot",
+                "bcm-view -n asic1 Ethernet257 | sh"):
+        with pytest.raises(guide.GuideError):
+            guide.check(bad, "switch")
+    with pytest.raises(guide.GuideError):
+        guide.check("bcm-view Ethernet8", "compute")
+
+    status = ("Ethernet257          193,194     400G   9100    N/A  Ethernet449/1   trunk    down       up     N/A         N/A\n"
+              "Ethernet473              1,2     400G   9100    N/A  Ethernet257/1   trunk      up       up     N/A         N/A\n")
+    sent = []
+
+    class T:
+        def run(self, cmd, timeout=90, sudo=False):
+            sent.append(cmd)
+            return type("R", (), {"rc": 0, "stdout": status if cmd.startswith("show interfaces") else "", "stderr": ""})()
+    from heliosdbg import bcm
+    monkeypatch.setattr(bcm, "read_ports", lambda sw, ns, ports, pmap=None: {
+        "Ethernet257": {"bcm_port": "cd100", "logical": 220, "lanes_sonic": [193, 194],
+                        "port": {"PMD_RX_LOCK": 0, "PMD_LANE_RX_LOCK": 0, "LINK_TRAINING_DONE": 0, "LOCAL_FAULT": 1, "REMOTE_FAULT": 0},
+                        "lane": [{"RX_SIGNAL_DETECT": 0, "TX_SQUELCH": 0, "RX_SNR": 99900}] * 2, "fec_bins": [], "fec": {}},
+        "Ethernet473": {"error": "x"}})
+    r = guide.run(type("H", (), {"name": "st1"})(), T(), "bcm-view -n asic1 Ethernet257", "switch")
+    assert sent == ["show interfaces status -n asic1"]
+    assert r["rc"] == 0 and "Broadcom view of Ethernet257 (asic1)" in r["output"] and "Verdict (code" in r["output"]
+    assert "sudo bcmcmd -n 1 'show pmap'" in r["output"] and "PORT_ID=220" in r["output"]
+    sent.clear()
+    guide.run(type("H", (), {"name": "st1"})(), T(), "sudo bcmcmd -n 1 'show pmap' | grep 193", "switch")
+    assert sent == ["sudo -n bash -c 'timeout 60 bcmcmd -n 1 '\"'\"'show pmap'\"'\"' </dev/null 2>&1' | grep 193"]

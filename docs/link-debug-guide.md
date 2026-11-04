@@ -216,6 +216,8 @@ SONiC only says a switch port is oper down. The switch ASIC's own shell says why
 python tools/link_check.py bcm --inventory <inventory> --switch st6 --ports Ethernet257,Ethernet261
 ```
 
+**From the AI panel.** Step by step and the AI's answers offer `bcm-view -n asic1 Ethernet261` on the switch tray: helios-debug maps the port, makes the reads below, compares them with a working port of the same chip, and lists the exact `bcmcmd` commands it ran. The raw reads below can be run from there too; `prbs`, `eyescan`, loopback and any change are refused.
+
 **By hand.** Each ASIC is a unit of `bcmcmd` (`asic1` = `-n 1`). Find the Broadcom port first: the SONiC port's first lane is its physical port in the port map.
 
 1. Lanes of the SONiC port: `show interfaces status -n asic1 | grep -w Ethernet261` gives Lanes `201,202`.
