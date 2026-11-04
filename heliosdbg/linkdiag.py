@@ -504,9 +504,16 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
                     (f"The quarantine's end date has passed: if {name} is still out of service, set a new 'until:' in the "
                      f"inventory; if it is back, remove the quarantine and scan again." if "quarantine ended" in reason else
                      f"Expected while {name} is out of service; lift the quarantine when it is back and scan again."))
-    unread = sorted(n for n, x in (trays or {}).items() if x.get("error"))
+    # only trays whose slot is not known can be the one behind this port (audit 4 Nov: ct10, slot known, unreachable,
+    # turned every port of an empty slot into 'its tray did not answer: ct10')
+    unread = sorted(n for n, x in (trays or {}).items() if x.get("error") and x.get("slot") is None)
     if not ln.tray and unread:          # MR3 19 Oct from the switch: trays in the inventory, but not reachable from there
         cab = parse_port_description(ln.desc or "")
+        if up(ln.sw_oper):                # the port is up: whatever is behind it is powered and cabled
+            return set_("down", "tray_unreachable", f"slot {cab[0] if cab else '?'}: its tray did not answer - not "
+                        f"reachable: {', '.join(unread)} - the switch port is up, so it is powered and cabled", OPERATOR,
+                        "Find why it does not answer from here (management network / route, or its OS), or set slot: on "
+                        "the inventory entries so an unreachable tray is named per slot.")
         return set_("down", "tray_unreachable",
                     f"slot {cab[0] if cab else '?'}: its tray did not answer - not reachable: {', '.join(unread)}", SITE,
                     "Make the tray reachable from where this runs (network / SSH key; from a switch tray: its route to the "
@@ -1113,6 +1120,10 @@ def compare(prev_links: list[dict], links: list[Link]) -> dict:
             out["not_in_earlier"] += 1
             continue
         was = b.get("state", "ok")
+        if was == "unknown":              # not read then (a check saved from Live): neither recovered nor still bad
+            if ln.state not in ("ok", "unknown"):
+                out["new_problems"].append(f"{k} <-> {ln.tray} port {ln.gpu_port}: {ln.state}, {ln.cause} (not read before)")
+            continue
         if was == "ok" and ln.state != "ok":
             out["new_problems"].append(f"{k} <-> {ln.tray} port {ln.gpu_port}: {ln.state}, {ln.cause}")
         elif was != "ok" and ln.state == "ok":

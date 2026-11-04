@@ -1365,11 +1365,13 @@ def live_save(state: State, what: str) -> dict:
                 said = (f"switch oper {cur['sw_oper'] or '?'} / admin {cur['sw_admin'] or '?'}, GPU {cur['gpu_link'] or 'not read'}"
                         f", IFCP ll_up {cur['ll_up'] or '?'}")
                 if stt != ln.get("state"):
-                    x.update(kind="live", cause=f"read by Live: {said}")
+                    x.update(kind="live", cause=f"read by Live: {said}", check_kind=ln.get("kind") or "")
                 x["evidence"] = [f"Live {time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime())}: {said}"] + list(ln.get("evidence") or [])[:6]
             else:
-                stt = "unknown" if not (ln.get("kind") == "tray_quarantined") else (ln.get("state") or "unknown")
-                x["cause"] = "not read by Live (switch and tray not reached)" + (f" - the check said {ln.get('state')}" if ln.get("state") else "")
+                stt = "unknown"                     # as Live showed it, quarantined trays too (audit 4 Nov)
+                x["cause"] = ("not read by Live (" + ("tray quarantined: no GPU to read" if ln.get("kind") == "tray_quarantined"
+                                                       else "switch and tray not reached") + ")"
+                              + (f" - the check said {ln.get('state')}" if ln.get("state") else ""))
             x["state"] = stt
             counts[stt] = counts.get(stt, 0) + 1
             links.append(x)

@@ -214,3 +214,59 @@ def test_tray_unreachable_since_the_check_is_not_green(tmp_path, monkeypatch):
     r.reconcile("first read")
     assert r.status()["links"]["st1 Ethernet1"]["state"] == "unknown"          # switch port up, GPU end not read
     assert r.status()["links"]["st1 Ethernet292"]["state"] == "down"           # the switch says down: that stands
+
+
+def test_a_link_read_once_goes_unknown_when_both_ends_stop_answering(tmp_path, monkeypatch):
+    """Audit 4 Nov: st1 Ethernet1 read up / LINK_UP once kept showing 'ok' after st1 and c1 both went off the network."""
+    off = {"sw": False, "tray": False}
+
+    class S(Sw):
+        def interfaces_status(self, ns):
+            if off["sw"]:
+                raise RuntimeError("ssh: connect to host 10.0.0.1 port 22: No route to host")
+            return super().interfaces_status(ns)
+
+    class A(FakeAfmctl):
+        def ports_raw(self, bdf):
+            if off["tray"]:
+                raise RuntimeError("ssh: connect to host 10.0.0.9 port 22: No route to host")
+            return super().ports_raw(bdf)
+    monkeypatch.setattr(live, "Afmctl", A)
+    rack = SimpleNamespace(switches={"st1": S()}, computes={"c1": Ct("c1"), "c2": Ct("c2")}, close=lambda: None)
+    r = live.LiveRack(rack, [dict(x) for x in LINKS], rack_name="lab", log_dir=tmp_path, stream_cls=Q)
+    r.reconcile("first read")
+    assert r.status()["links"]["st1 Ethernet1"]["state"] == "ok"
+    off["tray"] = True
+    r.reconcile("re-read")
+    assert r.status()["links"]["st1 Ethernet1"]["state"] == "unknown"          # switch end alone says nothing
+    off["sw"] = True
+    r.reconcile("re-read")
+    st = r.status()["links"]["st1 Ethernet1"]
+    assert st["state"] == "unknown" and st["sw_oper"] is None and st["unread"] and not st["read"]
+    off["sw"] = off["tray"] = False
+    r.reconcile("back")
+    assert r.status()["links"]["st1 Ethernet1"]["state"] == "ok"
+
+
+def test_gpu_not_listed_and_tray_not_in_inventory_are_not_ok(tmp_path, monkeypatch):
+    class A(FakeAfmctl):
+        def ports_raw(self, bdf):
+            return [] if self.tray == "c1" else super().ports_raw(bdf)
+    monkeypatch.setattr(live, "Afmctl", A)
+    rack = SimpleNamespace(switches={"st1": Sw()}, computes={"c2": Ct("c2")}, close=lambda: None)
+    links = [dict(x) for x in LINKS] + [{"switch": "st1", "asic": "asic0", "sw_port": "Ethernet9", "tray": "c9",
+                                         "bdf": "0009:01:00.1", "gpu_port": 1, "state": "ok", "kind": ""}]
+    rack.switches["st1"].oper["Ethernet9"] = "up"
+    r = live.LiveRack(rack, links, rack_name="lab", log_dir=tmp_path, stream_cls=Q)
+    r.reconcile("first read")
+    ls = r.status()["links"]
+    assert ls["st1 Ethernet9"]["state"] == "unknown"                           # c9 not in the inventory: never read
+    rack.computes["c1"] = Ct("c1")
+    r.reconcile("re-read")
+    assert r.status()["links"]["st1 Ethernet1"]["state"] == "unknown"          # c1 answers, its GPU is not listed
+    assert "not listed" in str(r.status()["followers"]["c1 re-read"].get("error"))
+
+
+def test_a_check_saved_from_live_does_not_pin_links_degraded():
+    lk = {"sw_oper": "up", "gpu_link": "LINK_UP", "ll_up": "yes", "bdf": "x", "scan_state": "degraded", "scan_kind": "live"}
+    assert live.link_state(lk, True) == "ok"

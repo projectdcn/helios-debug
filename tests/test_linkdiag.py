@@ -329,3 +329,14 @@ def test_flap_counts_read_per_asic_and_shown_on_the_link():
     from heliosdbg import ai
     ev, _ = ai.link_context({"links": [ld.link_dict(ln)]}, "st3 Ethernet25")
     assert any("Switch port: admin up, oper up, flap count 9, last down Sat Oct 25" in x["text"] for x in ev.items)
+
+
+def test_compare_with_unknown_before():
+    """Audit 4 Nov: links 'unknown' in a check saved from Live were 'recovered' when ok, 'still bad' when down."""
+    from heliosdbg.linkdiag import Link, compare
+    prev = [{"switch": "st1", "asic": "asic0", "sw_port": "Ethernet1", "state": "unknown"},
+            {"switch": "st1", "asic": "asic0", "sw_port": "Ethernet2", "state": "unknown"}]
+    a = Link("st1", "asic0", "Ethernet1", tray="c1", state="ok")
+    b = Link("st1", "asic0", "Ethernet2", tray="c1", state="down", cause="x")
+    c = compare(prev, [a, b])
+    assert c["recovered"] == [] and c["still_bad"] == 0 and len(c["new_problems"]) == 1 and "not read before" in c["new_problems"][0]

@@ -116,7 +116,7 @@ def link_state(lk: dict, ifcp_in_use: bool) -> str:
         return "degraded" if lk.get("scan_kind") == "tray_not_programmed" else "unknown"
     if ifcp_in_use and lk.get("ll_up") not in (None, "yes"):
         return "degraded"
-    if lk.get("scan_state") == "degraded" and lk.get("scan_kind") not in PHYSICAL and not (
+    if lk.get("scan_state") == "degraded" and lk.get("scan_kind") not in PHYSICAL + ("live", "") and not (
             lk.get("scan_kind") == "ifcp" and lk.get("ll_up") is not None):
         return "degraded"                          # e.g. not programmed, GPU not set up: not a link up/down matter
                                                    # (no IFCP session at the check: the tray's ll_up now says)
@@ -228,8 +228,11 @@ class LiveRack:
         by = {int(p.get("id", p.get("port_id"))): p for p in ports}
         for k in self.by_gpu.get((tray, bdf), []):
             p = by.get(self.links[k]["gpu_port"])
-            if p is None:
+            if p is None:                       # this port is not listed: its GPU end is not read now
+                self._stale([k], ("gpu_link", "gpu_admin", "ll_up"), source)
                 continue
+            with self.lock:
+                self.links[k]["gpu_missed"] = False
             st, sp = p.get("status") or {}, p.get("spec") or {}
             self._set(k, "gpu_link", st.get("link_status"), source)
             self._set(k, "gpu_admin", sp.get("admin_state"), source)
@@ -263,7 +266,10 @@ class LiveRack:
             self.stop_ev.wait(15)
 
     def _read_gpu(self, tray: str, bdf: str, source: str) -> None:
-        self.apply_gpu_ports(tray, bdf, Afmctl(self.rack.computes[tray]).ports_raw(bdf), source)
+        ports = Afmctl(self.rack.computes[tray]).ports_raw(bdf)
+        if not ports:                  # the tray answered, the GPU is not listed (reset, BDF changed): not a good read
+            raise RuntimeError(f"GPU {bdf} not listed by afmctl on {tray}")
+        self.apply_gpu_ports(tray, bdf, ports, source)
 
     def reconcile(self, source: str = "re-read") -> None:
         for name, sw in self.rack.switches.items():
@@ -278,33 +284,62 @@ class LiveRack:
                         if k:
                             self._set(k, "sw_oper", str(r.get("Oper", "")).lower() or None, source)
                             self._set(k, "sw_admin", str(r.get("Admin", "")).lower() or None, source)
-                    self.followers.setdefault(f"{name} re-read", {"kind": "re-read"}).update(ok=True, error=None)
+                    self._follower(f"{name} re-read", ok=True, error=None)
                 except Exception as e:  # noqa: BLE001
-                    self.followers.setdefault(f"{name} re-read", {"kind": "re-read"}).update(ok=False, **_why(e))
+                    self._follower(f"{name} re-read", ok=False, **_why(e))
+                    # what was read before is stale now: not kept as if read (audit 4 Nov: a link read 'ok' once stayed
+                    # 'ok' while its switch and tray were both off the network)
+                    self._stale([k for k, lk in self.links.items() if lk["switch"] == name and lk["asic"] == asic],
+                                ("sw_oper", "sw_admin"), source)
         for (tray, bdf) in list(self.by_gpu):
-            if tray not in self.rack.computes:
+            if tray not in self.rack.computes:      # quarantined / no longer in the inventory: never read now
+                self._gpu_missed(tray, bdf, source)
                 continue
             try:
                 self._read_gpu(tray, bdf, source)
-                self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=True, error=None)
+                self._follower(f"{tray} re-read", ok=True, error=None)
             except Exception as e:  # noqa: BLE001
-                self.followers.setdefault(f"{tray} re-read", {"kind": "re-read"}).update(ok=False, **_why(e))
+                self._follower(f"{tray} re-read", ok=False, **_why(e))
                 self._gpu_missed(tray, bdf, source)
         self._mark_unread()
         self.reconciles += 1
 
+    def _follower(self, name: str, kind: str = "re-read", **kw) -> None:
+        with self.lock:                         # status() iterates the followers under the lock
+            self.followers.setdefault(name, {"kind": kind}).update(**kw)
+
+    def _stale(self, keys, fields, source: str) -> None:
+        """These ends were not read now: their last values are dropped (a link with neither end read is 'unknown',
+        not the state of its last good read)."""
+        with self.lock:
+            for k in keys:
+                lk = self.links[k]
+                if all(lk.get(f) is None for f in fields):
+                    continue
+                for f in fields:
+                    lk[f] = None
+                lk["read"] = any(lk.get(f) is not None for f in ("sw_oper", "gpu_link", "ll_up"))
+                lk["unread"] = not lk["read"]
+                before, lk["state"] = lk["state"], link_state(lk, self.ifcp)
+                if lk["state"] != before:
+                    lk["since"] = _now()
+                    self._record({"link": k, "what": "state", "from": before, "to": lk["state"], "source": source})
+
     def _gpu_missed(self, tray: str, bdf: str, source: str) -> None:
         """The tray's re-read failed: its links have no GPU end now - 'unknown' (not green on the switch side alone)
-        until it is read again."""
+        until it is read again; a GPU end read before is stale and dropped."""
+        keys = self.by_gpu.get((tray, bdf), [])
         with self.lock:
-            for k in self.by_gpu.get((tray, bdf), []):
+            for k in keys:
+                self.links[k]["gpu_missed"] = True
+        self._stale(keys, ("gpu_link", "gpu_admin", "ll_up"), source)
+        with self.lock:
+            for k in keys:
                 lk = self.links[k]
-                if lk["gpu_link"] is None and not lk.get("gpu_missed"):
-                    lk["gpu_missed"] = True
-                    before, lk["state"] = lk["state"], link_state(lk, self.ifcp)
-                    if lk["state"] != before:
-                        lk["since"] = _now()
-                        self._record({"link": k, "what": "state", "from": before, "to": lk["state"], "source": source})
+                before, lk["state"] = lk["state"], link_state(lk, self.ifcp)
+                if lk["state"] != before:
+                    lk["since"] = _now()
+                    self._record({"link": k, "what": "state", "from": before, "to": lk["state"], "source": source})
 
     def _mark_unread(self) -> None:
         """Links neither end of which was read (switch and tray not reached) are 'unknown', not the check's state:
@@ -355,9 +390,9 @@ class LiveRack:
                         afm_since = max(afm_since, ((e.get("meta") or {}).get("creation-time") or afm_since)[:19] + "Z")
                         if re.search(r"link|port", str(e.get("type")), re.I):
                             self.note(f"{e.get('type')}: {e.get('message')}", "afm")
-                    self.followers.setdefault("afm events", {"kind": "afm"}).update(ok=True, error=None)
+                    self._follower("afm events", kind="afm", ok=True, error=None)
                 except Exception as e:  # noqa: BLE001
-                    self.followers.setdefault("afm events", {"kind": "afm"}).update(ok=False, **_why(e))
+                    self._follower("afm events", kind="afm", ok=False, **_why(e))
             self.stop_ev.wait(1)
 
     def start(self) -> None:
