@@ -488,6 +488,12 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
         if acc and acc["kind"] in ("host_key", "sudo", "dns", "jump_session"):   # an access problem, not the tray
             return set_("down", "tray_unreachable", f"compute tray {ln.tray}: {acc['what']}", OPERATOR,
                         acc["next"][:1].upper() + acc["next"][1:] + ". The links themselves are not judged.")
+        if acc is None or acc["kind"] == "cmd_timeout":  # it answered SSH; afmctl failed or hung (audit 4 Nov: these
+            return set_("down", "tray_unreachable",            # read 'not reachable over SSH')
+                        f"compute tray {ln.tray} answered, but its GPU ports could not be read ("
+                        + (acc["what"] if acc else str(t["error"])[:160]) + ")", OPERATOR,
+                        f"Run 'sudo afmctl show device --json' on {ln.tray} and read the error (the AFM node agent, afmctl "
+                        "itself, or a GPU in a bad state); the links themselves are not judged.")
         if up(ln.sw_oper):              # g02-g17 3 Nov: ct10 'site (cabling)' while st5 read all 24 of its ports up
             return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH"
                         + (f" ({acc['what']})" if acc else "") + " - its switch ports are up, so it is powered and cabled",

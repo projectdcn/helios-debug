@@ -340,3 +340,10 @@ def test_compare_with_unknown_before():
     b = Link("st1", "asic0", "Ethernet2", tray="c1", state="down", cause="x")
     c = compare(prev, [a, b])
     assert c["recovered"] == [] and c["still_bad"] == 0 and len(c["new_problems"]) == 1 and "not read before" in c["new_problems"][0]
+
+
+def test_tray_that_answers_but_afmctl_fails_is_not_unreachable():
+    tr = _tray(error="CommandError: [ct03] afmctl: error: cannot connect to agent (rc=1: afmctl show device --json)", slot=2)
+    tr["gpus"] = []
+    ln = _one(_switch(oper="up", fdb=False), tr)[0]
+    assert ln.kind == "tray_unreachable" and "answered, but its GPU ports could not be read" in ln.cause
