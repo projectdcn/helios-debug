@@ -583,7 +583,7 @@ function tab(t){
   if(t==="topology")loadTopology();
   if(t==="guide"&&!$("guide-frame").getAttribute("src"))$("guide-frame").setAttribute("src","/guide");
   if(document.querySelector("section[data-p=\""+t+"\"]"))moveJobcard();
-  setHash({tab:t,inv:$("inv").value||"",scan:t==="map"?undefined:null});   /* the map's check stays only on the map */
+  setHash({tab:t,inv:$("inv").value||undefined,scan:t==="map"?undefined:null});   /* the map's check stays only on the map */
   if(t==="access")loadAccess();
   try{localStorage.setItem("hdbg-tab",t)}catch(e){}
 }
@@ -1751,10 +1751,12 @@ function setHash(kv){
   Object.keys(h).forEach(function(k){if(o.every(function(x){return x.indexOf(k+"=")}))o.push(k+"="+h[k])});
   try{history.replaceState(null,"",o.length?"#"+o.join("&"):location.pathname+location.search)}catch(e){}
 }
+/* the check named in the link the page was opened with: kept until the rack's checks are listed and it is among them
+   (the map loads once before the rack is known, and that first load must not replace it in the link) */
+var mapWant=decodeURIComponent((location.hash.match(/scan=([^&]+)/)||[])[1]||"");
 function loadMap(){
   mapLoadScans().then(function(){
-    var want=(location.hash.match(/scan=([^&]+)/)||[])[1];
-    if(want&&mapScans.some(function(x){return x.path===decodeURIComponent(want)&&!noLinks(x)}))$("map-scan").value=decodeURIComponent(want);
+    if(mapWant&&mapScans.some(function(x){return x.path===mapWant&&!noLinks(x)})){$("map-scan").value=mapWant;mapWant=""}
     mapFetch();
   }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
