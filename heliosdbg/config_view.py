@@ -26,7 +26,13 @@ def switch_config(sw) -> dict:
         flag = f" -n {shlex.quote(ns)}" if ns else ""
         return json.loads(sw.sh(f"sonic-cfggen -d --print-data{flag}", sudo=True, timeout=120))
     out = {"host": _section("host (global CONFIG_DB)", lambda: cfg(None))}
-    for ns in sw.namespaces():
+    if out["host"]["error"]:                   # did not answer: no namespaces to ask (not an exception out of here)
+        return {"kind": "switch", "sections": out}
+    nss = _section("ASIC namespaces", sw.namespaces)
+    if nss["error"]:
+        out["namespaces"] = nss
+        return {"kind": "switch", "sections": out}
+    for ns in nss["data"] or []:
         if ns:
             out[ns] = _section(f"{ns} CONFIG_DB", lambda ns=ns: cfg(ns))
     return {"kind": "switch", "sections": out}
@@ -121,14 +127,23 @@ def switch_summary(cfg: dict) -> dict:
     return out
 
 
+def ports_read(cfg: dict) -> bool:
+    """A tray read whose GPU ports were read (not an error, not empty): only such reads may judge forwarding entries."""
+    sec = ((cfg or {}).get("sections") or {}).get("ports") or {}
+    return not sec.get("error") and bool(sec.get("data"))
+
+
 def summary(cfg: dict) -> dict:
     return {"gpus": compute_summary(cfg)} if cfg.get("kind") == "compute" else {"asics": switch_summary(cfg)}
 
 
 def fdb_check(switches: dict, trays: dict, slots: dict | None = None) -> dict:
-    """The switches' static forwarding entries against the GPU port MACs the trays report: entries no GPU port has
-    (the GPU lost the MAC AFM gave it - reset, or a mode change) and GPU ports no entry points at. Per switch / ASIC.
-    switches / trays: {name: config read}; slots: {slot number: tray name} to name the tray a port's description gives."""
+    """The switches' static forwarding entries against the GPU port MACs the trays report, per switch / ASIC:
+      no_gpu_port   entries whose MAC no GPU port of the tray the port leads to has (that GPU lost the MAC AFM gave it -
+                    a reset or a mode change - or the entry is stale)
+      other_tray    entries whose MAC is a GPU port of another tray than the one the port's description names
+    Only entries whose port leads to a tray that was read are judged. switches / trays: {name: config read};
+    slots: {slot number: tray name}."""
     from .afmctl import parse_port_description
     have = {}
     for tn, cfg in trays.items():
@@ -138,28 +153,32 @@ def fdb_check(switches: dict, trays: dict, slots: dict | None = None) -> dict:
                 for p in dv.get("port") or []:
                     m = str((p.get("spec") or {}).get("nw_mac_addr") or "").lower()
                     if m:
-                        have.setdefault(m, []).append((tn, bdf, p.get("id")))
+                        have.setdefault(m, set()).add(tn)
     out = {"trays_read": sorted(trays), "switches": {}}
     for sn, cfg in switches.items():
         for asic, sec in (cfg.get("sections") or {}).items():
             db = sec.get("data")
-            if asic == "host" or not isinstance(db, dict):
+            if asic in ("host", "namespaces") or not isinstance(db, dict):
                 continue
             desc = {k: (v or {}).get("description", "") for k, v in (db.get("PORT") or {}).items()}
-            ok, miss = 0, {}
+            ok, miss, other = 0, {}, {}
             for key, v in (db.get("FDB") or {}).items():
                 mac = key.split("|")[-1].lower()
                 port = (v or {}).get("port", "")
                 cab = parse_port_description(desc.get(port, "") or "")
                 tray = (slots or {}).get(cab[0]) if cab else None
-                if tray is not None and tray not in trays:
-                    continue                      # that tray was not read: nothing to compare with
-                if mac in have:
+                if tray is None or tray not in trays:
+                    continue                      # the tray behind this port is unknown or was not read
+                if tray in have.get(mac, ()):
                     ok += 1
+                elif mac in have:
+                    other.setdefault(tray, []).append(port)
                 else:
-                    miss.setdefault(tray or (f"slot {cab[0]}" if cab else "?"), []).append(port)
-            out["switches"][f"{sn} {asic}"] = {"matched": ok, "no_gpu_port": {t: len(p) for t, p in sorted(miss.items())},
-                                               "examples": {t: sorted(p)[:4] for t, p in sorted(miss.items())}}
+                    miss.setdefault(tray, []).append(port)
+            out["switches"][f"{sn} {asic}"] = {
+                "matched": ok, "no_gpu_port": {t: len(p) for t, p in sorted(miss.items())},
+                "other_tray": {t: len(p) for t, p in sorted(other.items())},
+                "examples": {t: sorted(p)[:4] for t, p in sorted({**miss, **other}.items())}}
     return out
 
 

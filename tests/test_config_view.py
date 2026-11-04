@@ -54,3 +54,16 @@ def test_unreachable_tray_is_not_read_with_empty_parts():
             raise RuntimeError("[ct06] no route to host: off the network (rc=255: afmctl show device --json)")
     r = cv.compute_config(Off())
     assert all(x["error"] and "no route" in x["error"] for x in r["sections"].values())
+
+
+def test_fdb_check_per_expected_tray_and_unknown_slots_skipped():
+    """Audit 4 Nov: an entry whose MAC belongs to another tray than its port leads to is not 'matched'; a port whose
+    slot maps to no tray, or to a tray not read, is not judged; a tray whose ports were not read is not used."""
+    sw = _switch([("02:00:00:00:00:00", "Ethernet1"),            # Slot2 -> ct03, but the MAC is ct01's
+                  ("02:00:00:09:00:00", "Ethernet2")])           # Slot0 -> no tray in slots
+    trays = {"ct03": _tray(mac="02:00:00:02:00:00"), "ct01": _tray(mac="02:00:00:00:00:00")}
+    r = cv.fdb_check({"st5": sw}, trays, {2: "ct03"})["switches"]["st5 asic0"]
+    assert r["matched"] == 0 and r["other_tray"] == {"ct03": 1} and r["no_gpu_port"] == {}
+    dead = _tray()
+    dead["sections"]["ports"] = {"data": None, "error": "no route to host"}
+    assert cv.ports_read(_tray()) and not cv.ports_read(dead)

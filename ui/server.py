@@ -103,9 +103,13 @@ class State:
         base = self.results_dir / "link-check"
         rows = []
         for d in base.glob("*/*"):
-            if not d.is_dir():
+            if not d.is_dir() or d.name.startswith("."):
                 continue
-            files = {p.name for p in d.iterdir() if p.is_file()}
+            try:
+                files = {p.name for p in d.iterdir() if p.is_file()}
+                mtime = d.stat().st_mtime
+            except OSError:                       # removed while listing (a newer check replaced it)
+                continue
             tool = d.name.split("-", 1)[0] if d.name.split("-", 1)[0] in TOOLS else "path"
             summary = ""
             for name in ("report.txt", "bcm.txt"):
@@ -117,7 +121,7 @@ class State:
                     except OSError:
                         pass
                     break
-            rows.append({"rack": d.parent.name, "name": d.name, "tool": tool, "mtime": d.stat().st_mtime,
+            rows.append({"rack": d.parent.name, "name": d.name, "tool": tool, "mtime": mtime,
                          "files": sorted(f for f in files if f.endswith((".html", ".txt", ".json"))),
                          "path": f"link-check/{d.parent.name}/{d.name}", "summary": summary,
                          "unsaved": (d / UNSAVED).exists()})
@@ -275,6 +279,12 @@ def _result_dir(state: State, rel: str) -> Path:
     return p
 
 
+def _gz_json(path):
+    import gzip
+    with gzip.open(path, "rt") as f:
+        return json.load(f)
+
+
 def _result_file(state: State, rel: str) -> Path:
     base = (state.results_dir).resolve()
     p = (base / unquote(rel)).resolve()
@@ -357,7 +367,7 @@ def gpus_view(state: State, inventory: str) -> dict:
     if not runs:
         raise BadRequest("no check of this rack with links yet - run one first (Check all links)")
     try:
-        trays = json.load(gzip.open(runs[0], "rt"))
+        trays = _gz_json(runs[0])
     except (OSError, ValueError, EOFError) as e:      # truncated copy (full disk): say so instead of a 500
         raise BadRequest(f"the latest check's tray data is unreadable ({type(e).__name__}) - run Check all links again") from None
     d = json.loads((runs[0].parent.parent / "link_check.json").read_text()) if (runs[0].parent.parent / "link_check.json").is_file() else {}
@@ -383,7 +393,7 @@ def port_view(state: State, rel: str, key: str) -> dict:
         raise BadRequest(f"no link {key} in that check")
     out = {"link": ln, "time_utc": d.get("time_utc"), "switch": None, "gpu": None, "gpu_device": None, "history": []}
     try:
-        sw = json.load(gzip.open(run / "raw" / "switches.json.gz", "rt")).get(ln["switch"]) or {}
+        sw = _gz_json(run / "raw" / "switches.json.gz").get(ln["switch"]) or {}
         a = (sw.get("asics") or {}).get(ln.get("asic") or "") or {}
         port = ln["sw_port"]
         out["switch"] = {"status": (a.get("status") or {}).get(port), "counters": (a.get("counters") or {}).get(port),
@@ -393,7 +403,7 @@ def port_view(state: State, rel: str, key: str) -> dict:
         pass
     try:
         if ln.get("tray") and ln.get("bdf"):
-            tr = json.load(gzip.open(run / "raw" / "trays.json.gz", "rt")).get(ln["tray"]) or {}
+            tr = _gz_json(run / "raw" / "trays.json.gz").get(ln["tray"]) or {}
             g = next((x for x in tr.get("gpus") or [] if x.get("bdf") == ln["bdf"]), None)
             if g:
                 out["gpu_device"] = {k: g.get(k) for k in ("bdf", "accelerator", "config_phase", "vpod_accelerators")}
@@ -751,7 +761,7 @@ def ai_chat(state: State, req: dict) -> dict:
             from heliosdbg import rackmap
             raw = state.results_dir / rel / "raw" / "switches.json.gz"
             try:
-                macs = rackmap.mac_index(json.load(gzip.open(raw, "rt"))) if raw.is_file() else None
+                macs = rackmap.mac_index(_gz_json(raw)) if raw.is_file() else None
             except (OSError, ValueError, EOFError):
                 macs = None
         ev, subject = ai.chat_context(scan, q, link if link and any(
@@ -775,7 +785,7 @@ def ai_chat(state: State, req: dict) -> dict:
 
 
 CONFIG_KEEP = 30                                       # saved reads kept per node (the oldest go)
-NODE_RX = re.compile(r"^[\w.-]+$")
+NODE_RX = re.compile(r"^[A-Za-z0-9][\w.-]*$")
 
 
 def _config_dir(state: State, rack: str, node: str = "") -> Path:
@@ -784,12 +794,23 @@ def _config_dir(state: State, rack: str, node: str = "") -> Path:
     return state.results_dir / "config" / rack / node if node else state.results_dir / "config" / rack
 
 
+def _free_stamp(d: Path) -> str:
+    """A UTC stamp no saved read in d uses yet: two reads in the same second must not overwrite each other."""
+    t = time.time()
+    while True:
+        st = time.strftime("%Y%m%d-%H%M%S", time.gmtime(t))
+        if not (d / f"{st}.json").exists() and not (d / f"rack-{st}.json").exists():
+            return st
+        t += 1
+
+
 def save_config(state: State, rack: str, out: dict, stamp: str) -> str:
     """Keep a config read as results/config/<rack>/<node>/<UTC>.json (newest CONFIG_KEEP per node): what a node
     looked like before an AFM reset / reconfigure is otherwise gone. Returns the path under results/."""
     d = _config_dir(state, rack, out["node"])
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{stamp}.json").write_text(json.dumps(out, default=str))
+    rel = f"config/{rack}/{out['node']}/{stamp}.json"
+    (d / f"{stamp}.json").write_text(json.dumps(out | {"saved": rel}, default=str))
     for old in sorted(d.glob("*.json"))[:-CONFIG_KEEP]:
         old.unlink(missing_ok=True)
     return f"config/{rack}/{out['node']}/{stamp}.json"
@@ -853,7 +874,8 @@ def _read_one(h, inv, is_switch: bool) -> dict:
 
 
 def _tray_slots(inv) -> dict:
-    return {int(h.extra["slot"]): h.name for h in inv.all_computes if (h.extra or {}).get("slot") is not None}
+    return {int(h.extra["slot"]): h.name for h in inv.all_computes
+            if str((h.extra or {}).get("slot", "")).isdigit()}       # 'FILL-ME' in a discovered draft: no slot
 
 
 def _newest_saved(state: State, rack: str, names) -> dict:
@@ -882,14 +904,20 @@ def node_config(state: State, req: dict) -> dict:
     if not (sw or ct):
         raise BadRequest(f"no switch or compute tray {name!r} in {req.get('inventory')}")
     rack = inv.rack or f.stem
-    out = _read_one(sw or ct, inv, bool(sw))
+    try:
+        out = _read_one(sw or ct, inv, bool(sw))
+    except Exception as e:  # noqa: BLE001 - a switch that does not answer fails before its sections
+        raise BadRequest(f"{name} not read: {type(e).__name__}: {str(e)[:300]}") from None
+    if all(v.get("error") for v in out["sections"].values()):   # nothing read: not kept as if it were its config
+        raise BadRequest(f"{name} not read: {next(iter(out['sections'].values()))['error']}")
     out["summary"] = config_view.summary(out)
     if sw:
-        trays = _newest_saved(state, rack, [h.name for h in inv.all_computes])
+        trays = {t: c for t, c in _newest_saved(state, rack, [h.name for h in inv.all_computes]).items()
+                 if config_view.ports_read(c)}
         if trays:
             out["fdb_check"] = config_view.fdb_check({name: out}, trays, _tray_slots(inv)) | {
                 "trays_from": {t: c.get("time_utc") for t, c in trays.items()}}
-    out["saved"] = save_config(state, rack, out, time.strftime("%Y%m%d-%H%M%S", time.gmtime()))
+    out["saved"] = save_config(state, rack, out, _free_stamp(_config_dir(state, rack, name)))
     return out
 
 
@@ -900,7 +928,20 @@ def rack_config(state: State, req: dict) -> dict:
     from heliosdbg import config_view
     f, inv = state.inventory(req.get("inventory", ""))
     rack = inv.rack or f.stem
-    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    with state.lock:
+        if getattr(state, "config_busy", False):
+            raise BadRequest("a whole-rack config read is already running - wait for it")
+        state.config_busy = True
+    try:
+        return _rack_config(state, f, inv, rack)
+    finally:
+        state.config_busy = False
+
+
+def _rack_config(state: State, f, inv, rack: str) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
+    from heliosdbg import config_view
+    stamp = _free_stamp(_config_dir(state, rack))
     hosts = [(h, True) for h in inv.all_switches] + [(h, False) for h in inv.all_computes]
     t0 = time.time()
 
@@ -927,13 +968,15 @@ def rack_config(state: State, req: dict) -> dict:
         nodes.append({"node": n, "kind": out["kind"], "saved": out["saved"], "read_s": out["read_s"],
                       "errors": bad, "summary": out["summary"]})
     swc = {n: c for n, c in cfgs.items() if c["kind"] == "switch"}
-    trc = {n: c for n, c in cfgs.items() if c["kind"] == "compute"}
+    trc = {n: c for n, c in cfgs.items() if c["kind"] == "compute" and config_view.ports_read(c)}
     result = {"rack": rack, "stamp": stamp, "read_s": round(time.time() - t0, 1), "nodes": nodes, "errors": errors,
               "odd": config_view.odd_ones(cfgs),
               "fdb_check": config_view.fdb_check(swc, trc, _tray_slots(inv)) if swc and trc else None}
     d = _config_dir(state, rack)
     d.mkdir(parents=True, exist_ok=True)
     (d / f"rack-{stamp}.json").write_text(json.dumps(result, default=str))
+    for old in sorted(d.glob("rack-*.json"))[:-CONFIG_KEEP]:
+        old.unlink(missing_ok=True)
     return result
 
 
@@ -949,7 +992,7 @@ def scan_view(state: State, rel: str) -> dict:
     if raw.is_file():
         import gzip
         try:
-            trays = json.load(gzip.open(raw, "rt"))
+            trays = _gz_json(raw)
             for tn, t in trays.items():
                 for g in (t or {}).get("gpus") or []:
                     if g.get("bdf") and str(g.get("accelerator", "")).isdigit():
@@ -1234,12 +1277,24 @@ def start_job(state: State, req: dict) -> dict:
                 logf.close()
             except OSError:
                 pass
+            if job["tool"] == "scan" and rc in (0, 1) and (out / "link_check.json").is_file():
+                # only a full check with links replaces older unsaved ones: a check of one switch, or one that read
+                # nothing (every switch off the network), must not delete the last full check (audit 4 Nov)
+                try:
+                    from heliosdbg import scans
+                    d = json.loads((out / "link_check.json").read_text())
+                    full = bool(d.get("links")) and not scans.partial(d)
+                except (OSError, ValueError):
+                    full = False
+                if full:
+                    lv = state.live
+                    keep = {out} | ({Path(lv.check_path).parent} if lv is not None and getattr(lv, "check_path", None) else set())
+                    with state.lock:
+                        job["dropped"] = drop_unsaved(out.parent, keep)
             with state.lock:
                 job["rc"], job["ended"] = rc, time.time()
                 job["status"] = ("stopped" if job.get("stopping") else
                                  {0: "ok", 1: "problems found", 2: "incomplete"}.get(rc, f"failed (rc {rc})"))
-            if job["tool"] == "scan" and (out / "link_check.json").is_file():
-                job["dropped"] = drop_unsaved(out.parent, out)
     threading.Thread(target=pump, daemon=True).start()
     return public(job)
 
@@ -1248,13 +1303,20 @@ UNSAVED = ".unsaved"          # a check run from the UI is kept only when the us
 SCAN_RX = re.compile(r"^link-check/[\w.-]+/scan-\d{8}-\d{6}(-live)?$")
 
 
-def drop_unsaved(rack_dir: Path, keep: Path) -> list[str]:
+def drop_unsaved(rack_dir: Path, keep) -> list[str]:
     """A newer check of the rack finished: earlier checks the user did not save are removed (only ones marked unsaved;
-    checks from before this choice, or run outside the UI, have no mark and stay)."""
+    checks from before this choice, or run outside the UI, have no mark and stay). keep: a folder, or a set of them
+    (the new check, the check Live follows). Renamed first, so a reader never sees a half-removed folder."""
+    keep = {Path(k) for k in (keep if isinstance(keep, (set, list, tuple)) else [keep])}
     gone = []
     for d in rack_dir.glob("scan-*"):
-        if d != keep and d.is_dir() and (d / UNSAVED).is_file():
-            shutil.rmtree(d, ignore_errors=True)
+        if d not in keep and d.is_dir() and (d / UNSAVED).is_file():
+            trash = d.with_name("." + d.name + ".removing")
+            try:
+                d.rename(trash)
+            except OSError:
+                continue
+            shutil.rmtree(trash, ignore_errors=True)
             gone.append(d.name)
     return gone
 
@@ -1265,7 +1327,10 @@ def save_scan(state: State, rel: str) -> dict:
     d = (state.results_dir / rel).resolve()
     if state.results_dir.resolve() not in d.parents or not d.is_dir():
         raise BadRequest("no such check")
-    (d / UNSAVED).unlink(missing_ok=True)
+    with state.lock:                          # not while drop_unsaved runs (it holds the lock)
+        if not d.is_dir():
+            raise BadRequest("this check was removed meanwhile (a newer full check replaced it)")
+        (d / UNSAVED).unlink(missing_ok=True)
     return {"saved": rel}
 
 
@@ -1547,8 +1612,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Helios-Debug") != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):
             return self._json(403, {"error": "missing X-Helios-Debug header / JSON body"})
         try:
-            n = int(self.headers.get("Content-Length") or 0)
-            if n > 64_000:
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise BadRequest("bad Content-Length") from None
+            if n < 0 or n > (2_200_000 if urlparse(self.path).path == "/api/run" else 64_000):   # /api/run: a cabling plan
                 raise BadRequest("request too large")
             req = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(req, dict):

@@ -643,24 +643,33 @@ def _run_scan(base):
     raise AssertionError("scan did not finish")
 
 
-def test_a_check_is_kept_only_when_saved(ui):
-    """A check run from the UI is 'not saved' until the user saves it; the next check removes an unsaved one. Checks
-    without the mark (older ones, CLI runs) are never removed."""
+def test_a_check_is_kept_only_when_saved(ui, monkeypatch):
+    """A check run from the UI is 'not saved' until the user saves it; the next FULL check with links removes an unsaved
+    one - a check that read nothing (every switch off the network) or only some switches removes none (audit 4 Nov:
+    it deleted the last full check). Checks without the mark (older ones, CLI runs) are never removed."""
     base, tmp = ui
     old = tmp / "results" / "link-check" / "lab" / "scan-20261001-000000"
     old.mkdir(parents=True)
     (old / "link_check.json").write_text("{}")
-    a = _run_scan(base)
+    a = _run_scan(base)                                # the lab's hosts do not exist: a check that read nothing
     rows = {r["path"]: r for r in json.loads(call(base, "/api/results")[1])["results"]}
     assert rows[a["out"]]["unsaved"] is True and rows["link-check/lab/scan-20261001-000000"]["unsaved"] is False
     time.sleep(1.1)                                    # check folders are named by the second
     b = _run_scan(base)
-    assert not (tmp / "results" / a["out"]).exists() and b["dropped"] == [a["out"].rsplit("/", 1)[1]]
-    assert old.is_dir()
-    assert call(base, "/api/scan/save", {"path": b["out"]})[0] == 200
+    assert (tmp / "results" / a["out"]).is_dir() and not b.get("dropped")      # read nothing: removes nothing
+    full = tmp / "fulltool.py"                         # a stand-in check tool that reads the whole rack
+    full.write_text("import json, pathlib, sys\nout = pathlib.Path(sys.argv[sys.argv.index('--out') + 1])\n"
+                    "out.mkdir(parents=True, exist_ok=True)\n(out / 'link_check.json').write_text(json.dumps("
+                    "{'links': [{'switch': 'st1', 'sw_port': 'Ethernet1', 'state': 'ok'}], 'scope': {}}))\nsys.exit(1)\n")
+    monkeypatch.setattr(server, "TOOL", full)
     time.sleep(1.1)
     c = _run_scan(base)
-    assert (tmp / "results" / b["out"]).is_dir() and c["dropped"] == []          # saved: kept
+    assert sorted(c["dropped"]) == sorted([a["out"].rsplit("/", 1)[1], b["out"].rsplit("/", 1)[1]])
+    assert not (tmp / "results" / a["out"]).exists() and old.is_dir()
+    assert call(base, "/api/scan/save", {"path": c["out"]})[0] == 200
+    time.sleep(1.1)
+    d = _run_scan(base)
+    assert (tmp / "results" / c["out"]).is_dir() and d["dropped"] == []          # saved: kept
     assert call(base, "/api/scan/save", {"path": "link-check/lab/../../x"})[0] == 400
 
 
@@ -732,3 +741,6 @@ def test_config_reads_are_kept_compared_and_downloadable(ui, monkeypatch):
     # a switch read alone checks its forwarding entries against the trays' newest saved reads
     sw = json.loads(call(base, "/api/config", {"inventory": "cfg.local.yaml", "node": "st5"})[1])
     assert sw["fdb_check"]["switches"]["st5 asic0"]["no_gpu_port"] == {"ct01": 1}
+    code, body = call(base, "/api/config", {"inventory": "cfg.local.yaml", "node": "st1"})   # off the network: 400, not kept
+    assert code == 400 and b"No route to host" in body
+    assert "st1" not in json.loads(call(base, "/api/config/saved?inventory=cfg.local.yaml")[1])["nodes"]
