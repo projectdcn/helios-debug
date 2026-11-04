@@ -34,8 +34,25 @@ pre code{background:none;padding:0;overflow-wrap:normal;white-space:pre}
 table{border-collapse:collapse;width:100%;background:var(--card);font-size:14px}
 th,td{text-align:left;vertical-align:top;padding:7px 10px;border-bottom:1px solid var(--line)}
 th{background:var(--th);font-weight:600}tr:last-child td{border-bottom:none}
+a.src{text-decoration:underline dotted;text-underline-offset:2px}
 li{margin:3px 0}ul.check{list-style:none;padding-left:4px}ul.check li::before{content:"\\2610  ";color:var(--mut)}
 """
+
+REPO = Path(__file__).resolve().parents[1]
+GITHUB = "https://github.com/projectdcn/helios-debug/blob/main/"
+# a file of this repository named in the text or in a command (`tools/link_check.py`, `heliosdbg/bmc.py`, bare
+# `link_check.py`): a link to its source - the UI serves it at /code/<path>; a page opened from disk goes to GitHub
+CODE_RX = re.compile(r"(?<![\w/.-])((?:tools|heliosdbg|ui)/[A-Za-z0-9_/]+\.(?:py|sh)|link_check\.py)(?![\w/])")
+
+
+def code_links(escaped: str) -> str:
+    def a(m):
+        path = "tools/link_check.py" if m.group(1) == "link_check.py" else m.group(1)
+        if not (REPO / path).is_file():
+            return m.group(0)
+        return f"<a class='src' href='/code/{path}' target='_blank' title='the source of {path}'>{m.group(1)}</a>"
+    return CODE_RX.sub(a, escaped)
+
 
 ESC = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|<>~])")
 
@@ -44,7 +61,7 @@ def inline(text: str) -> str:
     codes: list[str] = []
 
     def keep(m):
-        codes.append(f"<code>{html.escape(m.group(1))}</code>")
+        codes.append(f"<code>{code_links(html.escape(m.group(1)))}</code>")
         return "\x01%d\x01" % (len(codes) - 1)
     text = re.sub(r"`([^`]+)`", keep, text)                      # code first: bold may wrap code spans
     text = html.escape(ESC.sub(lambda m: "\x00%d\x00" % ord(m.group(1)), text), quote=False)
@@ -73,7 +90,7 @@ def render(md: str) -> tuple[str, str, list[tuple[str, str]]]:
         while j < len(lines) and lines[j].strip() != "```":
             buf.append(lines[j][indent:] if lines[j][:indent].strip() == "" else lines[j].lstrip())
             j += 1
-        return f"<pre><code>{html.escape(chr(10).join(buf))}</code></pre>", j + 1
+        return f"<pre><code>{code_links(html.escape(chr(10).join(buf)))}</code></pre>", j + 1
 
     while i < len(lines):
         ln = lines[i]
@@ -148,7 +165,9 @@ def page(md_path: Path) -> str:
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<title>{html.escape(title)}</title><style>{CSS}</style></head>"
-            f"<body><div class='page'>{body}</div></body></html>\n")
+            f"<body><div class='page'>{body}</div>"
+            f"<script>if(location.protocol==='file:')document.querySelectorAll('a.src').forEach(function(a)"
+            f"{{a.href='{GITHUB}'+a.getAttribute('href').slice(6)}})</script></body></html>\n")
 
 
 def main(argv: list[str]) -> int:

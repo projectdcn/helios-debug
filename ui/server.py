@@ -1417,6 +1417,66 @@ def stop_job(state: State, jid: str) -> dict:
 
 
 KILL_AFTER_S = 60
+CODE_DIRS = ("tools", "heliosdbg", "ui")              # the source the guide links to (/code/<path>), read-only
+CODE_TOP = ("README.md", "pyproject.toml", "docs/link-debug-guide.md", "inventory/example.yaml",
+            "inventory/example-fullrack.yaml")
+
+
+def code_files() -> list[str]:
+    """The code a user may read or download from the UI: the tools, the library, the UI and the README / examples.
+    Never inventories of real racks, results or backups."""
+    out = [t for t in CODE_TOP if (ROOT / t).is_file()]
+    for d in CODE_DIRS:
+        for f in sorted((ROOT / d).rglob("*")):
+            r = f.relative_to(ROOT).as_posix()
+            if f.is_file() and f.suffix in (".py", ".sh") and "__pycache__" not in r and ".bak" not in r:
+                out.append(r)
+    return out
+
+
+def code_file(path: str) -> Path:
+    if path not in code_files():
+        raise BadRequest("not a code file of helios-debug")
+    return ROOT / path
+
+
+def code_page(path: str) -> bytes:
+    """One source file, line-numbered (#L<n> links to a line), with its download and the whole code as a zip."""
+    import html as H
+    lines = code_file(path).read_text(errors="replace").splitlines()
+    rows = "".join(f"<tr id='L{n}'><td class=n><a href='#L{n}'>{n}</a></td><td><pre>{H.escape(t) or ' '}</pre></td></tr>"
+                   for n, t in enumerate(lines, 1))
+    others = "".join(f"<option{' selected' if f == path else ''}>{H.escape(f)}</option>" for f in code_files())
+    return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,"
+            f"initial-scale=1'><title>{H.escape(path)}</title><style>"
+            ":root{--bg:#fbfbfa;--fg:#1d1f21;--mut:#5f6368;--line:#dcdcd8;--hl:#fff3c4;--acc:#0b6bcb}"
+            "@media (prefers-color-scheme:dark){:root{--bg:#16181b;--fg:#e6e6e3;--mut:#8a8f94;--line:#33363b;"
+            "--hl:#3d3618;--acc:#6aaef5}}"
+            "body{margin:0;background:var(--bg);color:var(--fg);font:14px -apple-system,Segoe UI,Roboto,sans-serif}"
+            "header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px;"
+            "display:flex;gap:12px;flex-wrap:wrap;align-items:center}a{color:var(--acc)}"
+            "select{max-width:100%;font:inherit}table{border-collapse:collapse;width:100%}"
+            "td{vertical-align:top;padding:0}td.n{text-align:right;padding:0 10px;user-select:none;width:1%}"
+            "td.n a{color:var(--mut);text-decoration:none;font:12px/1.5 ui-monospace,Menlo,monospace}"
+            "pre{margin:0;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;"
+            "overflow-wrap:anywhere}tr:target{background:var(--hl)}"
+            f"</style></head><body><header><strong>{H.escape(path)}</strong><span style='color:var(--mut)'>"
+            f"{len(lines)} lines, read-only</span><a href='/code/{H.escape(path)}?raw=1'>Download this file</a>"
+            "<a href='/code.zip'>Download all the code (zip)</a>"
+            "<select onchange=\"location.href='/code/'+this.value\" aria-label='Another file'>" + others + "</select>"
+            f"</header><table>{rows}</table></body></html>").encode()
+
+
+def code_zip() -> bytes:
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in code_files():
+            z.write(ROOT / f, "helios-debug/" + f)
+    return buf.getvalue()
+
+
 JOBS_LOGS_KEEP = 200                                  # run logs (and pasted cabling plans) kept in ui-jobs/
 
 
@@ -1555,6 +1615,17 @@ class Handler(BaseHTTPRequestHandler):
                                   {"Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' "
                                                               "https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
                                                               "img-src data:; frame-ancestors 'self'"})   # shown in the UI's Topology tab
+            if u.path == "/code.zip":
+                return self._send(200, code_zip(), "application/zip",
+                                  {"Content-Disposition": 'attachment; filename="helios-debug-code.zip"'})
+            if u.path.startswith("/code/"):
+                path = unquote(u.path[len("/code/"):])
+                if (q.get("raw") or [""])[0]:
+                    return self._send(200, code_file(path).read_bytes(), "text/plain; charset=utf-8",
+                                      {"Content-Disposition": f'attachment; filename="{Path(path).name}"'})
+                return self._send(200, code_page(path), "text/html; charset=utf-8",
+                                  {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+                                                              "script-src 'unsafe-inline'; frame-ancestors 'self'"})
             if u.path == "/guide":
                 g = ROOT / "docs" / "link-debug-guide.html"
                 if not g.is_file():

@@ -53,3 +53,24 @@ def test_old_run_logs_are_pruned_but_not_a_kept_runs(tmp_path, monkeypatch):
         os.utime(f, (i, i))
     server._prune_job_files(tmp_path, {"j0": {}})
     assert sorted(p.name for p in tmp_path.glob("*.log")) == ["j0.log", "j3.log", "j4.log", "j5.log"]
+
+
+def test_the_guide_links_code_files_and_the_ui_serves_only_code():
+    import io
+    import zipfile
+
+    import pytest
+
+    from tools import md_to_html
+    files = server.code_files()
+    assert "tools/link_check.py" in files and "heliosdbg/platforms/sonic.py" in files
+    assert not [f for f in files if "local" in f or f.startswith(("results", "inventory/g"))]
+    for bad in ("../etc/passwd", "inventory/g02-g17.local.yaml", "ui/static/index.html", "results/x"):
+        with pytest.raises(server.BadRequest):
+            server.code_file(bad)
+    page = server.code_page("heliosdbg/scans.py").decode()
+    assert "id='L1'" in page and "/code/heliosdbg/scans.py?raw=1" in page and "/code.zip" in page
+    names = zipfile.ZipFile(io.BytesIO(server.code_zip())).namelist()
+    assert "helios-debug/tools/link_check.py" in names and not [n for n in names if "local" in n]
+    h = md_to_html.inline("run `python tools/link_check.py scan` or `link_check.py`; `tools/rack_health.py` is elsewhere")
+    assert h.count("href='/code/tools/link_check.py'") == 2 and "rack_health.py</code>" in h

@@ -17,6 +17,8 @@ When the problem is not one link (many links, a whole switch or tray, a failure 
 
 ## Run the link check tool first
 
+**Code:** `tools/link_check.py` (every command below), `heliosdbg/linkdiag.py` (reads both ends of every link and names the cause). Every file name in this guide links to its source; the UI shows it read-only, with a download (or all the code as one zip: The code behind this guide, at the end).
+
 **Getting the tools.** Everything named `tools/...` in this guide is in the helios-debug repository, https://github.com/projectdcn/helios-debug (Python 3.10 or newer; it needs only paramiko and PyYAML):
 
 ```
@@ -204,6 +206,8 @@ To count changes on a Linux interface, `ip -s link show <iface>` with `cat /sys/
 
 ## Layer 1 from the Broadcom shell
 
+**Code:** `heliosdbg/bcm.py` (what the link check reads from bcmcmd and how it judges a lane).
+
 SONiC only says a switch port is oper down. The switch ASIC's own shell says why, lane by lane: whether any signal arrives, whether the receiver locks, link training, faults, signal quality and how close the FEC runs to its limit. It is read-only and needs sudo on the switch.
 
 **With the tool.** `scan` adds this automatically to every physical-layer problem link (up to 64 ports; `--no-bcm` skips it). For chosen ports, or every oper-down trunk port of one switch when `--ports` is left out:
@@ -259,6 +263,8 @@ A GPU port can be LINK\_UP and still carry no traffic if its IFCP link-layer ses
 A LINK\_UP port without a session is a real fault, not a cosmetic one: g02-g17 has two (see Known issues). The automated check is TC-001.
 
 ## What AFM reports
+
+**Code:** `heliosdbg/afm.py` (the AFM API, read-only), `heliosdbg/afmctl.py` (afmctl on the trays).
 
 AFM shows each link from both sides, and the two should agree. Read them through the AFM API (log in first; the controller is only reachable from the jump host).
 
@@ -324,6 +330,8 @@ On g02-g17 the failing ports moved between runs (16 Oct: 05:38, 05:51, 13:37 UTC
 
 ## Isolate by shutting one end
 
+**Code:** `heliosdbg/isolate.py` (one link down and back, with its guards).
+
 Shutting one end and watching what the other end and AFM report tells you which side is at fault. This changes the fabric: on the shared g02-g17 rack, do it only with a go-ahead, one port at a time, and always bring the port back.
 
 1. Note the starting state of both ends (Layer 1 tables) and the system vPOD's planes.
@@ -363,6 +371,8 @@ When the layer checks pass and traffic still fails, or a fault comes and goes, t
 
 ## Node health: beyond the links
 
+**Code:** `heliosdbg/health.py` (runs it), `heliosdbg/checks.py` (a finding, the thresholds), one file per platform in `heliosdbg/platforms/__init__.py`.
+
 A link can be fine while the node around it is not: a SONiC container that stopped, a full ASIC table, a failed fan, a GPU the OS cannot see, an expired AFM certificate. Check node health when a problem is not one link (several links, a whole switch or tray, a test that fails with every link up), or before you trust a rack for a run.
 
 ```
@@ -384,6 +394,8 @@ Every command below is what the tool runs, so you can run the same one by hand o
 
 ## The QFX5252 switch tray
 
+**Code:** `heliosdbg/platforms/sonic.py` (the switch tray checks: leak, SSD, clock, BMC, next image, management).
+
 What a Helios switch tray is, from the HPE switch tray configuration and management guide (draft of 3 Nov 2026), with what it means when debugging:
 
 - **Two Tomahawk 6 chips per tray** (Broadcom BCM78914, 102.4 Tbps each), `asic0` and `asic1`, each a SONiC namespace: every `show interfaces ...`, `config interface ...` and `sonic-db-cli` command on a GPU port takes `-n asic0` or `-n asic1`. A rack has 6 switch trays, 12 chips, and 18 compute trays x 4 GPUs = 72 GPUs.
@@ -398,6 +410,8 @@ What a Helios switch tray is, from the HPE switch tray configuration and managem
 **Changes, not debugging.** Installing or upgrading an image (`sonic-installer install`, ONIE `onie-nos-install`), `config interface ... shutdown / startup`, removing VLAN members, `config save -y`, management address changes and BMC firmware or power commands all CHANGE THE TRAY - for its owner, with the serial console connected. Two traps from the guide: `sonic-installer install --skip_migration` boots without the management address, hostname or CONFIG_DB (only the console reaches it afterwards), and a failed install must not be followed by a reboot.
 
 ## SONiC switch OS
+
+**Code:** `heliosdbg/platforms/sonic.py`, `heliosdbg/sonic.py` (how the link check reads a switch).
 
 Run on the switch tray (`ssh admin@<switch>`). Commands with `-n asicN` take each ASIC namespace (`asic0`, `asic1`).
 
@@ -435,6 +449,8 @@ Run on the switch tray (`ssh admin@<switch>`). Commands with `-n asicN` take eac
 
 ## Compute trays and GPUs
 
+**Code:** `heliosdbg/platforms/amd_gpu.py` (amd-smi), `heliosdbg/platforms/linux.py` (disk, memory, kernel errors), `heliosdbg/compute.py`.
+
 Run on the compute tray. The amd-smi and afmctl commands need sudo.
 
 | Check | Command | Healthy | If not |
@@ -452,6 +468,8 @@ Run on the compute tray. The amd-smi and afmctl commands need sudo.
 
 ## AFM health
 
+**Code:** `heliosdbg/platforms/afm.py`.
+
 | Check | Where | Healthy | If not |
 | --- | --- | --- | --- |
 | AFM agent | `systemctl is-active afm-agent` on each switch | `active` | AFM loses this switch and its node agents: `systemctl status afm-agent`, `sudo docker logs --tail 100 afm-agent`; starting it again is a change for the AFM owner |
@@ -460,6 +478,8 @@ Run on the compute tray. The amd-smi and afmctl commands need sudo.
 | AFM's view of the compute nodes | AFM API, only when the AFM password is given for the run | every compute node admitted and healthy | AFM sees the node as not healthy (its agent, its GPUs or its admission): open the node in AFM and read its node agent's log on the switch that serves it |
 
 ## When a node does not answer
+
+**Code:** `heliosdbg/reach.py` (why SSH failed), `heliosdbg/bmc.py` (the BMC over Redfish).
 
 A node health check (or a link check, or Live) that cannot log in to a node names why, from the SSH error itself:
 
@@ -500,6 +520,8 @@ Inventory: `bmc:` (address) and `bmc_user:` per node or under `defaults:`. The p
 
 ## Scale-out NICs (RDMA)
 
+**Code:** `heliosdbg/platforms/rdma.py`.
+
 The compute tray's RDMA NICs (AMD Pensando `ionic` on g02-g17) are checked by health too, read-only:
 
 | Check | Command | Healthy | If not |
@@ -512,6 +534,8 @@ The compute tray's RDMA NICs (AMD Pensando `ionic` on g02-g17) are checked by he
 
 ## Health over time and the incident brain
 
+**Code:** `heliosdbg/history.py`, `heliosdbg/incidents.py`.
+
 - Each health run is compared with the rack's previous one: **new**, **gone**, and **grew** (the same finding with a
   bigger number: ECC count, disk %, CRM %), per node and only over nodes checked both times. The report, the UI and
   `health-history.jsonl` keep it.
@@ -523,6 +547,8 @@ The compute tray's RDMA NICs (AMD Pensando `ionic` on g02-g17) are checked by he
   that node's raw outputs).
 
 ## Debug a node with the AI
+
+**Code:** `heliosdbg/ai.py` (the advice and its safety checks), `heliosdbg/guide.py` (the read-only command list).
 
 For a problem the health check does not name, use **Debug a node** in the web UI (or the **Debug &lt;node&gt;** button on a health finding): describe the symptom and the node, and the helios model proposes one read-only command at a time. You click Run, the output goes back to the model, and it proposes the next command until it names the cause.
 
@@ -589,6 +615,8 @@ The disruptive link flap / link down cases (34 of them, from a single port flap 
 | HC-012 | the link scan of this guide (`link_check.py scan`) run by the rack health check on the same inventory: one root cause per down / degraded link, trays quarantined in the inventory recorded but not failed; the report (ASIC to GPU map, every link, command logs) is kept with the run under `results/runs/<rack>/link-scans/` | every layer, with the cause |
 
 ## Evidence to collect before raising it
+
+**Code:** `heliosdbg/bundle.py` (the evidence zip), `heliosdbg/ticket.py` (the ticket text).
 
 Send the same set every time, with UTC times: it lets AMD (GPU, IFCP, AFM) or HPE (switch, optics) act without asking back.
 
@@ -663,6 +691,8 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 
 ## Reading the rack map
 
+**Code:** `heliosdbg/live.py` (Live), `heliosdbg/scans.py` (which check the map shows), `ui/server.py`.
+
 - The map always shows every switch and tray of the inventory. A switch or tray the chosen check could not read is
   drawn **grey** from the newest earlier check that read it; hover a link for what that check said and why it is
   missing now. The summary line names them.
@@ -671,3 +701,41 @@ Every abbreviation and status word used in this guide. AFM, IFoE and IFCP are no
 - With Live off, the map is the check's picture - the bar says how old it is. With Live on, links whose switch and
   tray could not be re-read turn grey ("not known") instead of keeping the check's colour.
 
+## The code behind this guide
+
+Each file opens read-only in the UI with line numbers (a line links as `#L<n>`), a download, and "Download all the code (zip)". The same files are on GitHub (https://github.com/projectdcn/helios-debug).
+
+| File | What it does |
+|---|---|
+| `tools/link_check.py` | the command line: scan, link, watch, cabling, isolate, bcm, path, pingmap, health |
+| `heliosdbg/linkdiag.py` | both ends of every GPU link and the root cause of each link that is down or degraded |
+| `heliosdbg/linkone.py` | one link from whatever identifier you have |
+| `heliosdbg/watch.py` | reading chosen links again and again |
+| `heliosdbg/timeline.py` | one link's timeline from both ends' logs and AFM |
+| `heliosdbg/isolate.py` | taking ONE link down and back (DISRUPTIVE) |
+| `heliosdbg/cabling.py` | the cabling plan against what a scan saw |
+| `heliosdbg/sonic.py` | reading a SONiC switch tray (multi-ASIC) |
+| `heliosdbg/compute.py` | reading a compute tray |
+| `heliosdbg/afmctl.py` | afmctl output on the trays |
+| `heliosdbg/afm.py` | the AFM API, read-only |
+| `heliosdbg/bcm.py` | the Broadcom shell view of a port's lanes |
+| `heliosdbg/health.py` | node health of a rack |
+| `heliosdbg/checks.py` | a finding, the thresholds, what counts as not checked |
+| `heliosdbg/platforms/sonic.py` | switch tray checks and its read-only commands |
+| `heliosdbg/platforms/amd_gpu.py` | GPU checks (amd-smi) |
+| `heliosdbg/platforms/rdma.py` | scale-out NIC checks |
+| `heliosdbg/platforms/linux.py` | disk, memory and kernel errors on any node |
+| `heliosdbg/platforms/afm.py` | afm-agent and certificates on the nodes |
+| `heliosdbg/reach.py` | why a node could not be reached |
+| `heliosdbg/bmc.py` | a tray's BMC over Redfish |
+| `heliosdbg/history.py` | what changed since the previous health check |
+| `heliosdbg/live.py` | Live link state |
+| `heliosdbg/config_view.py` | the Config tab's read of a node |
+| `heliosdbg/ai.py` | the AI advice and its safety checks |
+| `heliosdbg/guide.py` | Debug a node: the read-only command list |
+| `heliosdbg/bundle.py` | the evidence zip of a run |
+| `heliosdbg/ticket.py` | ticket and handover text |
+| `heliosdbg/inventory.py` | the rack inventory |
+| `heliosdbg/transport.py` | SSH and the jump host |
+| `ui/server.py` | the web UI |
+| `tools/build_switch_bundle.py` | the UI bundle for a switch tray or jump host |
