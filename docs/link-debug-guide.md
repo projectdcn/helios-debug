@@ -1,6 +1,6 @@
 # Helios Debug Guide
 
-2 Nov 2026
+4 Nov 2026
 
 A scale-up link has three ends to check: the switch ASIC port, the cable and optics between, and the GPU's IFoE port on the compute tray, with AFM and IFCP layered on top. Work from the bottom up: physical link on both ends, then the IFCP session, then what AFM reports, then an L2 ping. Stop at the first layer that disagrees. Abbreviations are explained at the end, under Abbreviations and terms.
 
@@ -167,6 +167,10 @@ Check both ends: a link is only up when the switch port and the GPU port both sa
 | Optic power and temperature | `show interfaces transceiver eeprom --dom -n asic1 Ethernet261` | Rx / Tx power inside the module's thresholds on every lane |
 | FEC errors | `show interfaces counters fec-stats -n asic1` | Uncorrectable count not growing |
 | Port errors | `show interfaces counters -n asic1 -d all` | RX\_ERR / TX\_ERR not growing |
+| Error kinds and when last seen | `show interfaces errors Ethernet261` | every count 0, last timestamp `Never` (`fec sync loss`, `high ber error`, `mac local / remote fault`, `signal local error` name the layer) |
+| Flap history | `show interfaces flap Ethernet261` | flap count steady; the last down / up timestamps (UTC) tell when it last dropped |
+| FEC mode | `show interfaces fec status -n asic1 Ethernet261` | FEC Oper `rs` on the GPU ports |
+| Optic identity | `show interfaces transceiver info -n asic1 Ethernet261` | vendor, part and serial as expected (for an RMA or a swap) |
 
 **Tray side** (SSH to the compute tray, as root):
 
@@ -356,7 +360,7 @@ python tools/link_check.py health --inventory <inventory> --switches st1,st2 --t
 python tools/link_check.py health --inventory <inventory> --only switches --no-drift
 ```
 
-It runs the read-only commands of the four sections below on every switch tray and compute tray (`--only switches|trays` to limit it, `--no-drift` to skip the running-vs-saved configuration compare, `--no-afm` to skip AFM's view), and writes `health.json`, `report.txt`, `report.html` and the raw outputs to `results/link-check/<rack>/health-<UTC time>/`. It exits 1 when it has findings. In the web UI it is the **Node health** tab.
+It runs the read-only commands of the four sections below on every switch tray and compute tray (on a QFX5252 switch tray also leak detection, SSD health, NTP, the switch BMC through `bmc-manager`, the image of the next boot and the management interfaces) (`--only switches|trays` to limit it, `--no-drift` to skip the running-vs-saved configuration compare, `--no-afm` to skip AFM's view), and writes `health.json`, `report.txt`, `report.html` and the raw outputs to `results/link-check/<rack>/health-<UTC time>/`. It exits 1 when it has findings. In the web UI it is the **Node health** tab.
 
 How to read the report:
 
@@ -366,6 +370,21 @@ How to read the report:
 - **Thresholds:** disk 85 % warning / 95 % critical, memory available below 10 % / 5 %, CRM tables 85 % / 98 %, GPU hotspot 100 C, certificates expiring within 30 days. The inventory's `thresholds: health:` block overrides them.
 
 Every command below is what the tool runs, so you can run the same one by hand on the node to look closer.
+
+## The QFX5252 switch tray
+
+What a Helios switch tray is, from the HPE switch tray configuration and management guide (draft of 3 Nov 2026), with what it means when debugging:
+
+- **Two Tomahawk 6 chips per tray** (Broadcom BCM78914, 102.4 Tbps each), `asic0` and `asic1`, each a SONiC namespace: every `show interfaces ...`, `config interface ...` and `sonic-db-cli` command on a GPU port takes `-n asic0` or `-n asic1`. A rack has 6 switch trays, 12 chips, and 18 compute trays x 4 GPUs = 72 GPUs.
+- **HPE Networking Enterprise SONiC (HPEN SONiC)**, built on community SONiC 2025.05, with secure boot, ONIE as the installer, and AMD's switch-tray components. `show version` and `sudo sonic-installer list` name the image running now (Current) and the one the next reboot starts (Next).
+- **No MAC learning, no aging, no spanning tree.** The tray is a controlled fabric, not an Ethernet switch: every forwarding entry is static, written by AFM (through gNMI) for the MAC AFM gave each GPU port. A GPU that loses that MAC (a reset, a change of virtualization mode) keeps a working cable but its traffic matches no entry - see "GPU state" (PROVIDER, factory MACs 00:1f:0e:...) and the Config view's forwarding-entry check.
+- **One 100G QSFP front-panel port per chip:** `Ethernet513` on asic0 and `Ethernet514` on asic1 (not GPU ports; 100G where the GPU ports run 400G). `show interfaces transceiver presence -n asic0` / `-n asic1` shows whether a module is in them.
+- **Management:** `eth0` is the out-of-band management port; `eth1` is the host's side of the shared 1 GbE port whose other side (NC-SI) is the BMC. The BMC runs OpenBMC and stays on whenever the tray has power, even with SONiC down. See "When a node does not answer" below.
+- **Console:** serial, 115200 baud, 8 data bits, no parity, 1 stop bit; or Serial-over-LAN from the BMC. ONIE's console is a root shell (press Enter, no login).
+- **Firmware on the tray:** BIOS, BMC, SSD, FPGA (board control), retimers (keep the ASIC-to-port signals clean - a retimer firmware mismatch can look like a link problem), and the 1210 management Ethernet controller. Updates run from SONiC and cover the whole tray including the BMC; they take minutes and must not be interrupted.
+- **sudo:** `config`, `sonic-installer`, firmware, LED and hardware access need sudo; most `show` commands, Linux status and CONFIG_DB reads run as admin without it; a few read-only hardware reads still need sudo.
+
+**Changes, not debugging.** Installing or upgrading an image (`sonic-installer install`, ONIE `onie-nos-install`), `config interface ... shutdown / startup`, removing VLAN members, `config save -y`, management address changes and BMC firmware or power commands all CHANGE THE TRAY - for its owner, with the serial console connected. Two traps from the guide: `sonic-installer install --skip_migration` boots without the management address, hostname or CONFIG_DB (only the console reaches it afterwards), and a failed install must not be followed by a reboot.
 
 ## SONiC switch OS
 
@@ -393,6 +412,14 @@ Run on the switch tray (`ssh admin@<switch>`). Commands with `-n asicN` take eac
 | Fans | `show platform fan` | every fan present and `OK` | replace or reseat the fan on site; watch the temperatures meanwhile |
 | Temperatures | `show platform temperature` | every sensor below its high threshold | above high: airflow, a fan, or the room; at critical the switch protects itself by shutting down |
 | Voltages | `show platform voltage` | every rail within its thresholds | a PSU or the board's regulator: read `show platform psustatus`; hardware owner |
+| Leak detection | `show platform leak status`, `show platform leak channels` | `Device leak status Normal`, `Hardware comparator alert No`; every channel `Data-status Good` | a leak: the location column names the manifold / cold plate - the site inspects the cooling NOW; a channel not Good: that sensor is blind (hardware owner) |
+| SSD | `show platform ssdhealth` | Health 80 % or more | wearing out: plan its replacement; keep the configuration saved off the switch |
+| Currents | `show platform current` | every `Warning` False | a rail draws out of range: hardware owner |
+| PCIe devices | `show platform pcieinfo` | both TH6 chips (`BCM78914 ... Tomahawk6`), the BMC bridge, the HPE system devices and the NVMe listed | a chip missing from the list: SONiC cannot drive it (its links are all down); hardware owner |
+| Identity | `show platform summary`, `show platform syseeprom` | platform `x86_64-juniper_qfx5252-r0`, HwSKU QFX5252, 2 ASICs; serial / base MAC | for the RMA / ticket |
+| Clock | `show ntp` (or `chronyc tracking`, `chronyc sources -v`) | `Leap status : Normal`, a source marked `*` | `Not synchronised`, sources with Reach 0: no NTP server answers from the management network - log and event times cannot be lined up with the other nodes (g02-g17 st5, 4 Nov) |
+| Image for the next boot | `sudo sonic-installer list` | Current = Next | different: someone installed or chose another image; the next reboot changes the software - confirm it is planned |
+| Switch BMC | `sudo bmc-manager health`, `sudo bmc-manager status`, `sudo bmc-manager power-status`, `sudo bmc-manager version`, `sudo bmc-manager flash-info` | `BMC STATUS: HEALTHY`, its services active, power-status only `[PASS]` lines | `[WARN] WDT reset status asserted`: the BMC hung and its watchdog restarted it (g02-g17 st5, 4 Nov) - read `sudo bmc-manager journal errors` / `dmesg errors`; recovery (`bmc-manager power-cycle`) restarts only the BMC, not SONiC, but is still a change |
 | Hardware watchdog | `sudo watchdogutil status` | `Armed` | not armed: if the switch OS hangs, nothing restarts it. Read `systemctl status watchdog-control` (or the platform's watchdog service); arming it is a change for the switch owner |
 
 ## Compute trays and GPUs
@@ -433,6 +460,19 @@ A node health check (or a link check, or Live) that cannot log in to a node name
 | SSH refused | it answers, SSH is not listening: booting, or sshd stopped | wait, else the console on the BMC |
 | host key changed | reinstalled? the host key differs from the one known | `ssh-keygen -R <host>` on the machine that logs in (the jump host with via: exec) |
 | the jump host did not open a session | usually its limit on sessions at once (retried) | run large checks on the jump host itself |
+
+**A switch tray that is powered but does not answer** (its GPU links read up from the trays, SSH says no route / no answer - g02-g17 st1-st4, st6 on 3 Nov): the data plane is fine, the management path is not. From the serial console or the BMC's Serial-over-LAN, read-only:
+
+| Check | Command | Healthy | If not |
+| --- | --- | --- | --- |
+| Management address | `ip -br -4 address show eth0` | UP with the address the inventory uses | no address: DHCP got none (below); another address: the inventory or DNS is stale |
+| Default route | `ip route show default` | `default via <gateway> dev eth0` | none or via another device: the switch cannot answer anyone off its subnet |
+| DHCP client | `pgrep -af 'dhclient.*eth0'` | a dhclient for eth0 (when no static address is configured) | none: `sudo dhclient eth0` gets an address back (a change, but the one SONiC itself would make) |
+| Static management config | `sudo sonic-db-cli CONFIG_DB KEYS 'MGMT_INTERFACE\|*'` | empty (DHCP on eth0) or exactly one entry | two entries with gateways (eth0 and eth1): the default route flips between them and the switch drops off the management network - keep one |
+| The shared port | `ip -br link show eth1`, `sudo ethtool eth1` | eth1 and the BMC have different addresses | the same address on host and BMC: neither answers reliably |
+| The BMC from SONiC | `sudo bmc-manager status` | the BMC's eth0 address and `usb0` up | the BMC answers over the internal USB link even when its own address does not: its eth0 state says whether the shared port has link |
+
+Do not edit `/etc/network/interfaces` (SONiC regenerates it) and do not use the namespaced `config interface -n asicN ...` commands for eth0 - they configure data ports. The checks above are also in **Node health** for a switch it can reach (management interfaces, BMC).
 
 **Through the BMC.** A tray (or switch) that SSH cannot reach is asked through its BMC over Redfish (read-only GETs):
 the BMC runs on standby power and answers on its own network. Without the BMC password health only asks whether the
@@ -549,6 +589,8 @@ Send the same set every time, with UTC times: it lets AMD (GPU, IFCP, AFM) or HP
 - [ ] L2 ping output for the pair, run two or three times
 - [ ] What changed just before: a test, a restart, a reseat, a flap of a neighbouring port
 - [ ] Whether it is on the Known issues list above
+- [ ] Switch tray side for HPE: `show techsupport` on the switch (it writes a compressed archive and prints its path - copy that file off), `show version`, `show platform summary`, `sudo sonic-installer list`, `sudo bmc-manager status`
+- [ ] Config of the nodes involved (Config tab: Download, or Read whole rack -> Download this read)
 
 Owner of the fix: NO\_PHY\_LINK, optics and seating go to HPE (switch side) or AMD (tray side) depending on which end the DOM and the swap point to; IFCP sessions, PortFailed timing and ping loss go to AMD.
 
