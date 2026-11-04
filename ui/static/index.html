@@ -1578,7 +1578,7 @@ function cfgTables(db){
     '<div style="max-height:70vh;overflow-y:auto;border:1px solid var(--rule);border-radius:6px;padding:4px">'+names.map(function(n){return '<a href="#" data-tbl="'+esc(n)+'" style="display:flex;justify-content:space-between;padding:2px 6px;border-radius:4px;text-decoration:none;color:var(--fg)'+(n===cfgTable?";background:var(--code);font-weight:600":"")+'"><span>'+esc(n)+'</span><span class="mut">'+Object.keys(db[n]||{}).length+"</span></a>"}).join("")+"</div>"+
     '<div><div class="row" style="margin:0 0 6px"><b>'+esc(cfgTable)+'</b><span class="mut">'+keys.length+" entr"+(keys.length===1?"y":"ies")+'</span><input id="cfg-filter" placeholder="filter rows (e.g. Ethernet8, Vlan100)" style="flex:1;min-width:200px"></div>'+
     '<div class="wrap" style="max-height:66vh;overflow:auto"><table class="cfg-tbl"><thead><tr><th>Key</th>'+(fl.length?fl.map(function(f){return "<th>"+esc(f)+"</th>"}).join(""):"<th>Value</th>")+"</tr></thead><tbody>"+
-    keys.sort(cfgKeySort).map(function(k){var v=t[k];return "<tr><td><code>"+esc(k)+"</code></td>"+(fl.length?fl.map(function(f){var x=v&&typeof v==="object"?v[f]:"";return "<td>"+esc(Array.isArray(x)?x.join(", "):x==null?"":String(x))+"</td>"}).join(""):"<td>"+esc(JSON.stringify(v))+"</td>")+"</tr>"}).join("")+
+    keys.sort(cfgKeySort).map(function(k){var v=t[k];return "<tr><td><code>"+esc(k)+"</code></td>"+(fl.length?fl.map(function(f){var x=v&&typeof v==="object"?v[f]:"";return "<td>"+esc(Array.isArray(x)?x.map(cfgItem).join(", "):x==null?"":typeof x==="object"?cfgItem(x):String(x))+"</td>"}).join(""):"<td>"+esc(JSON.stringify(v))+"</td>")+"</tr>"}).join("")+
     "</tbody></table></div></div></div>";
 }
 function cfgKeySort(a,b){var na=+(a.match(/(\d+)(?!.*\d)/)||[0,NaN])[1],nb=+(b.match(/(\d+)(?!.*\d)/)||[0,NaN])[1],pa=a.replace(/\d+(?!.*\d)/,""),pb=b.replace(/\d+(?!.*\d)/,"");
@@ -1594,7 +1594,9 @@ function cfgCompute(sec,data){
   return "<pre>"+esc(JSON.stringify(data,null,1))+"</pre>";
 }
 function cfgFlat(o,pre,skip){var out={};Object.keys(o||{}).forEach(function(k){if(!pre&&skip[k])return;var v=o[k],n=pre?pre+"."+k:k;
-  if(v&&typeof v==="object"&&!Array.isArray(v))Object.assign(out,cfgFlat(v,n,skip));else out[n]=Array.isArray(v)?v.join(", "):v});return out}
+  if(v&&typeof v==="object"&&!Array.isArray(v))Object.assign(out,cfgFlat(v,n,skip));else out[n]=Array.isArray(v)?v.map(cfgItem).join(", "):v});return out}
+/* one list item as text: a record's values joined ('1:0x0f' for {station: 1, bandwidth_mask: 0x0f}), not [object Object] */
+function cfgItem(x){return x&&typeof x==="object"?(Array.isArray(x)?x.map(cfgItem).join("/"):Object.keys(x).map(function(k){return cfgItem(x[k])}).join(":")):String(x)}
 function cfgObjTable(rows,first,noFilter){
   var cols={};rows.forEach(function(r){Object.keys(r).forEach(function(k){cols[k]=1})});var cl=Object.keys(cols).sort(function(a,b){return a===first?-1:b===first?1:a<b?-1:1});
   return (noFilter?"":'<div class="row" style="margin:0 0 6px"><input id="cfg-filter" placeholder="filter rows" style="flex:1;min-width:200px"></div>')+'<div class="wrap" style="max-height:66vh;overflow:auto"><table class="cfg-tbl"><thead><tr>'+cl.map(function(c){return "<th>"+esc(c)+"</th>"}).join("")+"</tr></thead><tbody>"+
