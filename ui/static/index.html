@@ -1650,10 +1650,16 @@ function fillMissing(d){
 /* Live on: why links are 'not known' - not reached now, not read yet, or not followed (in neither the check Live started
    from nor an earlier one); 3 Nov g02-g17 said 'switch and tray were not reached' for 1296 links of switches that answered */
 function unknownWhy(d,lv){
-  var c={gone:0,wait:0,out:0,nogpu:0};
+  var c={gone:0,wait:0,out:0,nogpu:0,quar:0,tray:0};
   d.links.forEach(function(l){var z=lv[lkey(l)];if(!z){if(l.state==="unknown")c.out++;return}
-    if(z.state!=="unknown")return;if(!l.bdf&&z.unread)c.nogpu++;else if(z.unread)c.gone++;else c.wait++});
+    if(z.state!=="unknown")return;
+    if(l.kind==="tray_quarantined")c.quar++;          /* no GPU id known there: Live has nothing to read (g02-g17 ct05) */
+    else if(!l.bdf&&z.unread)c.nogpu++;else if(z.unread)c.gone++;
+    else if(z.read)c.tray++;                          /* the switch end was read, the tray not (st5 - ct10, 3 Nov) */
+    else c.wait++});
   var p=[];if(c.gone)p.push(c.gone+" not read now: their switch and tray were not reached");
+  if(c.tray)p.push(c.tray+" tray end not reached (switch end read)");
+  if(c.quar)p.push(c.quar+" tray quarantined in AFM at the check: no GPU to read");
   if(c.nogpu)p.push(c.nogpu+" switch end not reached, and the check found no GPU at the tray end to read");
   if(c.wait)p.push(c.wait+" not read yet");if(c.out)p.push(c.out+" not followed by Live: in no check it could start from");
   return " not known"+(p.length?" ("+p.join("; ")+")":"")}
@@ -1676,7 +1682,7 @@ function drawMap(){
       l0.filler&&lz.read?{cause:"read by Live now (not in the check it started from)"}:l0.filler?{cause:"not read by Live yet - "+l0.cause}:{})}
     var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
-    if(mapPrev&&!l0.filler&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
+    if(mapPrev&&(!l0.filler||l.state!==l0.state)&&l.state!=="unknown"&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
     if(oddK[lkey(l0)]){cls=cls.replace(" "+l.state," "+oddK[lkey(l0)])+" chg";l=Object.assign({},l,{state:oddK[lkey(l0)],cause:"Live last read it "+oddK[lkey(l0)]+" (now off) - the check said "+l0.state+(l0.cause?": "+l0.cause:"")})}
     return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf?gName(l.tray,l.bdf):"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
   }
@@ -1721,10 +1727,11 @@ function drawMap(){
       odd.slice(0,8).map(function(x){return esc(lkey(x[0]))+" "+esc(x[1])+" (check: "+esc(x[0].state)+")"}).join(", ")+(odd.length>8?" ...":"")+
       " - shown so below (outlined); the other links are the check of "+esc(checkAge(d.time_utc))+". Run Check all links to record the state now.";
   }else if(mapPrev){
-    var nw=d.links.filter(function(l){var p=prev[lkey(l)];return !l.filler&&p!==undefined&&p==="ok"&&l.state!=="ok"}),
-        rc=d.links.filter(function(l){var p=prev[lkey(l)];return !l.filler&&p!==undefined&&p!=="ok"&&l.state==="ok"});
+    /* the same states as the squares: Live's (or its last reading) where it read the link, else this check's */
+    var nw=d.links.filter(function(l){var p=prev[lkey(l)],e=eff(l);return (!l.filler||e!==l.state)&&p!==undefined&&p==="ok"&&e!=="ok"&&e!=="unknown"}),
+        rc=d.links.filter(function(l){var p=prev[lkey(l)],e=eff(l);return (!l.filler||e!==l.state)&&p!==undefined&&p!=="ok"&&e==="ok"});
     $("map-banner").classList.toggle("hide",!(nw.length||rc.length));
-    $("map-banner").innerHTML="Since the check of "+esc(stampLocal(mapPrev.time_utc))+": <b>"+nw.length+" new problem(s)</b>"+
+    $("map-banner").innerHTML=(lv?"Live now, compared with":odd.length?"This check with Live's last reading, compared with":"Since")+" the check of "+esc(stampLocal(mapPrev.time_utc))+": <b>"+nw.length+" new problem(s)</b>"+
       (nw.length?" ("+nw.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(nw.length>6?", ...":"")+")":"")+", <b>"+rc.length+" recovered</b>"+
       (rc.length?" ("+rc.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(rc.length>6?", ...":"")+")":"")+".";
   }else{$("map-banner").classList.add("hide")}
