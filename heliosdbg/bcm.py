@@ -10,6 +10,11 @@ Per port:
   PC_PHY_STATUS_2  per lane: RX_SNR, EYE_UP / EYE_DOWN (3 PAM4 eyes), AM_LOCK_LIVE, LINK_TIME
   PC_PORT_CUMULATIVE_DIAG_STATS  FEC codeword histogram: bin k = codewords with k symbol errors, the last bin =
                    uncorrectable (RS544: up to 15 correctable) - how close the link runs to the FEC limit
+  LM_LINK_STATE    the link manager's view: PHY_LINK, LINK_STATE, LOCAL_FAULT, REMOTE_FAULT (mr2 4 Nov: LOCAL_FAULT=1
+                   here on a dark port while PC_PORT_STATUS read 0)
+  PC_PORT          the port's configuration: ENABLE, SPEED, NUM_LANES, FEC_MODE, LINK_TRAINING, AUTONEG, LOOPBACK_MODE
+  PC_FDR_STATS     the same FEC histogram over the last window only (FDR_START_TIME / FDR_END_TIME, ns; ~19 s on mr2)
+  CTR_MAC_ERR      MAC error counters: RX_FCS_ERR_PKT, RX_CODE_ERR_PKT, TX_ERR_PKT, ...
 SONiC EthernetN -> Broadcom port: the port's first lane (``show interfaces status`` Lanes) is the physical port in
 ``show pmap``; e.g. st6 Ethernet261 lanes 201,202 -> cd100, logical port 220.
 """
@@ -20,8 +25,19 @@ import shlex
 
 LANE_FIELDS = ("RX_SIGNAL_DETECT", "TX_SQUELCH", "RX_SQUELCH")
 LANE2_FIELDS = ("RX_SNR", "EYE_UP", "EYE_DOWN", "AM_LOCK_LIVE", "LINK_TIME")
+NEAR_FEC_LIMIT = 10                       # worst corrected codeword (of 15) in the FDR window: close to the limit
 SNR_INVALID = 99900                       # what RX_SNR reads on a lane with no signal
 SEP = "@@HELIOS-BCM@@"
+CFG_FIELDS = ("ENABLE", "SPEED", "NUM_LANES", "FEC_MODE", "LINK_TRAINING", "AUTONEG", "LOOPBACK_MODE", "MAX_FRAME_SIZE")
+CFG_MATCH = ("SPEED", "NUM_LANES", "FEC_MODE", "LINK_TRAINING", "AUTONEG")     # what two ports of one rack share
+MAC_ERRS = ("RX_FCS_ERR_PKT", "RX_CODE_ERR_PKT", "TX_ERR_PKT", "TX_FCS_ERR_PKT", "RX_UNDER_SIZE_PKT", "RX_JABBER_PKT",
+            "RX_FRAGMENT_PKT", "RX_RUNT_PKT", "TX_FIFO_UNDER_RUN_PKT", "RX_MTU_CHECK_ERR_PKT")
+
+
+def port_cmds(lp: int) -> list[str]:
+    """The per-port reads after the lane reads (read_ports / _view keep this order)."""
+    return [f'bsh -c "lt LM_LINK_STATE lookup PORT_ID={lp}"', f'bsh -c "lt PC_PORT lookup PORT_ID={lp}"',
+            f'bsh -c "lt PC_FDR_STATS lookup PORT_ID={lp}"', f'bsh -c "lt CTR_MAC_ERR lookup PORT_ID={lp}"']
 
 
 def unit_flag(ns: str | None) -> str:
@@ -103,6 +119,7 @@ def read_ports(sw, ns, ports: dict[str, str], pmap: dict | None = None) -> dict[
         for i in range(len(lane_ids)):
             cmds += [f'bsh -c "lt PC_PHY_STATUS lookup PORT_ID={lp} LANE_INDEX={i}"',
                      f'bsh -c "lt PC_PHY_STATUS_2 lookup PORT_ID={lp} LANE_INDEX={i} STATUS=STATUS_2_ALL"']
+        cmds += port_cmds(lp)
         jobs.append((port, name, lp, lane_ids, cmds))
     for k in range(0, len(jobs), PORTS_PER_CALL):
         chunk = jobs[k:k + PORTS_PER_CALL]
@@ -120,13 +137,35 @@ def read_ports(sw, ns, ports: dict[str, str], pmap: dict | None = None) -> dict[
     return out
 
 
+def fdr(t: dict) -> dict | None:
+    """PC_FDR_STATS -> {seconds, codewords, bins[0..16], uncorrectable, symbol_errors}; None when not read."""
+    if "CODE_WORDS" not in t:
+        return None
+    bins = [t.get(f"CODE_WORD_S{k}_ERRORS" if k <= 8 else f"CODE_WORD_{k}_ERRORS") for k in range(17)]
+    a, b = t.get("FDR_START_TIME"), t.get("FDR_END_TIME")
+    return {"seconds": round((b - a) / 1e9, 1) if isinstance(a, int) and isinstance(b, int) and b > a else None,
+            "codewords": t.get("CODE_WORDS"), "bins": [x if isinstance(x, int) else 0 for x in bins],
+            "uncorrectable": t.get("UNCORRECTABLE_CODE_WORDS"), "symbol_errors": t.get("SYMBOL_ERRORS")}
+
+
+def worst_bin(bins) -> int | None:
+    """The most symbol errors any corrected codeword had (bins 1-15); None when there is no histogram."""
+    return max([k for k, c in enumerate(bins[1:16], 1) if c] or [0]) if bins else None
+
+
 def _view(name, lp, lane_ids, parts) -> dict:
     st, fec = parse_lt(parts[0]), parse_lt(parts[1])
     lanes_out = []
     for i in range(len(lane_ids)):
         a, b = parse_lt(parts[2 + 2 * i]), parse_lt(parts[3 + 2 * i])
         lanes_out.append({k: a.get(k) for k in LANE_FIELDS} | {k: b.get(k) for k in LANE2_FIELDS})
-    return {"bcm_port": name, "logical": lp, "lanes_sonic": lane_ids,
+    more = [parse_lt(x) for x in parts[2 + 2 * len(lane_ids):]] + [{}] * 4
+    lm, cfg, fd, me = more[:4]
+    return {"link": {k: lm.get(k) for k in ("PHY_LINK", "LINK_STATE", "LOCAL_FAULT", "REMOTE_FAULT")} if lm else None,
+            "cfg": {k: cfg.get(k) for k in CFG_FIELDS} if cfg else None,
+            "fdr": fdr(fd),
+            "mac_err": {k: me.get(k) for k in MAC_ERRS if isinstance(me.get(k), int)} if me else None,
+            "bcm_port": name, "logical": lp, "lanes_sonic": lane_ids,
             "port": {k: st.get(k) for k in ("PMD_RX_LOCK", "PMD_LANE_RX_LOCK", "LINK_TRAINING",
                                             "LINK_TRAINING_DONE", "LOCAL_FAULT", "REMOTE_FAULT",
                                             "MAC_DISABLED", "PHY_DISABLED", "FEC_MODE")},
@@ -145,12 +184,13 @@ def brief(v: dict) -> str:
     sig = sum(1 for x in ln if x.get("RX_SIGNAL_DETECT") == 1)
     snrs = [x.get("RX_SNR") for x in ln if isinstance(x.get("RX_SNR"), int) and x.get("RX_SNR") != SNR_INVALID]
     eyes = [e for x in ln for e in (x.get("EYE_UP") or []) if isinstance(e, int) and e > 0]
-    bins = v.get("fec_bins") or []
-    worst = max([k for k, c in enumerate(bins[1:16], 1) if c] or [0]) if bins else None
+    worst = worst_bin(v.get("fec_bins") or [])
+    fd = v.get("fdr")
     return (f"{v['bcm_port']}: signal {sig}/{len(ln)} lanes, lock {p.get('PMD_LANE_RX_LOCK')}, training "
             f"{'done' if p.get('LINK_TRAINING_DONE') else 'not done'}, SNR "
             f"{(str(min(snrs)) + '-' + str(max(snrs))) if snrs else 'n/a'}, eye up {min(eyes) if eyes else 'n/a'}+"
-            f", FEC worst {worst if worst is not None else 'n/a'}/15 uncorr {(v.get('fec') or {}).get('FEC_UNCORRECTED_CODEWORDS')}")
+            f", FEC worst {worst if worst is not None else 'n/a'}/15 uncorr {(v.get('fec') or {}).get('FEC_UNCORRECTED_CODEWORDS')}"
+            + (f"; last {fd['seconds']} s worst {worst_bin(fd['bins'])}/15 uncorr {fd['uncorrectable']}" if fd else ""))
 
 
 def reference_port(status: dict, exclude: set) -> tuple[str, str] | None:
@@ -182,9 +222,15 @@ def judge(v: dict, ref: dict | None = None, oper_down: bool = False) -> tuple[st
         return "", [f"Broadcom view not read: {v.get('error') if v else 'not collected'}"]
     p, ln = v["port"], v["lane"]
     n = len(ln)
+    lm, cfg, fd = v.get("link") or {}, v.get("cfg") or {}, v.get("fdr")
     ev = [f"Broadcom {v['bcm_port']} (logical {v['logical']}): PMD_RX_LOCK {p.get('PMD_RX_LOCK')}, lane lock mask "
           f"{p.get('PMD_LANE_RX_LOCK')}, link training {'done' if p.get('LINK_TRAINING_DONE') else 'not done'}, "
           f"local fault {p.get('LOCAL_FAULT')}, remote fault {p.get('REMOTE_FAULT')}"]
+    if lm:
+        ev.append(f"  link manager (LM_LINK_STATE): PHY_LINK {lm.get('PHY_LINK')}, LINK_STATE {lm.get('LINK_STATE')}, "
+                  f"local fault {lm.get('LOCAL_FAULT')}, remote fault {lm.get('REMOTE_FAULT')}")
+    if cfg:
+        ev.append("  configuration (PC_PORT): " + ", ".join(f"{k} {cfg.get(k)}" for k in CFG_FIELDS if cfg.get(k) is not None))
     for i, x in enumerate(ln):
         snr = x.get("RX_SNR")
         eyes = "/".join(str(e) for e in (x.get("EYE_UP") or []) if e is not None)
@@ -195,6 +241,25 @@ def judge(v: dict, ref: dict | None = None, oper_down: bool = False) -> tuple[st
         worst = max([k for k, c in enumerate(bins[1:16], 1) if c] or [0])
         ev.append(f"  FEC codewords since the counters started: worst corrected codeword had {worst} symbol errors "
                   f"(RS544 corrects up to 15), uncorrectable {unc}")
+    if fd and not fd["codewords"]:
+        ev.append("  FEC over the last window (PC_FDR_STATS): no codewords - nothing is received")
+    elif fd:
+        ev.append(f"  FEC over the last {fd['seconds'] if fd['seconds'] is not None else '?'} s (PC_FDR_STATS): "
+                  f"{fd['codewords']} codewords, worst corrected {worst_bin(fd['bins'])} symbol errors, uncorrectable "
+                  f"{fd['uncorrectable']}")
+    errs = {k: c for k, c in (v.get("mac_err") or {}).items() if c}
+    if errs:
+        ev.append("  MAC error counters since they were cleared (CTR_MAC_ERR): " + ", ".join(f"{k} {c}" for k, c in errs.items()))
+    ref_cfg = (ref or {}).get("cfg") or {}
+    diffs = [f"{k} {cfg.get(k)} vs {ref_cfg.get(k)}" for k in CFG_MATCH
+             if cfg.get(k) is not None and ref_cfg.get(k) is not None and cfg.get(k) != ref_cfg.get(k)]
+    if diffs:
+        ev.append(f"  configured differently from the working port {ref.get('bcm_port')}: " + ", ".join(diffs))
+    if cfg.get("LOOPBACK_MODE") not in (None, "PC_LPBK_NONE"):
+        return (f"the port is in loopback ({cfg.get('LOOPBACK_MODE')}): it talks to itself, never to the GPU - someone "
+                f"ran a loopback test and did not end it; clear it the way it was set (a change - not from here)"), ev
+    if cfg.get("ENABLE") == 0:
+        return "the switch ASIC has the port disabled (PC_PORT ENABLE 0): it neither sends nor listens", ev
     no_sig = [i for i, x in enumerate(ln) if x.get("RX_SIGNAL_DETECT") == 0]
     tx_off = [i for i, x in enumerate(ln) if x.get("TX_SQUELCH") == 1]
     if no_sig and len(no_sig) == n:
@@ -207,6 +272,10 @@ def judge(v: dict, ref: dict | None = None, oper_down: bool = False) -> tuple[st
     ref_snr = min([x for x in (_snr(r) for r in ref["lane"]) if x is not None] or [0]) if ref_ok else 0
     if ref_ok:
         ev.append(f"  reference: working port {ref['bcm_port']} on the same ASIC, lowest lane RX_SNR {ref_snr or 'n/a'}")
+    if diffs and (not p.get("PMD_RX_LOCK") or (p.get("LINK_TRAINING") and not p.get("LINK_TRAINING_DONE")) or oper_down):
+        return (f"signal arrives but the port is configured differently from a working port of the same chip ("
+                + ", ".join(diffs) + "): the two ends cannot agree - check the port's speed / FEC / training "
+                "configuration against the rack's"), ev
     if not p.get("PMD_RX_LOCK"):
         snrs = [_snr(x) for x in ln]
         if all(x is not None for x in snrs) and ref_snr and min(snrs) >= 0.9 * ref_snr:
@@ -219,10 +288,51 @@ def judge(v: dict, ref: dict | None = None, oper_down: bool = False) -> tuple[st
                 + ": marginal signal or a damaged lane"), ev
     if p.get("LINK_TRAINING") and not p.get("LINK_TRAINING_DONE"):
         return "the receiver locks but link training does not finish", ev
-    if p.get("LOCAL_FAULT") or p.get("REMOTE_FAULT"):
-        return f"PCS fault: local {p.get('LOCAL_FAULT')}, remote {p.get('REMOTE_FAULT')}", ev
+    lf, rf = p.get("LOCAL_FAULT") or lm.get("LOCAL_FAULT"), p.get("REMOTE_FAULT") or lm.get("REMOTE_FAULT")
+    if rf and not lf:
+        return ("remote fault: the switch receives the GPU and locks, but the GPU end signals it does not receive the "
+                "switch - the switch-to-GPU direction (the switch's transmitter, that direction of the cable, or the "
+                "GPU port's receiver)"), ev
+    if lf or rf:
+        return f"PCS fault: local {lf}, remote {rf} - the receiver locks but cannot align the data", ev
+    if fd and fd["uncorrectable"]:
+        return (f"the link is up but loses data: {fd['uncorrectable']} uncorrectable FEC codewords in the last "
+                f"{fd['seconds']} s - a marginal lane; compare its SNR with the working port, reseat / clean the cable"), ev
+    w = worst_bin(fd["bins"]) if fd else None
+    if w is not None and w >= NEAR_FEC_LIMIT:
+        return (f"the link is up but runs close to the FEC limit: codewords with {w} of the 15 correctable symbol errors "
+                f"in the last {fd['seconds']} s - a marginal lane, it will drop data before long"), ev
     if oper_down:
         return ("flapping: SONiC had the port down, but moments later the ASIC had it locked and trained on every lane "
                 "with signal - the link drops and comes back; scan again or watch the counters, and check the cable "
                 "seating"), ev
     return "", ev
+
+
+DELTA_FEC = ("FEC_CODEWORDS", "FEC_CORRECTED_CODEWORDS", "FEC_UNCORRECTED_CODEWORDS", "FEC_SYMBOL_ERRORS")
+
+
+def delta(sw, ns, lp: int, wait: int = 10) -> dict:
+    """The port's error counters read twice, ``wait`` s apart, in one SSH round trip: {seconds, fec: {F: d},
+    mac: {F: d}} - what is happening now, not since the counters were cleared. {'error': ...} when not read."""
+    reads = [f'bsh -c "lt PC_PORT_CUMULATIVE_DIAG_STATS lookup PORT_ID={lp}"', f'bsh -c "lt CTR_MAC_ERR lookup PORT_ID={lp}"']
+    unit = unit_flag(ns)
+    wait = max(1, min(int(wait), 60))
+    r = sw.run(_script(unit, reads) + f"; sleep {wait}; " + _script(unit, reads), timeout=120 + wait)
+    parts = r.stdout.replace("\r", "").split(SEP)
+    if len(parts) < 4:
+        return {"error": f"bcmcmd answered {len(parts) - 1} of 4 reads (rc {r.rc})"}
+    (f0, m0, f1, m1) = (parse_lt(x) for x in parts[:4])
+    def d(a, b, keys):
+        return {k: b[k] - a[k] for k in keys if isinstance(a.get(k), int) and isinstance(b.get(k), int)}
+    return {"seconds": wait, "fec": d(f0, f1, DELTA_FEC), "mac": d(m0, m1, MAC_ERRS)}
+
+
+def judge_delta(dl: dict) -> str:
+    """'' when no errors grew between the two reads; else what grew."""
+    if not dl or dl.get("error"):
+        return ""
+    grew = {"FEC_UNCORRECTED_CODEWORDS": dl["fec"].get("FEC_UNCORRECTED_CODEWORDS", 0)} | dl["mac"]
+    grew = [f"{k} +{c}" for k, c in grew.items() if c > 0]      # corrected codewords grow on every working link
+    return (f"errors are growing now: {', '.join(grew)} in {dl['seconds']} s - the link loses frames; a marginal lane "
+            f"or a dirty / loose connector") if grew else ""

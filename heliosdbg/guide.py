@@ -145,6 +145,8 @@ def step_facts(steps: list[dict]) -> list[str]:
     the GPU, switch ports admin up / oper down. g02-g17 4 Nov (mr2): one link down at both ends, and the model's
     conclusion was to power the switch tray off and on."""
     facts, gpu_down, sw_down, sw_dark = [], 0, 0, False
+    sw_remote = sw_lane = False
+    sw_cfg = ""
     for i, s in enumerate(steps, 1):
         out, node = str(s.get("output") or ""), s.get("node")
         for bdf, body in re.findall(r"^GPU (\S+):\n((?:\s+port .*\n?)+)", out, re.M):
@@ -157,8 +159,15 @@ def step_facts(steps: list[dict]) -> list[str]:
         bv = re.search(r"^Broadcom view of (Ethernet\d+)[^\n]*\nVerdict \(code[^)]*\): (.*)$", out, re.M)
         if bv:
             facts.append(f"[S{i}] {node} {bv.group(1)}, Broadcom (switch ASIC): {bv.group(2)}")
-            if "receives no signal on any" in bv.group(2):
+            verdict = bv.group(2)
+            if "receives no signal on any" in verdict:
                 sw_dark = True
+            elif "remote fault" in verdict:
+                sw_remote = True
+            elif "no signal on lane(s)" in verdict:
+                sw_lane = True
+            elif "configured differently" in verdict or "loopback" in verdict or "disabled" in verdict:
+                sw_cfg = verdict
         for port, oper, admin in _SW_PORT.findall(out):
             if oper == "down" and admin == "up":
                 sw_down += 1
@@ -167,6 +176,16 @@ def step_facts(steps: list[dict]) -> list[str]:
         facts.append("Together: the GPU port has no link (NO_PHY_LINK) and the switch receives no signal on any lane while "
                      "it transmits - neither end sees the other: the cable or a connector of that one link (site / cabling: "
                      "reseat or swap it). Not the GPU, not the switch tray: their other ports work.")
+    elif gpu_down and sw_remote:
+        facts.append("Together: the switch receives the GPU and locks, the GPU port has no link and the switch reads a "
+                     "remote fault - only the switch-to-GPU direction fails: the switch's transmitter on that port, that "
+                     "direction of the cable, or the GPU port's receiver. Swap the cable first; the trays' other ports work.")
+    elif gpu_down and sw_lane:
+        facts.append("Together: the GPU port is down and the switch lacks signal on some lanes only - one lane of the "
+                     "cable / connector (site / cabling: reseat or swap that one cable).")
+    elif sw_cfg:
+        facts.append(f"Together: the switch end is set up wrong for this link ({sw_cfg.split(':')[0]}) - fix the "
+                     "configuration before touching the cable.")
     elif gpu_down and sw_down:
         facts.append("Together: one link has no signal at either end - the cable, a connector or a transceiver (site / "
                      "cabling: reseat or swap that one cable). Restarting or powering a whole tray is out of proportion for it.")
@@ -443,6 +462,13 @@ def bcm_view(transport, ns: str | None, port: str) -> tuple[int, str]:
     finding, ev = bcm.judge(v, refv, oper_down=st["Oper"] != "up")
     unit = bcm.unit_flag(used)
     lp = v.get("logical", "<logical>")
+    if st["Oper"] == "up" and isinstance(lp, int):       # an up link: are errors growing right now?
+        dl = bcm.delta(_Sw(), used, lp, wait=10)
+        grew = bcm.judge_delta(dl)
+        ev.append(f"  counters read twice, {dl.get('seconds')} s apart: " + (dl["error"] if dl.get("error") else
+                  ", ".join(f"{k} +{c}" for k, c in {**dl["fec"], **dl["mac"]}.items() if c) or "nothing grew"))
+        if grew and not finding:
+            finding = grew
     lines = [f"Broadcom view of {port}{' (' + used + ')' if used else ''}: SONiC lanes {st['Lanes']}, oper {st['Oper']}, admin {st['Admin']}",
              "Verdict (code, heliosdbg/bcm.py): " + (finding or "the switch ASIC sees nothing wrong on this port"), *ev]
     if refv:
@@ -451,7 +477,8 @@ def bcm_view(transport, ns: str | None, port: str) -> tuple[int, str]:
               f"  sudo bcmcmd{unit} 'show pmap'   (physical port {st['Lanes'].split(',')[0]} -> {v.get('bcm_port', '?')}, logical {lp})"]
     lines += [f"  sudo bcmcmd{unit} 'bsh -c \"lt {t} lookup PORT_ID={lp}{x}\"'" for t, x in (
         ("PC_PORT_STATUS", " STATUS=STATUS_ALL"), ("PC_PHY_STATUS", " LANE_INDEX=0"),
-        ("PC_PHY_STATUS_2", " LANE_INDEX=0 STATUS=STATUS_2_ALL"), ("PC_PORT_CUMULATIVE_DIAG_STATS", ""))]
+        ("PC_PHY_STATUS_2", " LANE_INDEX=0 STATUS=STATUS_2_ALL"), ("PC_PORT_CUMULATIVE_DIAG_STATS", ""),
+        ("LM_LINK_STATE", ""), ("PC_PORT", ""), ("PC_FDR_STATS", ""), ("CTR_MAC_ERR", ""))]
     return (0 if not v.get("error") else 1), "\n".join(lines)
 
 

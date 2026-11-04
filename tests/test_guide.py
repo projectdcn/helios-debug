@@ -413,3 +413,16 @@ def test_the_model_gets_the_odd_ports_first_and_the_code_facts():
     ev = ai.Evidence()
     guide.steps_evidence(ev, steps)
     assert any("Command S1" in x["text"] and "port 13: NO_PHY_LINK" in x["text"] for x in ev.items)
+
+
+def test_new_broadcom_reads_allowed_and_both_ends_facts():
+    for c in ['bcmcmd -n 1 \'bsh -c "lt LM_LINK_STATE traverse"\'', 'bcmcmd -n 1 \'bsh -c "lt PC_PORT lookup PORT_ID=216"\'',
+              'bcmcmd -n 1 \'bsh -c "lt PC_FDR_STATS lookup PORT_ID=216"\'', 'bcmcmd -n 1 \'bsh -c "lt CTR_MAC_ERR lookup PORT_ID=216"\'']:
+        assert guide.check(c, "switch")[0]
+    with pytest.raises(ValueError):
+        guide.check('bcmcmd -n 1 \'bsh -c "lt PC_PORT update PORT_ID=216 ENABLE=0"\'', "switch")
+    gpu = "GPU 0002:01:00.1:\n port 12: LINK_UP, admin enabled\n port 13: NO_PHY_LINK, PCS_NO_BLOCK_LOCK, admin enabled\n"
+    remote = ("Broadcom view of Ethernet257 (asic1): SONiC lanes 193,194, oper down, admin up\nVerdict (code, heliosdbg/bcm.py): "
+              "remote fault: the switch receives the GPU and locks\n")
+    f = guide.step_facts([{"node": "c1", "output": gpu}, {"node": "st1", "output": remote}])
+    assert any("only the switch-to-GPU direction" in x for x in f)

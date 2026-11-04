@@ -1,0 +1,55 @@
+# g02-g17 full rack (AMD Helios): 6 switch trays st1-st6 (SONiC, 2 ASICs each) + 18 compute trays ct01-ct18 (4 GPUs).
+# Git-ignored (rack addresses). No passwords: logins use the jump host's id_cluster key.
+# Run ON the jump host (rck-g03-...-jump) - the rack's 10.255.4.x network is only reachable from there:
+#   python tools/link_check.py scan --inventory inventory/g02-g17.local.yaml
+# From a laptop instead, uncomment transport.jump (key / agent login to tenant-hpe@165.204.38.103:8059); the jump
+# host's sshd allows only a few sessions, so large scans are faster on the jump host itself.
+rack: g02-g17
+
+transport:
+  kind: ssh
+  connect_timeout: 20
+  jump: {host: 165.204.38.103, port: 8059, user: tenant-hpe, via: exec}   # from a laptop; comment out when run ON the jump host
+
+defaults:
+  switch:
+    user: tenant_hpe
+    key_file: ~/.ssh/id_cluster
+  compute:
+    user: tenant-hpe             # sudo without a prompt for afmctl
+    key_file: ~/.ssh/id_cluster
+
+switches:
+  - {name: st1, host: 10.255.4.71}
+  - {name: st2, host: 10.255.4.72}
+  - {name: st3, host: 10.255.4.73}
+  - {name: st4, host: 10.255.4.74}
+  - {name: st5, host: 10.255.4.75}
+  - {name: st6, host: 10.255.4.76}
+
+# slot = AFM slot-id (CT n = slot n-1). bmc = the tray's BMC (bmc-ctheliosr-rck-g02-g17-NN.enclave-d), Redfish for health;
+# bmc_user: not known yet - without it health only asks whether the BMC answers. ct05 is quarantined (tray Down): its 144 links are reported as one cause.
+computes:
+  - {name: ct01, host: 10.255.4.47, slot: 0, bmc: 10.255.4.29}
+  - {name: ct02, host: 10.255.4.48, slot: 1, bmc: 10.255.4.30}
+  - {name: ct03, host: 10.255.4.49, slot: 2, bmc: 10.255.4.31}
+  - {name: ct04, host: 10.255.4.50, slot: 3, bmc: 10.255.4.32}
+  - {name: ct05, host: 10.255.4.51, slot: 4, bmc: 10.255.4.33, quarantine: {reason: Down, since: '2026-10-16', until: '2026-10-19'}}
+  - {name: ct06, host: 10.255.4.52, slot: 5, bmc: 10.255.4.34}
+  - {name: ct07, host: 10.255.4.53, slot: 6, bmc: 10.255.4.35}
+  - {name: ct08, host: 10.255.4.54, slot: 7, bmc: 10.255.4.36}
+  - {name: ct09, host: 10.255.4.55, slot: 8, bmc: 10.255.4.37}
+  - {name: ct10, host: 10.255.4.56, slot: 9, bmc: 10.255.4.38}
+  - {name: ct11, host: 10.255.4.57, slot: 10, bmc: 10.255.4.39}
+  - {name: ct12, host: 10.255.4.58, slot: 11, bmc: 10.255.4.40}
+  - {name: ct13, host: 10.255.4.59, slot: 12, bmc: 10.255.4.41}
+  - {name: ct14, host: 10.255.4.60, slot: 13, bmc: 10.255.4.42}
+  - {name: ct15, host: 10.255.4.61, slot: 14, bmc: 10.255.4.43}
+  - {name: ct16, host: 10.255.4.62, slot: 15, bmc: 10.255.4.44}
+  - {name: ct17, host: 10.255.4.63, slot: 16, bmc: 10.255.4.45}
+  - {name: ct18, host: 10.255.4.64, slot: 17, bmc: 10.255.4.46}
+
+afm:                              # AFM API from the jump host (controllers on st1-st3); password typed per run, never stored
+  url: https://10.255.4.71
+  verify_tls: false
+  auth: {username: admin, password_env: HELIOS_AFM_PASSWORD, tenant: default}

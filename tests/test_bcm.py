@@ -75,13 +75,16 @@ def test_read_ports_one_ssh_call_per_port():
             calls.append(cmd)
             if "show pmap" in cmd:
                 return SimpleNamespace(stdout=PMAP + bcm.SEP, rc=0)
-            body = [PORT_DOWN, FEC, lt_phy, lt_phy2, lt_phy, lt_phy2]
+            body = [PORT_DOWN, FEC, lt_phy, lt_phy2, lt_phy, lt_phy2, LM, PCPORT, FDR, MACERR]
             return SimpleNamespace(stdout=bcm.SEP.join(body) + bcm.SEP, rc=0)
     res = bcm.read_ports(Sw(), "asic1", {"Ethernet261": "201,202", "Ethernet999": "999"})
     assert res["Ethernet999"]["error"].startswith("no Broadcom port")
     v = res["Ethernet261"]
     assert v["bcm_port"] == "cd100" and v["lane"][1]["RX_SNR"] == bcm.SNR_INVALID and v["fec_bins"][16] == 123
     assert len(calls) == 2 and "bcmcmd -n 1" in calls[1] and "</dev/null" in calls[1]
+    assert v["link"]["LOCAL_FAULT"] == 1 and v["cfg"]["FEC_MODE"] == "PC_FEC_RS544_2XN_IEEE" and v["cfg"]["SPEED"] == 400000
+    assert v["fdr"]["seconds"] == 19.1 and v["fdr"]["bins"][1] == 242 and v["fdr"]["uncorrectable"] == 0
+    assert v["mac_err"]["RX_FCS_ERR_PKT"] == 0
     assert "set" not in calls[1].replace("STATUS_ALL", "") and "prbs" not in calls[1] and "eyescan" not in calls[1]
 
 
@@ -108,3 +111,101 @@ def test_reference_port_is_a_working_trunk_port_outside_the_problem_set():
           "Ethernet3": {"Vlan": "routed", "Oper": "up", "Lanes": "5,6"}}
     assert bcm.reference_port(st, {"Ethernet257"}) == ("Ethernet258", "195,196")
     assert bcm.reference_port(st, {"Ethernet257", "Ethernet258"}) is None
+
+
+# captured on mr2 st1 asic1, 4 Nov 2026 (logical 216 dark / 217 working)
+LM = """Table LM_LINK_STATE:
+  lookup PORT_ID=0xd8
+    LOCAL_FAULT=1
+    REMOTE_FAULT=0
+    PHY_LINK=0
+    LINK_STATE=0
+    PORT_ID=0xd8(216)
+drivshell>"""
+PCPORT = """Table PC_PORT:
+  lookup PORT_ID=0xd8
+    OPERATIONAL_STATE=VALID
+    PC_AUTONEG_PROFILE_ID[0-63]=0xff(255)
+    AUTONEG=0
+    MAX_FRAME_SIZE=0x23a6(9126)
+    LOOPBACK_MODE=PC_LPBK_NONE
+    LINK_TRAINING=1
+    FEC_MODE=PC_FEC_RS544_2XN_IEEE
+    NUM_LANES=2
+    SPEED=0x61a80(400000)
+    ENABLE=1
+    PORT_ID=0xd8(216)"""
+FDR = """Table PC_FDR_STATS:
+  lookup PORT_ID=0xd9
+    CODE_WORD_16_ERRORS=0
+    CODE_WORD_9_ERRORS=0
+    CODE_WORD_S2_ERRORS=1
+    CODE_WORD_S1_ERRORS=0xf2(242)
+    CODE_WORD_S0_ERRORS=0x58e558c5(1491425477)
+    SYMBOL_ERRORS=0xf4(244)
+    CODE_WORDS=0x58e55b70(1491426160)
+    UNCORRECTABLE_CODE_WORDS=0
+    FDR_END_TIME=0x629_b6a8b600
+    FDR_START_TIME=0x625_44d08300
+    PORT_ID=0xd9(217)"""
+MACERR = """Table CTR_MAC_ERR:
+  lookup PORT_ID=0xd9
+    TX_ERR_PKT=0
+    RX_CODE_ERR_PKT=0
+    TX_FCS_ERR_PKT=0
+    RX_FCS_ERR_PKT=0
+    PORT_ID=0xd9(217)"""
+
+
+def up(**kw):
+    v = view([lane(1, 2477), lane(1, 2515)])
+    v["cfg"] = bcm.parse_lt(PCPORT) | kw.pop("cfg", {})
+    return v | kw
+
+
+def test_new_tables_parse():
+    assert bcm.parse_lt(LM) == {"LOCAL_FAULT": 1, "REMOTE_FAULT": 0, "PHY_LINK": 0, "LINK_STATE": 0, "PORT_ID": 216}
+    f = bcm.fdr(bcm.parse_lt(FDR))
+    assert f["codewords"] == 1491426160 and bcm.worst_bin(f["bins"]) == 2 and f["seconds"] == 19.1
+
+
+def test_judge_loopback_disabled_and_config_mismatch():
+    assert "loopback" in bcm.judge(up(cfg={"LOOPBACK_MODE": "PC_LPBK_PMD"}))[0]
+    assert "disabled" in bcm.judge(up(cfg={"ENABLE": 0}))[0]
+    ref = up()
+    bad = up(cfg={"FEC_MODE": "PC_FEC_NONE"})
+    bad["port"]["PMD_RX_LOCK"] = 0
+    f, ev = bcm.judge(bad, ref, oper_down=True)
+    assert "configured differently" in f and "FEC_MODE PC_FEC_NONE vs PC_FEC_RS544_2XN_IEEE" in f
+    assert bcm.judge(up(), ref)[0] == ""                                # same config, all fine: nothing
+
+
+def test_judge_remote_fault_from_link_manager():
+    f = bcm.judge(up(link={"PHY_LINK": 1, "LINK_STATE": 0, "LOCAL_FAULT": 0, "REMOTE_FAULT": 1}))[0]
+    assert f.startswith("remote fault") and "switch-to-GPU direction" in f
+
+
+def test_judge_fec_window():
+    fd = bcm.fdr(bcm.parse_lt(FDR))
+    assert bcm.judge(up(fdr=fd))[0] == ""
+    near = dict(fd, bins=fd["bins"][:12] + [5] + fd["bins"][13:])
+    assert "close to the FEC limit" in bcm.judge(up(fdr=near))[0]
+    assert "loses data: 7 uncorrectable" in bcm.judge(up(fdr=dict(fd, uncorrectable=7)))[0]
+
+
+def test_delta_reads_twice_and_judges():
+    from types import SimpleNamespace
+    calls = []
+    f0 = "    FEC_CODEWORDS=100\n    FEC_UNCORRECTED_CODEWORDS=5\n    FEC_CORRECTED_CODEWORDS=10"
+    f1 = "    FEC_CODEWORDS=900\n    FEC_UNCORRECTED_CODEWORDS=5\n    FEC_CORRECTED_CODEWORDS=40"
+    m0, m1 = "    RX_FCS_ERR_PKT=3", "    RX_FCS_ERR_PKT=9"
+
+    class Sw:
+        def run(self, cmd, timeout=0):
+            calls.append(cmd)
+            return SimpleNamespace(stdout=bcm.SEP.join([f0, m0, f1, m1]) + bcm.SEP, rc=0)
+    d = bcm.delta(Sw(), "asic1", 217, wait=10)
+    assert len(calls) == 1 and "sleep 10" in calls[0] and calls[0].count("CTR_MAC_ERR") == 2
+    assert d["fec"]["FEC_UNCORRECTED_CODEWORDS"] == 0 and d["mac"]["RX_FCS_ERR_PKT"] == 6
+    assert "RX_FCS_ERR_PKT +6" in bcm.judge_delta(d)
+    assert bcm.judge_delta({"seconds": 10, "fec": {"FEC_CORRECTED_CODEWORDS": 30}, "mac": {}}) == ""

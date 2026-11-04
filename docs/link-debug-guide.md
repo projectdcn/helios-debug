@@ -216,7 +216,7 @@ SONiC only says a switch port is oper down. The switch ASIC's own shell says why
 python tools/link_check.py bcm --inventory <inventory> --switch st6 --ports Ethernet257,Ethernet261
 ```
 
-**From the AI panel.** Step by step and the AI's answers offer `bcm-view -n asic1 Ethernet261` on the switch tray: helios-debug maps the port, makes the reads below, compares them with a working port of the same chip, and lists the exact `bcmcmd` commands it ran. The raw reads below can be run from there too; `prbs`, `eyescan`, loopback and any change are refused.
+**From the AI panel.** Step by step and the AI's answers offer `bcm-view -n asic1 Ethernet261` on the switch tray: helios-debug maps the port, makes the reads below, compares them with a working port of the same chip, and lists the exact `bcmcmd` commands it ran. It also reads the link manager, the port's configuration (against the working port), the FEC of the last window and the MAC errors, and on a port that is up it reads the error counters twice, 10 s apart, to show whether errors grow now. The raw reads below can be run from there too; `prbs`, `eyescan`, loopback and any change are refused.
 
 **By hand.** Each ASIC is a unit of `bcmcmd` (`asic1` = `-n 1`). Find the Broadcom port first: the SONiC port's first lane is its physical port in the port map.
 
@@ -231,6 +231,10 @@ python tools/link_check.py bcm --inventory <inventory> --switch st6 --ports Ethe
 | Signal per lane | `sudo bcmcmd -n 1 'bsh -c "lt PC_PHY_STATUS lookup PORT_ID=220 LANE_INDEX=0"'` | `RX_SIGNAL_DETECT=1`, `TX_SQUELCH=0` |
 | Signal quality per lane | `sudo bcmcmd -n 1 'bsh -c "lt PC_PHY_STATUS_2 lookup PORT_ID=220 LANE_INDEX=0 STATUS=STATUS_2_ALL"'` | `RX_SNR` and `EYE_UP` / `EYE_DOWN` like a healthy neighbour port |
 | FEC codeword histogram | `sudo bcmcmd -n 1 'bsh -c "lt PC_PORT_CUMULATIVE_DIAG_STATS lookup PORT_ID=220"'` | errors only in the low bins |
+| FEC over the last window (~20 s) | `sudo bcmcmd -n 1 'bsh -c "lt PC_FDR_STATS lookup PORT_ID=220"'` | `UNCORRECTABLE_CODE_WORDS=0`, errors only in `CODE_WORD_S1`/`S2`; a codeword with 10 or more of the 15 correctable symbol errors means the link runs close to the FEC limit |
+| Link manager state | `sudo bcmcmd -n 1 'bsh -c "lt LM_LINK_STATE lookup PORT_ID=220"'` (every port: `lt LM_LINK_STATE traverse`) | `PHY_LINK=1`, `LINK_STATE=1`, no faults. A dark port reads `LOCAL_FAULT=1` here even when `PC_PORT_STATUS` shows 0; `REMOTE_FAULT=1` alone means the GPU end does not receive the switch |
+| Port configuration | `sudo bcmcmd -n 1 'bsh -c "lt PC_PORT lookup PORT_ID=220"'` | `ENABLE=1`, `LOOPBACK_MODE=PC_LPBK_NONE`, and `SPEED`, `NUM_LANES`, `FEC_MODE`, `LINK_TRAINING` as on a working port (g02-g17: 400000, 2, `PC_FEC_RS544_2XN_IEEE`, 1) |
+| MAC errors | `sudo bcmcmd -n 1 'bsh -c "lt CTR_MAC_ERR lookup PORT_ID=220"'` (all MAC counters: `CTR_MAC`) | `RX_FCS_ERR_PKT`, `RX_CODE_ERR_PKT` 0, or not growing between two reads |
 
 **Reading it:**
 
