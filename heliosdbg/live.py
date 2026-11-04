@@ -308,16 +308,18 @@ class LiveRack:
         g02-g17 2 Nov, st6 kept 176 'degraded' links from a 9-day-old check and st3's links to ct10 / ct17 showed
         'ok' while nothing had been read. A quarantined tray's links keep the check's reason."""
         with self.lock:
-            n = 0
+            n = nogpu = 0
             for lk in self.links.values():
                 if lk["read"] or lk["unread"] or lk.get("scan_kind") == "tray_quarantined":
                     continue
-                lk["unread"], n = True, n + 1
+                lk["unread"], n, nogpu = True, n + 1, nogpu + (not lk.get("bdf"))
                 if lk["state"] != "unknown":
                     lk["state"], lk["since"] = "unknown", _now()
             if n:
                 self._record({"link": None, "what": "note", "from": None, "source": "live",
-                              "to": f"{n} links not read (their switch and tray were not reached): shown as not known"})
+                              "to": f"{n} links not read (their switch and tray were not reached"
+                              + (f"; {nogpu} of them have no GPU known at the tray end - the check found none - so"
+                                 " only the switch can read them" if nogpu else "") + "): shown as not known"})
 
     def _loop(self) -> None:
         next_rec, next_afm, afm_since = 0.0, 0.0, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

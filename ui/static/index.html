@@ -684,7 +684,7 @@ function who(owner){return OWNER[owner]||owner||""}
 function friendly(msg){
   var m=String(msg||""),R=[
    [/authenticat|permission denied|login refused/i,"Login refused - the node answers but rejects this key for the inventory's user (the key was removed, the account changed, or the user is wrong). Open Access to the rack to install the key again, or fix the user in the inventory."],
-   [/host key changed|host key verification|identification has changed/i,"Its SSH host key changed (reinstalled?) - remove the old key with ssh-keygen -R on the machine that logs in (the jump host), then check again."],
+   [/host key changed|host key verification|identification has changed/i,"Its SSH host key changed (reinstalled?) - if that is expected, remove the old key with ssh-keygen -R <address> on the machine that logs in (this one, or the jump host when the rack is reached through one), then check again. Not expected: do not log in - someone may be in the path."],
    [/no route|off the network|network is unreachable|host is unreachable/i,"Not on the network - powered off, OS down, or its management link. Check its power and console on its BMC."],
    [/ssh refused|connection refused/i,"It answers but SSH is not listening - booting, or its SSH server stopped. Wait a few minutes, else check it on the console."],
    [/did not open a session|secsh channel|administratively prohibited|channelexception/i,"The jump host did not open a session to it - usually its limit on sessions at once (retried by itself)."],
@@ -1627,10 +1627,11 @@ function fillMissing(d){
 /* Live on: why links are 'not known' - not reached now, not read yet, or not followed (in neither the check Live started
    from nor an earlier one); 3 Nov g02-g17 said 'switch and tray were not reached' for 1296 links of switches that answered */
 function unknownWhy(d,lv){
-  var c={gone:0,wait:0,out:0};
+  var c={gone:0,wait:0,out:0,nogpu:0};
   d.links.forEach(function(l){var z=lv[lkey(l)];if(!z){if(l.state==="unknown")c.out++;return}
-    if(z.state!=="unknown")return;if(z.unread)c.gone++;else c.wait++});
+    if(z.state!=="unknown")return;if(!l.bdf&&z.unread)c.nogpu++;else if(z.unread)c.gone++;else c.wait++});
   var p=[];if(c.gone)p.push(c.gone+" not read now: their switch and tray were not reached");
+  if(c.nogpu)p.push(c.nogpu+" switch end not reached, and the check found no GPU at the tray end to read");
   if(c.wait)p.push(c.wait+" not read yet");if(c.out)p.push(c.out+" not followed by Live: in no check it could start from");
   return " not known"+(p.length?" ("+p.join("; ")+")":"")}
 function drawMap(){
@@ -1642,7 +1643,7 @@ function drawMap(){
   if(lv)liveChanges.forEach(function(c){if(c.link&&c.what==="state"&&Date.now()-new Date(c.t).getTime()<600000)fresh[c.link]=1});
   function cell(l0){
     var l=l0,lz=lv&&lv[lkey(l0)];if(lz&&lz.state){l=Object.assign({},l0,{state:lz.state},
-      lz.unread?{cause:"not read now - its switch and tray were not reached ("+(l0.filler?l0.cause:"the check of "+checkAge(live.check_time)+" said "+l0.state)+")"}:
+      lz.unread?{cause:"not read now - "+(l0.bdf?"its switch and tray were not reached":"its switch was not reached and the check found no GPU at the tray end")+" ("+(l0.filler?l0.cause:"the check of "+checkAge(live.check_time)+" said "+l0.state)+")"}:
       l0.filler&&lz.read?{cause:"read by Live now (not in the check it started from)"}:l0.filler?{cause:"not read by Live yet - "+l0.cause}:{})}
     var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
