@@ -179,7 +179,7 @@ def test_compact_afmctl_json_for_the_model():
                                                                                    "vpod_accelerators": ["1", "2"]}}]}))
     assert dev == "GPU 0002:01:00.1: accelerator 5, config_phase ACTIVE, vPOD accelerators 2"
     assert guide.compact("Ethernet170 down up") == "Ethernet170 down up" and guide.compact("{not json") == "{not json"
-    assert "port 35:" in guide.steps_block([{"node": "ct02", "command": "x", "rc": 0, "output": _j.dumps({"device": [{"bdf": "b", "port": ports}]})}])
+    assert "26-35:" in guide.steps_block([{"node": "ct02", "command": "x", "rc": 0, "output": _j.dumps({"device": [{"bdf": "b", "port": ports}]})}])
 
 
 def test_same_moment_ties_ports_that_dropped_together():
@@ -387,3 +387,29 @@ def test_unit_placeholder_forms():
         assert guide._fill(raw, v)[0] == "sudo bcmcmd -n 1 'show pmap'", raw
     assert guide._fill("bcmcmd -n <N> 'bsh -c \"lt PC_PHY_STATUS lookup PORT_ID=<logical> LANE_INDEX=<n>\"'", v)[0] == \
         "bcmcmd -n 1 'bsh -c \"lt PC_PHY_STATUS lookup PORT_ID=216 LANE_INDEX=0\"'"
+
+
+def test_the_model_gets_the_odd_ports_first_and_the_code_facts():
+    """mr2 4 Nov: the model read port 13 NO_PHY_LINK among 35 LINK_UP lines as 'the GPU port is up'; Ask cut it off."""
+    gpu = "GPU 0002:01:00.1:\n" + "".join(f" port {i}: LINK_UP, admin enabled, IFCP ll_up yes peer_enabled yes peer 1/2{i:02d}\n" for i in range(13)) \
+        + " port 13: NO_PHY_LINK, PCS_NO_BLOCK_LOCK, admin enabled, IFCP ll_up no peer_enabled None peer None/None\n" \
+        + "".join(f" port {i}: LINK_UP, admin enabled, IFCP ll_up no peer_enabled None peer None/None\n" for i in range(14, 36))
+    m = guide.for_model(gpu)
+    assert m.splitlines()[1] == " port 13: NO_PHY_LINK, PCS_NO_BLOCK_LOCK, admin enabled, IFCP ll_up no peer_enabled None"
+    assert " ports 0-12: LINK_UP, admin enabled, IFCP ll_up yes peer_enabled yes" in m and " ports 14-35:" in m
+    bv = ("Broadcom view of Ethernet257 (asic1): SONiC lanes 193,194, oper down, admin up\n"
+          "Verdict (code, heliosdbg/bcm.py): the switch receives no signal on any of its 2 lanes (RX_SIGNAL_DETECT 0) while its own transmitter is on\n")
+    steps = [{"node": "c1", "command": "afmctl show port -b 0002:01:00.1 --json", "rc": 0, "output": gpu},
+             {"node": "st1", "command": "bcm-view -n asic1 Ethernet257", "rc": 0, "output": bv}]
+    f = guide.step_facts(steps)
+    assert any("Broadcom (switch ASIC): the switch receives no signal" in x for x in f)
+    assert f[-1].startswith("Together: the GPU port has no link (NO_PHY_LINK) and the switch receives no signal")
+
+    class AI:
+        def build_messages(self, ev, subject):
+            return [{"role": "system", "content": ""}, {"role": "user", "content": "x\n\nQuestion: q"}]
+    q = guide.messages(AI(), None, "s", steps, {"c1": "compute", "st1": "switch"})[-1]["content"]
+    assert "What code read in these outputs" in q and "neither end sees the other" in q
+    ev = ai.Evidence()
+    guide.steps_evidence(ev, steps)
+    assert any("Command S1" in x["text"] and "port 13: NO_PHY_LINK" in x["text"] for x in ev.items)

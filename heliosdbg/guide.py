@@ -144,7 +144,7 @@ def step_facts(steps: list[dict]) -> list[str]:
     """What the outputs of the steps show, read by code (not the model): GPU ports with no signal against the rest of
     the GPU, switch ports admin up / oper down. g02-g17 4 Nov (mr2): one link down at both ends, and the model's
     conclusion was to power the switch tray off and on."""
-    facts, gpu_down, sw_down = [], 0, 0
+    facts, gpu_down, sw_down, sw_dark = [], 0, 0, False
     for i, s in enumerate(steps, 1):
         out, node = str(s.get("output") or ""), s.get("node")
         for bdf, body in re.findall(r"^GPU (\S+):\n((?:\s+port .*\n?)+)", out, re.M):
@@ -154,11 +154,20 @@ def step_facts(steps: list[dict]) -> list[str]:
                 gpu_down += len(down)
                 facts.append(f"[S{i}] {node} GPU {bdf}: port(s) " + ", ".join(f"{n} {st}" + (f"/{x}" if x else "") for n, st, x in down)
                              + f" - the other {len(ports) - len(down)} ports of this GPU are up, so the GPU and its tray work")
+        bv = re.search(r"^Broadcom view of (Ethernet\d+)[^\n]*\nVerdict \(code[^)]*\): (.*)$", out, re.M)
+        if bv:
+            facts.append(f"[S{i}] {node} {bv.group(1)}, Broadcom (switch ASIC): {bv.group(2)}")
+            if "receives no signal on any" in bv.group(2):
+                sw_dark = True
         for port, oper, admin in _SW_PORT.findall(out):
             if oper == "down" and admin == "up":
                 sw_down += 1
                 facts.append(f"[S{i}] {node} {port}: admin up, oper down - enabled, but no link (not shut by configuration)")
-    if gpu_down and sw_down:
+    if gpu_down and sw_dark:
+        facts.append("Together: the GPU port has no link (NO_PHY_LINK) and the switch receives no signal on any lane while "
+                     "it transmits - neither end sees the other: the cable or a connector of that one link (site / cabling: "
+                     "reseat or swap it). Not the GPU, not the switch tray: their other ports work.")
+    elif gpu_down and sw_down:
         facts.append("Together: one link has no signal at either end - the cable, a connector or a transceiver (site / "
                      "cabling: reseat or swap that one cable). Restarting or powering a whole tray is out of proportion for it.")
     return facts
@@ -267,7 +276,33 @@ def steps_evidence(ev, steps: list[dict]) -> None:
     for i, s in ran[-8:]:
         u = unreachable(s)
         ev.add(f"Command S{i} run on {s.get('node')}: `{s.get('command')}` - " + (f"not run, could not log in: {u['what']}" if u else
-               f"exit {s.get('rc')}, output: " + compact(str(s.get("output") or "")).strip()[:480]), "steps")
+               f"exit {s.get('rc')}, output: " + for_model(compact(str(s.get("output") or ""))).strip()[:480]), "steps")
+
+
+def _ranges(ns: list[int]) -> str:
+    out, i = [], 0
+    while i < len(ns):
+        j = i
+        while j + 1 < len(ns) and ns[j + 1] == ns[j] + 1:
+            j += 1
+        out.append(str(ns[i]) if i == j else f"{ns[i]}-{ns[j]}")
+        i = j + 1
+    return ",".join(out)
+
+
+def for_model(text: str) -> str:
+    """A GPU's 36 port lines grouped by state, the smallest groups (the odd ports) first - a small model read 'port 13
+    NO_PHY_LINK' in the middle of 35 LINK_UP lines as 'the GPU port is up', and a cut output lost it (mr2 4 Nov)."""
+    def one(m):
+        groups: dict[str, list[int]] = {}
+        for n, rest in re.findall(r"^\s*port (\d+): (.*)$", m.group(2), re.M):
+            groups.setdefault(re.sub(r"\s+peer \S+/\S+$", "", rest.strip()), []).append(int(n))
+        total = sum(len(v) for v in groups.values())
+        lines = [f"GPU {m.group(1)} ({total} ports):"]
+        for state, ns in sorted(groups.items(), key=lambda kv: len(kv[1])):
+            lines.append(f" port{'s' if len(ns) > 1 else ''} {_ranges(sorted(ns))}: {state}")
+        return "\n".join(lines) + "\n"
+    return re.sub(r"^GPU (\S+):\n((?:[ \t]+port .*\n?)+)", one, text or "", flags=re.M)
 
 
 def steps_block(steps: list[dict]) -> str:
@@ -279,7 +314,7 @@ def steps_block(steps: list[dict]) -> str:
                        f"{u['what']}. Do not propose more steps on {s.get('node')}.")
             continue
         out.append(f"[S{i}] on {s.get('node')}: `{s.get('command')}` (exit {s.get('rc')}) ->\n"
-                   + compact(str(s.get("output") or ""))[:OUTPUT_MAX // 2])
+                   + for_model(compact(str(s.get("output") or ""))).strip()[:OUTPUT_MAX // 2])
     return "\n".join(out)
 
 
@@ -307,8 +342,11 @@ def messages(ai, ev, subject: str, steps: list[dict], nodes: dict) -> list[dict]
     msgs = ai.build_messages(ev, subject)
     msgs[0]["content"] += GUIDE_SYSTEM_ADD
     node_list = ", ".join(f"{n} ({r})" for n, r in sorted(nodes.items()))
+    facts = step_facts(steps)
     q = (f"Nodes you may use: {node_list}.\n"
          + (f"Steps run so far:\n{steps_block(steps)}\n" if steps else "No step run yet.\n")
+         + ("What code read in these outputs (exact - where your reading differs, this is right; build on it):\n"
+            + "\n".join("- " + f for f in facts) + "\n" if facts else "")
          + "What is the next read-only step (or your conclusion)?")
     msgs[-1]["content"] = msgs[-1]["content"].rsplit("\n\nQuestion:", 1)[0] + "\n\n" + q
     return msgs
