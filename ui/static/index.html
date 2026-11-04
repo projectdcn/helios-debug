@@ -542,7 +542,11 @@ function picked(id){return Array.prototype.map.call($(id).querySelectorAll("inpu
 var accRack=null,liveErr="";
 function fillInv(){
   var i=inv();if(!i)return;
-  if(accRack!==i.file){accState={};accRack=i.file}   /* st1 / ct01 of another rack are other nodes */
+  if(accRack!==i.file){accState={};accRack=i.file;   /* st1 / ct01 of another rack are other nodes */
+    /* the other rack's map, config reads and Live save note must not stay on screen (audit 4 Nov: rack B with no
+       check showed rack A's links again on the next Live poll) */
+    mapData=mapPrev=null;topoSvg._geo=null;cfgData=null;cfgCmp=null;cfgSaved={};cfgPending=null;cfgSeq++;liveSaved="";
+    ["cfg-out","cfg-rackout"].forEach(function(id){if($(id))$(id).innerHTML=""});if($("cfg-msg"))$("cfg-msg").textContent=""}
   fillNodePick("term-node");fillNodePick("cfg-node");
   $("inverr").classList.toggle("hide",!i.error);$("inverr").textContent=i.error?("Inventory "+i.file+": "+i.error):"";
   if(i.error)return;
@@ -1001,12 +1005,13 @@ function liveBad(f,bad){
     return '<b title="'+esc(raw)+'">'+esc(ns.map(function(n){return n.split(" ")[0]}).join(", "))+"</b>: "+w.replace(/\.$/,"")}).join("; ")}
 /* Live writes nothing by itself: what it read is saved as a check (Scan / Mark lists) or its change log, on request */
 var liveSaved="";
-function liveSaveHtml(){return '<button class="sec" id="live-save-check" title="keep what Live read as a check of the rack: it appears in the Scan and Mark lists">Save as check</button>'+
+var liveSaving=false;
+function liveSaveHtml(){return '<button class="sec" id="live-save-check"'+(liveSaving?" disabled":"")+' title="keep what Live read as a check of the rack: it appears in the Scan and Mark lists">Save as check</button>'+
   '<button class="sec" id="live-save-log" title="write Live\'s change log (kept in memory until then) to the results folder">Save change log</button>'+
   (liveSaved?'<span class="mut">'+liveSaved+"</span>":"")}
 function liveSaveWire(){
-  function go(btn,url,msg){btn.disabled=true;api(url,{}).then(function(r){liveSaved=msg(r);$("live-bar").dataset.key="";liveBar();if(url.indexOf("check")>0)mapLoadScans().then(mapSaveRow)})
-    .catch(function(e){btn.disabled=false;liveSaved=esc(e.message);$("live-bar").dataset.key="";liveBar()})}
+  function go(btn,url,msg){if(liveSaving)return;liveSaving=true;btn.disabled=true;api(url,{}).then(function(r){liveSaving=false;liveSaved=msg(r);$("live-bar").dataset.key="";liveBar();if(url.indexOf("check")>0)mapLoadScans().then(mapSaveRow)})
+    .catch(function(e){liveSaving=false;btn.disabled=false;liveSaved=esc(e.message);$("live-bar").dataset.key="";liveBar()})}
   var c=$("live-save-check"),g=$("live-save-log");
   if(c)c.addEventListener("click",function(){go(c,"/api/live/save-check",function(r){return "saved as a check: "+esc(r.summary)})});
   if(g)g.addEventListener("click",function(){go(g,"/api/live/save-log",function(r){return "saved "+r.changes+" change(s) to "+esc(r.saved)})});
@@ -1058,7 +1063,8 @@ function livePoll(){
     if(g!==liveGen)return;
     var newDown=[];
     if(d.running===false&&!d.rack){live=null}else{
-      if(live&&live.started!==d.started){liveSeq=0;liveChanges=[]}
+      if(!live||live.started!==d.started){         /* another session: its seq restarts - poll again from 0 */
+        if(liveSeq&&(d.seq||0)<liveSeq||live&&live.started!==d.started){liveSeq=0;liveChanges=[];liveSaved="";live=d;liveTimer=setTimeout(livePoll,50);return}}
       (d.changes||[]).forEach(function(c){liveChanges.push(c);if(c.what==="state"&&c.to==="down")newDown.push(c.link)});
       liveChanges=liveChanges.slice(-300);liveSeq=d.seq||liveSeq;live=d}
     $("live-ind").classList.toggle("hide",!(live&&live.running));
@@ -1398,6 +1404,7 @@ function fillNodePick(id){
   sel.innerHTML='<optgroup label="Switch trays">'+(i.switches||[]).map(opt).join("")+"</optgroup>"+
     '<optgroup label="Compute trays">'+(i.computes||[]).map(opt).join("")+"</optgroup>";
   if(cur)sel.value=cur;
+  if(!sel.value&&sel.options.length)sel.selectedIndex=0;   /* a node the new rack lacks: not an empty picker */
 }
 
 /* ---------------------------------------------------------------- terminal: xterm.js on top of /api/term/* (long poll) */
@@ -1483,13 +1490,15 @@ function cfgLoadSaved(){var i=inv();if(!i)return Promise.resolve();
   return api("/api/config/saved?inventory="+encodeURIComponent(i.file)).then(function(r){cfgSaved=r.nodes||{}}).catch(function(){})}
 /* show a saved read (from a whole-rack read, or an earlier one) as if just read */
 function cfgOpenSaved(path){
+  var seq=++cfgSeq;                                  /* a slower read started before must not replace this one */
   return fetch("/results/"+path).then(function(r){if(!r.ok)throw new Error("could not open "+path);return r.json()}).then(function(d){
-    cfgData=d;cfgSec=null;cfgTable=null;cfgCmp=null;$("cfg-node").value=d.node;
+    if(seq!==cfgSeq)return;d.saved=d.saved||path;cfgData=d;cfgSec=null;cfgTable=null;cfgCmp=null;$("cfg-node").value=d.node;
     $("cfg-msg").textContent=nodeLabel(d.node)+" ("+d.address+"), saved read of "+new Date(d.time_utc).toLocaleString();cfgDraw()})
   .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"})}
 /* from the map: a link's switch port or tray in the Config view */
 var cfgPending=null;
-function cfgOpen(node,sec,table,filter){tab("config");$("cfg-node").value=node;cfgPending={sec:sec,table:table,filter:filter};cfgRead()}
+function cfgOpen(node,sec,table,filter){tab("config");$("cfg-node").value=node;
+  cfgPending=$("cfg-node").value===node?{sec:sec,table:table,filter:filter}:null;cfgRead()}
 var cfgSec=null,cfgTable=null;
 function cfgDraw(){
   var d=cfgData;if(!d)return;var secs=Object.keys(d.sections);if(cfgSec==null||!d.sections[cfgSec])cfgSec=secs[0];
@@ -1510,8 +1519,8 @@ function cfgDraw(){
 }
 var cfgPreFilter="",cfgCmp=null;
 function cfgWire(){
-  var c=$("cfg-cmp-go");if(c)c.addEventListener("click",function(){var p=$("cfg-cmp").value;if(!p)return;c.disabled=true;
-    fetch("/results/"+p).then(function(r){if(!r.ok)throw new Error("could not open "+p);return r.json()}).then(function(o){cfgCmp={path:p,d:o};cfgDraw()})
+  var c=$("cfg-cmp-go");if(c)c.addEventListener("click",function(){var p=$("cfg-cmp").value,base=cfgData;if(!p)return;c.disabled=true;
+    fetch("/results/"+p).then(function(r){if(!r.ok)throw new Error("could not open "+p);return r.json()}).then(function(o){if(cfgData!==base)return;cfgCmp={path:p,d:o};cfgDraw()})
       .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+esc(e.message)+"</span>"}).then(function(){c.disabled=false})});
   var x=$("cfg-cmp-off");if(x)x.addEventListener("click",function(){cfgCmp=null;cfgDraw()});
   var df=$("cfg-dfilter");if(df)df.addEventListener("input",function(){var q=df.value.toLowerCase();document.querySelectorAll("#cfg-diff tbody tr").forEach(function(tr){tr.style.display=!q||tr.textContent.toLowerCase().indexOf(q)>=0?"":"none"})});
@@ -1538,10 +1547,12 @@ function cfgSummaryHtml(d){
 function cfgFdbHtml(fc){
   if(!fc)return "";var sw=fc.switches||{},ks=Object.keys(sw).sort(),from=fc.trays_from||{},fromT=Object.keys(from).map(function(t){return from[t]}).sort();
   var rows=ks.map(function(k){var x=sw[k],miss=Object.keys(x.no_gpu_port||{});
-    return "<tr><td>"+esc(k)+"</td><td>"+x.matched+'</td><td class="'+(miss.length?"st-down":"st-ok")+'">'+(miss.length?esc(miss.map(function(t){return t+": "+x.no_gpu_port[t]}).join(", ")):"none")+"</td></tr>"}).join("");
+    var oth=Object.keys(x.other_tray||{});
+    return "<tr><td>"+esc(k)+"</td><td>"+x.matched+'</td><td class="'+(miss.length?"st-down":"st-ok")+'">'+(miss.length?esc(miss.map(function(t){return t+": "+x.no_gpu_port[t]}).join(", ")):"none")+
+      '</td><td class="'+(oth.length?"st-degraded":"")+'">'+(oth.length?esc(oth.map(function(t){return t+": "+x.other_tray[t]}).join(", ")):"none")+"</td></tr>"}).join("");
   return '<h4 style="margin:10px 0 4px">Forwarding entries against the GPU ports of the trays</h4><p class="mut" style="margin:0 0 4px">Each static entry names a GPU port MAC; an entry no GPU port has means that GPU lost the MAC AFM gave it (reset, mode change). Trays compared: '+
     esc((fc.trays_read||[]).join(", ")||"none")+(fromT.length?" (their saved reads, "+esc(new Date(fromT[0]).toLocaleString())+(fromT.length>1&&fromT[0]!==fromT[fromT.length-1]?" - "+esc(new Date(fromT[fromT.length-1]).toLocaleString()):"")+")":"")+
-    '.</p><div class="wrap"><table class="dl"><tr><th>Switch chip</th><th>Entries a GPU port has</th><th>Entries no GPU port has (by tray)</th></tr>'+rows+"</table></div>"}
+    '.</p><div class="wrap"><table class="dl"><tr><th>Switch chip</th><th>Entries a GPU port has</th><th>Entries no GPU port has (by tray)</th><th>Entries pointing at another tray</th></tr>'+rows+"</table></div>"}
 /* compare with another node's newest saved read, or an earlier read of this node */
 function cfgCmpHtml(d){
   var own=(cfgSaved[d.node]||[]).filter(function(x){return x.path!==d.saved}),o='<option value="">compare with ...</option>';
@@ -1613,7 +1624,7 @@ $("cfg-rack").addEventListener("click",function(){
 /* a whole-rack read: what stands out (values few nodes have), forwarding entries no GPU port answers, nodes not
    reached, every node's read (open / download) */
 function cfgRackHtml(r,i){
-  var alive=live&&live.rack===r.rack?liveAliveSw():{};
+  var alive=live&&live.running&&live.rack===r.rack?liveAliveSw():{};
   var errs=Object.keys(r.errors||{}),groups={},order=[];errs.forEach(function(n){var w=friendlyWhy(r.errors[n])||esc(String(r.errors[n]).slice(0,120));
     if(alive[n]&&/^(Not on the network|No answer)/.test(w))w="Powered - Live reads the other end of their GPU links up - but the management address does not answer from here.";
     if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
@@ -1746,11 +1757,12 @@ function saveCheck(p,btn){btn.disabled=true;btn.textContent="saving ...";
   .catch(function(e){btn.disabled=false;btn.textContent="Save this check";alert(e.message)})}
 function mapFetch(){
   mapSaveRow();
-  var p=$("map-scan").value;if(!p){$("map").innerHTML="";$("map-sum").textContent="";return}
+  var p=$("map-scan").value;if(!p){mapData=mapPrev=null;$("map").innerHTML="";$("map-sum").textContent="";return Promise.resolve()}
   var g=++mapGen;                                   /* the last choice wins: an older, slower fetch is dropped */
-  api("/api/scan?path="+encodeURIComponent(p)).then(fillMissing).then(function(d){if(g!==mapGen)return;mapData=d;
+  return api("/api/scan?path="+encodeURIComponent(p)).then(fillMissing).then(function(d){if(g!==mapGen)return;mapData=d;
     var q=$("map-prev").value;
-    if(q&&q!==p){api("/api/scan?path="+encodeURIComponent(q)).then(function(e){if(g!==mapGen)return;mapPrev=e;drawMap()}).catch(function(){if(g!==mapGen)return;mapPrev=null;drawMap()})}else{mapPrev=null;drawMap()}
+    if(q&&q!==p)return api("/api/scan?path="+encodeURIComponent(q)).then(function(e){if(g!==mapGen)return;mapPrev=e;drawMap()}).catch(function(){if(g!==mapGen)return;mapPrev=null;drawMap()});
+    mapPrev=null;drawMap();
   }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
 function lkey(l){return l.switch+" "+l.sw_port}
@@ -1827,10 +1839,12 @@ function drawMap(){
     var l=l0,lz=lv&&lv[lkey(l0)];if(lz&&lz.state){l=Object.assign({},l0,{state:lz.state},
       lz.unread?{cause:"not read now - "+(l0.bdf?"its switch and tray were not reached":"its switch was not reached and the check found no GPU at the tray end")+" ("+(l0.filler?l0.cause:"the check of "+checkAge(live.check_time)+" said "+l0.state)+")"}:
       l0.filler&&lz.read?{cause:"read by Live now (not in the check it started from)"}:l0.filler?{cause:"not read by Live yet - "+l0.cause}:{})}
-    var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
+    if(oddK[lkey(l0)])l=Object.assign({},l,{state:oddK[lkey(l0)],cause:"Live last read it "+oddK[lkey(l0)]+" (now off) - the check said "+l0.state+(l0.cause?": "+l0.cause:"")});
+    /* one outline rule, counted where it is drawn (audit 4 Nov: odd / fresh cells were outlined but not counted) */
+    var changed=!!fresh[lkey(l0)]||!!oddK[lkey(l0)]||(mapPrev&&(!l0.filler||l.state!==l0.state)&&l.state!=="unknown"&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state);
+    var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh":"")+(changed?" chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
+    if(changed)chg++;
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
-    if(mapPrev&&(!l0.filler||l.state!==l0.state)&&l.state!=="unknown"&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
-    if(oddK[lkey(l0)]){cls=cls.replace(" "+l.state," "+oddK[lkey(l0)])+" chg";l=Object.assign({},l,{state:oddK[lkey(l0)],cause:"Live last read it "+oddK[lkey(l0)]+" (now off) - the check said "+l0.state+(l0.cause?": "+l0.cause:"")})}
     return '<button class="'+cls+'" data-k="'+esc(lkey(l))+'" title="'+esc(l.switch+" "+(l.asic||"")+" "+l.sw_port+" <-> "+(l.tray||"?")+" "+(l.bdf?gName(l.tray,l.bdf):"")+" port "+l.gpu_port+": "+l.state+(l.cause?" - "+l.cause:""))+'" aria-label="'+esc(lkey(l)+" "+l.state)+'"></button>';
   }
   var html="";
@@ -2117,7 +2131,9 @@ function portExtra(k){
     box.querySelectorAll("a[data-cfgsw]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgOpen(l.switch,l.asic||null,"PORT",l.sw_port)})});
     box.querySelectorAll("a[data-cfgtr]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgOpen(l.tray,"ports",null,"")})});
     wireDiagrams(box);
-    box.querySelectorAll("a[data-hp]").forEach(function(a){a.addEventListener("click",function(){$("map-scan").value=a.dataset.hp;mapFetch();setTimeout(function(){mapDetail(k)},900)})});
+    box.querySelectorAll("a[data-hp]").forEach(function(a){a.addEventListener("click",function(){
+      var go=function(){$("map-scan").value=a.dataset.hp;if($("map-scan").value!==a.dataset.hp)return;Promise.resolve(mapFetch()).then(function(){mapDetail(k)})};
+      if($("map-scan").options.length)go();else mapLoadScans().then(go)})});
   }).catch(function(e){box.innerHTML='<p class="mut">'+friendly(e.message)+"</p>"});
 }
 
@@ -2329,7 +2345,7 @@ function topoNewerHtml(){
     " checked</b> - the picture stays on the last full check. ",true);
 }
 /* nodes not read, one line per reason (5 x the same SSH error, g02-g17 3 Nov); 'powered' when Live reads their links up */
-function nodeWhy(n,err){var w=friendlyWhy(err)||esc(String(err||"no reason given").slice(0,160)),alive=live&&mapData&&live.rack===mapData.rack?liveAliveSw():{};
+function nodeWhy(n,err){var w=friendlyWhy(err)||esc(String(err||"no reason given").slice(0,160)),alive=live&&live.running&&mapData&&live.rack===mapData.rack?liveAliveSw():{};
   if(alive[n]&&/^(Not on the network|No answer)/.test(w))w="Powered - the other end of their GPU links reads them up - but the management address does not answer from here. Check the management network / route to it, not the power.";
   return w}
 function otherGroups(nc){var g={},o=[];nc.forEach(function(x){var w=nodeWhy(x.node,x.error);if(!g[w]){g[w]={why:w,nodes:[],raw:[]};o.push(g[w])}g[w].nodes.push(x.node);g[w].raw.push(x.node+": "+String(x.error||""))});
@@ -2408,7 +2424,9 @@ function mapDetail(k){
     '<p class="mut">Described as: '+esc(l.desc||"")+(p?" · in the earlier scan: "+esc(p.state):"")+(l.afm_port?" · AFM: "+esc(l.afm_port):"")+"</p>"+
     '<p class="mut">VLAN: '+esc(l.vlans==null?"not read in this check":l.vlans.length?l.vlans.map(function(v){return v[0]+" ("+(v[1]||"untagged")+")"}).join(", "):"none - this GPU port is in no VLAN")+"</p>"+
     '<p class="'+(l.cable&&l.cable!=="confirmed"?"err":"mut")+'">Cable: '+esc(l.cable==="confirmed"?"confirmed by IFCP - the GPU port's peer is "+l.switch+" "+l.sw_port:l.cable||"not confirmed (no IFCP peer: link down, or the tray was not read)")+"</p>"+
-    verdictHtml(mEff(l)==="ok"?"ok":l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[])+'<div id="ai-link"></div>'+
+    (mEff(l)!=="ok"&&mEff(l)!==l.state&&mEff(l)!=="unknown"?   /* Live reads it worse than the check: say so, not 'working' */
+      verdictHtml(mEff(l),"","Live reads this link "+mEff(l)+" now - the check said "+(l.state||"?")+(l.cause?" ("+l.cause+")":""),"",["Watch it on the Live bar; run the link's check (Isolate a link) to name the cause now."]):
+      verdictHtml(mEff(l)==="ok"?"ok":l.state,l.kind,l.cause,l.owner,l.action?["Detail: "+l.action]:[]))+'<div id="ai-link"></div>'+
     (live&&liveMine()&&live.links[k]&&mEff(l)!==l.state?'<p class="mut">Live: now <b>'+esc(mEff(l))+"</b> (was "+esc(l.state)+" at the check).</p>":"")+
     '<div id="dd-port"><p class="mut">reading what the check saved about both ends ...</p></div>'+
     (l.evidence&&l.evidence.length?"<details><summary>Evidence</summary>"+l.evidence.map(function(e){return "<div><code>"+esc(e)+"</code></div>"}).join("")+"</details>":"")+
