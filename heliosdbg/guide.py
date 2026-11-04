@@ -39,6 +39,14 @@ class GuideError(ValueError):
     pass
 
 
+def unreachable(step: dict) -> dict | None:
+    """{what, owner, next} when a step could not log in to its node (ssh exit 255: no route, refused, timed out ..)."""
+    if str(step.get("rc")) != "255":
+        return None
+    from .reach import classify
+    return classify(str(step.get("output") or ""), host=str(step.get("node") or ""))
+
+
 def _pipe(c: str) -> int:
     """Where the command's pipe is (-1: none), skipping a '|' inside quotes (sonic-db-cli's 'TABLE|key'); -2: more than one."""
     q, at = "", -1
@@ -122,6 +130,11 @@ def compact(output: str) -> str:
 def steps_block(steps: list[dict]) -> str:
     out = []
     for i, s in enumerate(steps[-8:], 1):
+        u = unreachable(s)
+        if u:            # not evidence about the problem: the node could not be reached at all
+            out.append(f"[S{i}] on {s.get('node')}: `{s.get('command')}` NOT RUN - could not log in to {s.get('node')}: "
+                       f"{u['what']}. Do not propose more steps on {s.get('node')}.")
+            continue
         out.append(f"[S{i}] on {s.get('node')}: `{s.get('command')}` (exit {s.get('rc')}) ->\n"
                    + compact(str(s.get("output") or ""))[:OUTPUT_MAX // 2])
     return "\n".join(out)
@@ -201,6 +214,10 @@ def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=No
     if node not in nodes:
         out["refused"] = f"'{node}' is not a node of this rack"
         return out
+    down = next((u for s_ in steps if s_.get("node") == node for u in [unreachable(s_)] if u), None)
+    if down:
+        out["refused"] = f"{node} could not be reached in an earlier step ({down['what']}) - use another node, or conclude"
+        return out
     try:
         out["command"], _sudo = check(out["command"], nodes[node])
         if any(s.get("node") == node and s.get("command") == out["command"] for s in steps):
@@ -234,6 +251,9 @@ def run(host, transport, command: str, role: str, log_dir: Path | None = None) -
                          f"{round(time.time() - t0, 1)}s {shlex.quote(c)}\n")
         except OSError:
             pass
+    u = unreachable({"rc": rc, "output": out, "node": host.name})
+    if u:
+        out = f"Could not log in to {host.name}: {u['what']}.\nNext: {u['next']} (owner: {u['owner']})\n\n{out}"
     out = compact(out)                                   # before cutting: a cut JSON cannot be read any more
     if len(out) > OUTPUT_MAX:
         out = out[:OUTPUT_MAX // 2] + f"\n... ({len(out) - OUTPUT_MAX} characters cut) ...\n" + out[-OUTPUT_MAX // 2:]

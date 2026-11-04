@@ -233,3 +233,32 @@ def test_grep_flag_after_pattern_and_placeholder_bdf():
     with pytest.raises(guide.GuideError, match="placeholder"):
         guide.check("sudo afmctl show port -b 0000:00:00.0 --json", "compute")
     assert guide.check("sudo afmctl show port -b 0004:01:00.1 --json", "compute")[1] is True
+
+
+def test_a_node_that_cannot_be_reached_is_said_and_not_proposed_again():
+    """g02-g17 4 Nov: st6 is off the management network; S1 showed only ssh's 'No route to host'."""
+    s1 = {"node": "st6", "command": "show interfaces status -n asic0", "rc": 255,
+          "output": "[stderr] ssh: connect to host 10.255.4.76 port 22: No route to host"}
+    assert guide.unreachable(s1)["kind"] == "no_route"
+    assert guide.unreachable(s1 | {"rc": 1}) is None
+    assert "NOT RUN - could not log in to st6" in guide.steps_block([s1])
+
+    class AI:
+        def __init__(self, texts):
+            self.texts = list(texts)
+
+        def build_messages(self, ev, subject):
+            return [{"role": "system", "content": ""}, {"role": "user", "content": "x\n\nQuestion: q"}]
+
+        def chat(self, msgs, env=None, max_tokens=500):
+            return self.texts.pop(0), "stand-in"
+    ai_ = AI(['{"done": false, "node": "st6", "command": "show platform fan", "why": "w"}',
+              '{"done": false, "node": "st5", "command": "show platform fan", "why": "w"}'])
+    out = guide.propose(ai_, None, "s", [s1], {"st5": "switch", "st6": "switch"})
+    assert out["allowed"] and out["node"] == "st5" and out.get("retried")
+
+    class T:
+        def run(self, cmd, timeout=90, sudo=False):
+            return type("R", (), {"rc": 255, "stdout": "", "stderr": "ssh: connect to host 10.255.4.76 port 22: No route to host"})()
+    r = guide.run(type("H", (), {"name": "st6"})(), T(), "show platform fan", "switch")
+    assert r["output"].startswith("Could not log in to st6: no route to host")
