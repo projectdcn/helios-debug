@@ -559,7 +559,7 @@ function fillInv(){
   if(!i.afm){$("scan-afm").checked=false;$("afm-pw-box").classList.add("hide")}
   $("link-afm").disabled=!i.afm;if(!i.afm){$("link-afm").checked=false;$("link-pw-box").classList.add("hide")}
   try{localStorage.setItem("hdbg-inv",i.file)}catch(e){}
-  try{history.replaceState(null,"",location.hash.replace(/inv=[^&]*/,"inv="+encodeURIComponent(i.file))||("#inv="+encodeURIComponent(i.file)))}catch(e){}
+  setHash({inv:i.file});
   loadHistory();
   if(!document.querySelector('section[data-p="access"]').classList.contains("hide"))loadAccess();
   if(!document.querySelector('section[data-p="map"]').classList.contains("hide"))loadMap();
@@ -583,7 +583,7 @@ function tab(t){
   if(t==="topology")loadTopology();
   if(t==="guide"&&!$("guide-frame").getAttribute("src"))$("guide-frame").setAttribute("src","/guide");
   if(document.querySelector("section[data-p=\""+t+"\"]"))moveJobcard();
-  try{history.replaceState(null,"","#tab="+t+"&inv="+encodeURIComponent($("inv").value||""))}catch(e){}
+  setHash({tab:t,inv:$("inv").value||"",scan:t==="map"?undefined:null});   /* the map's check stays only on the map */
   if(t==="access")loadAccess();
   try{localStorage.setItem("hdbg-tab",t)}catch(e){}
 }
@@ -1742,6 +1742,15 @@ function mapLoadScans(){
     if(withLinks.length>1)$("map-prev").value=withLinks[1].path;   /* what changed since the scan before, by default */
   });
 }
+/* merge keys into the #tab=..&inv=..&scan=.. link (null drops one, undefined keeps it): a reload, or a link sent to
+   someone, opens the same rack, tab and check */
+function setHash(kv){
+  var h={};location.hash.replace(/^#/,"").split("&").forEach(function(p){var i=p.indexOf("=");if(i>0)h[p.slice(0,i)]=p.slice(i+1)});
+  Object.keys(kv).forEach(function(k){if(kv[k]===null)delete h[k];else if(kv[k]!==undefined)h[k]=encodeURIComponent(kv[k])});
+  var o=["tab","inv","scan"].filter(function(k){return h[k]}).map(function(k){return k+"="+h[k]});
+  Object.keys(h).forEach(function(k){if(o.every(function(x){return x.indexOf(k+"=")}))o.push(k+"="+h[k])});
+  try{history.replaceState(null,"",o.length?"#"+o.join("&"):location.pathname+location.search)}catch(e){}
+}
 function loadMap(){
   mapLoadScans().then(function(){
     var want=(location.hash.match(/scan=([^&]+)/)||[])[1];
@@ -1905,7 +1914,7 @@ function drawMap(){
   document.querySelectorAll("#map a.dd").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();
     if(a.dataset.dt)drillTray(a.dataset.dt);else if(a.dataset.dg){var x=a.dataset.dg.split("|");drillGpu(x[0],x[1])}
     else if(a.dataset.ds)drillSwitch(a.dataset.ds);else if(a.dataset.da){var y=a.dataset.da.split("|");drillAsic(y[0],y[1])}})});
-  try{history.replaceState(null,"","#tab=map&scan="+encodeURIComponent($("map-scan").value))}catch(e){}
+  setHash({tab:"map",scan:$("map-scan").value||null});
 }
 
 // ---------------------------------------------------------------- drill down

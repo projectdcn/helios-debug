@@ -362,6 +362,7 @@ class LiveRack:
 
     def _loop(self) -> None:
         next_rec, next_afm, afm_since = 0.0, 0.0, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        afm_seen: dict = {}     # the query is by whole second: an event in the last second comes back on the next poll
         while not self.stop_ev.is_set():
             now = time.monotonic()
             if self.max_s is not None and time.time() - self.started > self.max_s:
@@ -387,9 +388,16 @@ class LiveRack:
                 try:
                     items = self.afm.get(f"/events/v1/events?field-selector=meta.creation-time%3E{afm_since}").get("items") or []
                     for e in sorted(items, key=lambda x: (x.get("meta") or {}).get("creation-time") or ""):
-                        afm_since = max(afm_since, ((e.get("meta") or {}).get("creation-time") or afm_since)[:19] + "Z")
+                        meta = e.get("meta") or {}
+                        ct = meta.get("creation-time") or ""
+                        key = meta.get("uuid") or meta.get("name") or (ct, e.get("type"), e.get("message"))
+                        if key in afm_seen:
+                            continue
+                        afm_seen[key] = ct
+                        afm_since = max(afm_since, (ct or afm_since)[:19] + "Z")
                         if re.search(r"link|port", str(e.get("type")), re.I):
                             self.note(f"{e.get('type')}: {e.get('message')}", "afm")
+                    afm_seen = {k: t for k, t in afm_seen.items() if not t or t[:19] + "Z" >= afm_since}
                     self._follower("afm events", kind="afm", ok=True, error=None)
                 except Exception as e:  # noqa: BLE001
                     self._follower("afm events", kind="afm", ok=False, **_why(e))

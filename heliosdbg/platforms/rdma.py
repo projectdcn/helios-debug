@@ -39,11 +39,12 @@ COMMANDS = [
 LINK_DOWN_EVENTS = 3          # an up port that went down more often than this since the NIC started: flapping
 
 
-def parse_nicctl(text: str | None) -> tuple[dict[str, str], list[dict]]:
+def parse_nicctl(text: str | None, bad: list | None = None) -> tuple[dict[str, str], list[dict]]:
     """({card bdf: flavour/.../firmware}, [{card, name, admin, oper, reason, xcvr, pid, temp, temp_warn, temp_alarm,
-    down_events}]) from NICCTL_PORTS' output."""
+    down_events}]) from NICCTL_PORTS' output. Cards whose port JSON could not be read go into `bad`."""
     cards: dict[str, str] = {}
     ports: list[dict] = []
+    bad = [] if bad is None else bad
     for m in re.finditer(r"^@@card (\S+) (\S+)", text or "", re.M):
         cards[m.group(1)] = m.group(2)
     for block in (text or "").split("@@port ")[1:]:
@@ -51,6 +52,9 @@ def parse_nicctl(text: str | None) -> tuple[dict[str, str], list[dict]]:
         try:
             d = json.loads(body[body.find("{"):]) if "{" in body else {}
         except ValueError:
+            d = None
+        if not isinstance(d, dict) or not d.get("nic"):
+            bad.append(card.strip() or "?")
             continue
         for nic in d.get("nic") or []:
             for p in nic.get("port") or []:
@@ -98,9 +102,23 @@ def _down_cause(down_ports: list[dict]) -> tuple[str, str, bool]:
 
 def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
     F: list[dict] = []
-    cards, ports = parse_nicctl(_out(outs, "nic_ports"))
+    unread: list[str] = []
+    nic_text = _out(outs, "nic_ports")
+    cards, ports = parse_nicctl(nic_text, unread)
+    if nic_text and (unread or not ports):
+        F.append(finding(node, "compute", "nic_ports", "rdma", WARNING,
+                         "nicctl gave no readable port data" + (f" for card(s) {', '.join(unread[:6])}" if unread else ""),
+                         "the NIC port checks (why a port is down, optics, flaps, firmware) were not made for these "
+                         "cards - empty or non-JSON output from nicctl", "read 'sudo nicctl show port -j' by hand",
+                         [re.sub(r"\s+", " ", nic_text)[:200]], _cmd(outs, "nic_ports")))
     down_ports = [p for p in ports if str(p["admin"]).upper() == "UP" and str(p["oper"]).upper() != "UP"]
     t = _out(outs, "rdma")
+    if t is not None and not t.strip() and cards:
+        F.append(finding(node, "compute", "rdma", "rdma", WARNING,
+                         f"no RDMA ports listed, but nicctl sees {len(cards)} NIC card(s)",
+                         "the NICs are there but have no RDMA devices - the NIC's RDMA driver is not loaded",
+                         "read 'lsmod | grep -i rdma' and 'sudo dmesg | grep -i rdma | tail'; loading the driver CHANGES "
+                         "THE TRAY - for its owner", [], _cmd(outs, "rdma")))
     if t:
         bad = [ln for ln in t.splitlines() if ln.startswith("link") and ("state ACTIVE" not in ln or "LINK_UP" not in ln)
                and "physical_state DISABLED" not in ln]   # an administratively disabled (unused) port is not a fault

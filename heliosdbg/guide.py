@@ -35,12 +35,27 @@ class GuideError(ValueError):
     pass
 
 
+def _pipe(c: str) -> int:
+    """Where the command's pipe is (-1: none), skipping a '|' inside quotes (sonic-db-cli's 'TABLE|key'); -2: more than one."""
+    q, at = "", -1
+    for i, ch in enumerate(c):
+        if q:
+            q = "" if ch == q else q
+        elif ch in "'\"":
+            q = ch
+        elif ch == "|":
+            if at >= 0:
+                return -2
+            at = i
+    return at
+
+
 def check(command: str, role: str) -> tuple[str, bool]:
     """(the command, needs sudo) when it is on the read-only allow-list for that kind of node, else GuideError."""
     c = re.sub(r"^\s*sudo\s+(-n\s+)?", "", str(command or "")).strip()
     if not c or len(c) > 300:
         raise GuideError("no command, or longer than 300 characters")
-    if FORBIDDEN.search(c) or c.count("|") > 1:
+    if FORBIDDEN.search(c) or _pipe(c) == -2:
         raise GuideError("only a single command (optionally '| grep / tail / head') is allowed - no ; && $( ) ` or redirects")
     rules = SWITCH_RO if role == "switch" else COMPUTE_RO if role == "compute" else []
     for pat, sudo in rules:
@@ -194,9 +209,9 @@ def run(host, transport, command: str, role: str, log_dir: Path | None = None) -
     c, sudo = check(command, role)
     t0 = time.time()
     try:
-        if sudo and "|" in c:                             # sudo for the command only; the grep / tail runs as the user
+        if sudo and _pipe(c) >= 0:                        # sudo for the command only; the grep / tail runs as the user
             from .transport import build_command
-            head, tail = c.split("|", 1)
+            head, tail = c[:_pipe(c)], c[_pipe(c) + 1:]
             r = transport.run(build_command(head.strip(), sudo=True) + " | " + tail.strip(), timeout=90, sudo=False)
         else:
             r = transport.run(c, timeout=90, sudo=sudo)

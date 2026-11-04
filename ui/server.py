@@ -1244,6 +1244,7 @@ def start_job(state: State, req: dict) -> dict:
                "out": str(out.relative_to(state.results_dir)), "status": "running", "rc": None,
                "started": time.time(), "ended": None, "log": "", "proc": None}
         (state.results_dir / "ui-jobs").mkdir(parents=True, exist_ok=True)
+        _prune_job_files(state.results_dir / "ui-jobs", state.jobs)
         if req["tool"] == "scan":                     # kept only if the user saves it
             out.mkdir(parents=True, exist_ok=True)
             (out / UNSAVED).write_text("run from the UI; removed when a newer check of the rack finishes, unless saved\n")
@@ -1416,6 +1417,25 @@ def stop_job(state: State, jid: str) -> dict:
 
 
 KILL_AFTER_S = 60
+JOBS_LOGS_KEEP = 200                                  # run logs (and pasted cabling plans) kept in ui-jobs/
+
+
+def _prune_job_files(d: Path, jobs: dict) -> None:
+    """Drop the oldest run logs and cabling plans beyond JOBS_LOGS_KEEP each, skipping runs still in memory."""
+    live = {f"{j}.log" for j in jobs}
+    for pat in ("*.log", "plan-*.csv"):
+        try:
+            files = sorted(d.glob(pat), key=lambda f: f.stat().st_mtime)
+        except OSError:
+            continue
+        for f in files[:-JOBS_LOGS_KEEP]:
+            if f.name not in live:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
 JOBS_KEEP = 50                                        # finished runs kept in memory (up to 400 KB of log each)
 
 

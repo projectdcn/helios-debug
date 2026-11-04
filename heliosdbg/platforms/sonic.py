@@ -10,6 +10,7 @@ import time
 from ..checks import CRITICAL, LIMITS, WARNING, Platform, _cmd, _disk, _memory, _num, _out, _run, finding, missing  # noqa: F401
 from ..checks import _NS, _WORD  # noqa: F401 - the allow-list patterns
 
+_DBKEY = r"'[A-Z][A-Z0-9_]*\|[A-Za-z0-9_.:*/-]*'"     # a quoted 'TABLE|key' (the '|' is the key's, not a pipe)
 READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platform (heliosdbg/guide.py)
     (rf"show\s+interfaces\s+(?:status|description|counters(?:\s+fec-stats|\s+errors|\s+rates)?|transceiver\s+(?:presence|eeprom|lpmode))"
          rf"{_NS}(?:\s+-d\s+all)?(?:\s+-i)?(?:\s+Ethernet\d+)?", False),
@@ -21,7 +22,7 @@ READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platf
     (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?", False),
     (r"show\s+logging", True),                    # not -f: it never ends and holds a jump-host session
     (rf"show\s+lldp\s+(?:table|neighbors){_NS}", False),
-    (rf"sonic-db-cli{_NS}\s+(?:APPL_DB|ASIC_DB|CONFIG_DB|STATE_DB|COUNTERS_DB)\s+(?:keys|hgetall|hget|exists|scan)\s+{_WORD}(?:\s+{_WORD})?", True),
+    (rf"sonic-db-cli{_NS}\s+(?:APPL_DB|ASIC_DB|CONFIG_DB|STATE_DB|COUNTERS_DB)\s+(?:keys|hgetall|hget|exists|scan)\s+(?:{_DBKEY}|{_WORD})(?:\s+{_WORD})?", True),
     (r"docker\s+ps(?:\s+-a)?", True),
     (r"uptime|free\s+-[mh]|df\s+-h", False),
     # QFX5252 switch tray (HPE guide, 3 Nov 2026): leak, PCIe, interface errors / flaps / FEC, NTP, images, management, BMC

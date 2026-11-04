@@ -64,6 +64,16 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
                          "read 'sudo lspci -d 1002:' and 'sudo dmesg | grep -i amdgpu' for the missing one; the BMC event log "
                          "next (hardware owner)", [f"GPU {g.get('gpu')}: {g.get('bdf', '')}" for g in gpus],
                          _cmd(outs, "gpus")))
+    if gpus:                              # amd-smi answered for the GPUs but a metric read gave nothing usable: not "fine"
+        unread = [c for c in ("ecc", "pcie", "metric") if _out(outs, c) is not None and not _gpu_list(_out(outs, c))]
+        if unread:
+            F.append(finding(node, "compute", unread[0], "gpu", WARNING,
+                             f"amd-smi gave no readable GPU data for: {', '.join(unread)}",
+                             "these GPU checks were not made (empty or non-JSON output - an amd-smi version that "
+                             "prints other fields, or an error text) - so no problem found there means nothing",
+                             "read 'sudo amd-smi metric --ecc --pcie --json' by hand",
+                             [re.sub(r"\s+", " ", _out(outs, c) or "(empty)")[:160] for c in unread],
+                             _cmd(outs, unread[0])))
     for g in _gpu_list(_out(outs, "ecc")):
         e = g.get("ecc") or {}
         unc, corr = _num(e.get("total_uncorrectable_count")), _num(e.get("total_correctable_count"))
