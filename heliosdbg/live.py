@@ -126,11 +126,13 @@ def link_state(lk: dict, ifcp_in_use: bool) -> str:
 class LiveRack:
     def __init__(self, rack, links: list[dict], *, rack_name: str, ifcp_in_use: bool = False, reconcile_s: float = 300,
                  max_s: float = 8 * 3600, idle_s: float = 1800, afm=None, log_dir: Path | None = None,
-                 last_view=lambda: time.time(), stream_cls=Stream, jump_limited: bool = False, check_time=None):
+                 last_view=lambda: time.time(), stream_cls=Stream, jump_limited: bool = False, check_time=None,
+                 filled: dict | None = None):
         self.rack, self.rack_name, self.ifcp = rack, rack_name, ifcp_in_use
         self.reconcile_s, self.max_s, self.idle_s, self.afm = reconcile_s, max_s, idle_s, afm
         self.last_view, self.stream_cls, self.jump_limited = last_view, stream_cls, jump_limited
         self.check_time = check_time                 # the check Live started from (its states until a link is read)
+        self.filled = dict(filled or {})             # {switch / tray that check missed: the earlier check its links came from}
         self.lock = threading.RLock()
         self.stop_ev = threading.Event()
         self.started, self.stopped, self.stop_reason = time.time(), None, None
@@ -367,6 +369,9 @@ class LiveRack:
         for t in self.threads:
             t.start()
         self.note(f"live mode on: {len(self.links)} links, re-read every {self.reconcile_s:.0f} s", "live")
+        if self.filled:
+            self.note("not in the check Live started from, links taken from an earlier check and followed too: "
+                      + ", ".join(f"{n} ({t})" for n, t in sorted(self.filled.items())), "live")
 
     def stop(self, reason: str = "turned off") -> None:
         if self.stop_ev.is_set():
@@ -394,6 +399,6 @@ class LiveRack:
                     "max_s": self.max_s, "idle_s": self.idle_s,
                     "followers": {k: dict(v) for k, v in self.followers.items()}, "counts": counts,
                     "links": {k: {"state": v["state"], "since": v["since"], "sw_oper": v["sw_oper"], "sw_admin": v["sw_admin"],
-                                  "gpu_link": v["gpu_link"], "ll_up": v["ll_up"], "unread": v["unread"]}
-                              for k, v in self.links.items()}, "check_time": self.check_time,
+                                  "gpu_link": v["gpu_link"], "ll_up": v["ll_up"], "unread": v["unread"], "read": v["read"]}
+                              for k, v in self.links.items()}, "check_time": self.check_time, "filled": self.filled,
                     "changes": [c for c in self.changes if c["seq"] > since_seq][-200:], "seq": self.seq}

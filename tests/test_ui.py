@@ -597,3 +597,37 @@ def test_a_query_number_that_is_not_one_is_a_400(ui):
     base, _tmp = ui
     assert call(base, "/api/live?since=abc")[0] == 400
     assert call(base, "/api/live?since=3")[0] == 200
+
+
+def test_live_follows_switches_its_check_missed(ui, monkeypatch):
+    """A switch the starting check did not read (g02-g17 24 Oct: st1, st2, st4) gets its links from the newest earlier
+    check that read it and is followed; their state is not known until read, not the old check's."""
+    base, tmp = ui
+    seen = {}
+
+    class FakeLive:
+        def __init__(self, rack, links, **k):
+            seen.update(k, links=links)
+
+        def start(self):
+            pass
+
+        def stop(self, reason=""):
+            pass
+    import heliosdbg.live
+    monkeypatch.setattr(heliosdbg.live, "LiveRack", FakeLive)
+    (tmp / "inv" / "two.local.yaml").write_text(INV.replace("rack: lab", "rack: two").replace(
+        "  - {name: st1, host: 10.0.0.1}\n", "  - {name: st1, host: 10.0.0.1}\n  - {name: st2, host: 10.0.0.4}\n"))
+    r = tmp / "results" / "link-check" / "two"
+    for name, links in (("scan-20261018-000000", [{"switch": "st2", "sw_port": "Ethernet0", "state": "degraded"}]),
+                        ("scan-20261019-000000", [{"switch": "st2", "sw_port": "Ethernet8", "state": "ok", "tray": "c2"}]),
+                        ("scan-20261024-000000", [{"switch": "st1", "sw_port": "Ethernet0", "state": "down", "tray": "c1"}])):
+        (r / name).mkdir(parents=True)
+        (r / name / "link_check.json").write_text(json.dumps({"links": links, "time_utc": name[5:]}))
+    st, body = call(base, "/api/live/start", {"inventory": "two.local.yaml"})
+    assert st == 200
+    ls = {f"{x['switch']} {x['sw_port']}": x for x in seen["links"]}
+    assert ls["st1 Ethernet0"]["state"] == "down"                       # the starting check's own link is kept
+    assert ls["st2 Ethernet8"]["state"] == "unknown" and ls["st2 Ethernet8"]["filled_from"] == "20261019-000000"
+    assert "st2 Ethernet0" not in ls                                      # only the newest earlier check that read st2
+    assert json.loads(body)["filled"] == seen["filled"] == {"st2": "20261019-000000", "c2": "20261019-000000"}

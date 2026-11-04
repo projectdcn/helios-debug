@@ -950,6 +950,36 @@ def save_inventory(state: State, req: dict) -> dict:
             "fill_me": sum(ln.count("FILL-ME") for ln in text.splitlines() if not ln.lstrip().startswith("#"))}
 
 
+def fill_missing(inv, links: list[dict], older: list[Path]) -> dict:
+    """Switches / trays of the inventory the starting check did not read get their links from the newest earlier check
+    that read them, so Live follows them too (g02-g17 24 Oct: st1, st2, st4 not read - FDB entries SONiC's show mac
+    fails on - and Live left their 1296 links grey on 3 Nov although both ends answered). Their state is not known
+    until Live reads them; the old check's state is not carried. Returns {node: that check's time}; links appended."""
+    has = {x["switch"] for x in links} | {x.get("tray") for x in links if x.get("tray")}
+    need = {h.name for h in inv.switches + inv.computes} - has
+    seen, filled = {f"{x['switch']} {x['sw_port']}" for x in links}, {}
+    for run in older:
+        if not need:
+            break
+        try:
+            e = json.loads(run.read_text())
+        except (OSError, ValueError):
+            continue
+        got = set()
+        for x in e.get("links") or []:
+            k = f"{x.get('switch')} {x.get('sw_port')}"
+            hit = {x.get("switch"), x.get("tray")} & need
+            if not x.get("switch") or not x.get("sw_port") or not hit or k in seen:
+                continue
+            seen.add(k)
+            got |= hit
+            links.append(dict(x, state="unknown", filled_from=e.get("time_utc")))
+        for n in got:
+            filled[n] = e.get("time_utc")
+        need -= got
+    return filled
+
+
 def live_start(state: State, req: dict) -> dict:
     from heliosdbg.live import LiveRack
     from heliosdbg.rack import Rack
@@ -958,8 +988,8 @@ def live_start(state: State, req: dict) -> dict:
     runs = sorted((state.results_dir / "link-check" / (inv.rack or f.stem)).glob("scan-*/link_check.json"), reverse=True)
     if not runs:
         raise BadRequest("live mode starts from a check of the rack - run Check all links first")
-    d, links = {}, []
-    for run in runs[:60]:                             # the newest check that read links: one that read nothing
+    d, links, at = {}, [], 0
+    for at, run in enumerate(runs[:60]):              # the newest check that read links: one that read nothing
         try:                                          # (every switch off the network) is no starting point
             d = json.loads(run.read_text())
         except (OSError, ValueError):
@@ -969,6 +999,7 @@ def live_start(state: State, req: dict) -> dict:
             break
     if not links:
         raise BadRequest("no check of this rack has links - run Check all links again")
+    filled = fill_missing(inv, links, runs[at + 1:at + 1 + 6])
     reconcile_s, max_h = float(_int(req, "reconcile_s", 60, 3600, 300)), _int(req, "max_h", 0, 168, 8)
     with state.lock:                                  # one start at a time: two at once left one session running
         if state.live_starting:                       # unreachable (double click)
@@ -988,7 +1019,7 @@ def live_start(state: State, req: dict) -> dict:
                        reconcile_s=reconcile_s, afm=afm, max_s=None if max_h == 0 else max_h * 3600.0,
                        idle_s=None if req.get("keep_unwatched") is True else 1800.0,
                        log_dir=state.results_dir / "live", last_view=lambda: state.live_view,
-                       jump_limited=jump.get("via") == "exec", check_time=d.get("time_utc"))
+                       jump_limited=jump.get("via") == "exec", check_time=d.get("time_utc"), filled=filled)
         # everything checked and built: only now is the running session stopped
         with state.lock:
             old, state.live = state.live, None
@@ -1001,7 +1032,7 @@ def live_start(state: State, req: dict) -> dict:
     finally:
         with state.lock:
             state.live_starting = False
-    return {"started": True, "rack": inv.rack, "links": len(links), "from_check": d.get("time_utc")}
+    return {"started": True, "rack": inv.rack, "links": len(links), "from_check": d.get("time_utc"), "filled": filled}
 
 
 def live_status(state: State, since: int) -> dict:

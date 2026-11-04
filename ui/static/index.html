@@ -1561,7 +1561,8 @@ function missingSw(d){
   var m=d.missing;if(!m||(!m.switches.length&&!m.trays.length))return "";
   var all=m.switches.concat(m.trays);
   return '<span class="err">Not read by this check: '+all.map(function(n){return "<b>"+esc(n)+"</b>"+(m.filled[n]?"":" (in no earlier check either)")}).join(", ")+
-    " - shown grey from the newest earlier check that read them (hover a link)</span>"}
+    " - "+(liveMine()&&live.rack===d.rack&&Object.keys(live.filled||{}).length?"Live follows "+Object.keys(live.filled).sort().join(", ")+" (links from an earlier check)":
+      "shown grey from the newest earlier check that read them (hover a link)")+"</span>"}
 function checkIso(t){var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(t||"");return m?m[1]+"-"+m[2]+"-"+m[3]+"T"+m[4]+":"+m[5]+":"+m[6]+"Z":t}
 function noLinks(x){return /^0 GPU links/.test(String(x.summary||""))}
 function mapLoadScans(){
@@ -1623,6 +1624,15 @@ function fillMissing(d){
       return next(k+1)}).catch(function(){return next(k+1)})}
   return next(0);
 }
+/* Live on: why links are 'not known' - not reached now, not read yet, or not followed (in neither the check Live started
+   from nor an earlier one); 3 Nov g02-g17 said 'switch and tray were not reached' for 1296 links of switches that answered */
+function unknownWhy(d,lv){
+  var c={gone:0,wait:0,out:0};
+  d.links.forEach(function(l){var z=lv[lkey(l)];if(!z){if(l.state==="unknown")c.out++;return}
+    if(z.state!=="unknown")return;if(z.unread)c.gone++;else c.wait++});
+  var p=[];if(c.gone)p.push(c.gone+" not read now: their switch and tray were not reached");
+  if(c.wait)p.push(c.wait+" not read yet");if(c.out)p.push(c.out+" not followed by Live: in no check it could start from");
+  return " not known"+(p.length?" ("+p.join("; ")+")":"")}
 function drawMap(){
   var d=mapData;if(!d)return;
   var prev={};if(mapPrev)mapPrev.links.forEach(function(l){prev[lkey(l)]=l.state});
@@ -1631,7 +1641,9 @@ function drawMap(){
   var lv=liveMine()&&live.rack===d.rack?live.links:null,fresh={};
   if(lv)liveChanges.forEach(function(c){if(c.link&&c.what==="state"&&Date.now()-new Date(c.t).getTime()<600000)fresh[c.link]=1});
   function cell(l0){
-    var l=l0,lz=lv&&lv[lkey(l0)];if(lz&&lz.state){l=Object.assign({},l0,{state:lz.state},lz.unread?{cause:"not read now - its switch and tray were not reached (the check of "+checkAge(live.check_time)+" said "+l0.state+")"}:{})}
+    var l=l0,lz=lv&&lv[lkey(l0)];if(lz&&lz.state){l=Object.assign({},l0,{state:lz.state},
+      lz.unread?{cause:"not read now - its switch and tray were not reached ("+(l0.filler?l0.cause:"the check of "+checkAge(live.check_time)+" said "+l0.state)+")"}:
+      l0.filler&&lz.read?{cause:"read by Live now (not in the check it started from)"}:l0.filler?{cause:"not read by Live yet - "+l0.cause}:{})}
     var cls="cell "+l.state+(fresh[lkey(l0)]?" fresh chg":""),txt=(lkey(l)+" "+(l.tray||"")+" "+(l.bdf||"")+" port "+l.gpu_port+" "+(l.cause||"")+" "+(l.desc||"")).toLowerCase();
     if(q){if(txt.indexOf(q)>=0){cls+=" hit";hits++}else cls+=" dim"}
     if(mapPrev&&!l0.filler&&prev[lkey(l)]!==undefined&&prev[lkey(l)]!==l.state){cls+=" chg";chg++}
@@ -1682,7 +1694,7 @@ function drawMap(){
   }else{$("map-banner").classList.add("hide")}
   var gs=(d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join(", ");
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
-    (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?" not known (not read now: their switch and tray were not reached)":d.missing&&(d.missing.switches.length||d.missing.trays.length)?" not known (not read by this check)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
+    (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?unknownWhy(d,lv):d.missing&&(d.missing.switches.length||d.missing.trays.length)?" not known (not read by this check)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
     (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+"</span>")+
     cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err">GPU state: '+esc(gs)+"</span>":"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
