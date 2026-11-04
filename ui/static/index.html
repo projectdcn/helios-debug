@@ -209,7 +209,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
     <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>A picture of every link of a check: one small square per link, green fine, amber degraded, red down. Click a square for what is wrong and what to do.</dd><dt>When</dt><dd>After a check, to see where the problems are and whether they share something (one GPU, one switch chip).</dd><dt>How long</dt><dd>Instant.</dd><dt>Safe?</dt><dd>Yes.</dd></dl></details>
     <p class="mut">Every GPU link of a scan, by compute tray (GPU x port) or by switch ASIC. Click a link for its cause and to diagnose it now.</p>
     <div class="grid">
-      <div><label for="map-scan">Scan</label><select id="map-scan"></select></div>
+      <div><label for="map-scan">Scan</label><select id="map-scan"></select><div id="map-save-row" class="hide" style="margin-top:4px"><span class="mut">Not saved - replaced when the next check finishes.</span> <button class="go" id="map-save">Save this check</button></div></div>
       <div><label for="map-prev">Mark what changed since</label><select id="map-prev"><option value="">-</option></select></div>
       <div><label for="map-view">View</label><select id="map-view"><option value="tray">by compute tray</option><option value="switch">by switch ASIC</option><option value="topo">topology (cabling picture)</option></select></div>
       <div><label for="map-q">Find (port, tray, BDF, cause)</label><input id="map-q" type="search" placeholder="Ethernet257, ct13, 0002:01:00.1, IFCP ..."></div>
@@ -866,7 +866,11 @@ function renderResult(j){
     box.innerHTML='<div class="verdict '+(bad?"down":"ok")+'"><h3>'+(bad?"The path has problems":"The path works")+"</h3>"+
       (bad?"Some ports of this path did not pass - see below; Diagnose a link on one of them for the cause.":"Every port checked passed (forwarding entries, test packets, counters).")+
       '</div><pre style="max-height:40vh">'+esc(lines.slice(-30).join("\n"))+"</pre>"})}
-  else if(j.tool==="scan"){api("/api/scan?path="+encodeURIComponent(j.out)).then(function(d){box.innerHTML=findingsHtml(d);wireFindingButtons(box)}).catch(function(){})}
+  else if(j.tool==="scan"){api("/api/scan?path="+encodeURIComponent(j.out)).then(function(d){
+    box.innerHTML='<div class="row" id="scan-save-row"><span class="mut">This check is not saved: it is replaced when the next check of the rack finishes'+
+      ((j.dropped||[]).length?" (the unsaved "+esc(j.dropped.join(", "))+" was removed now)":"")+'.</span> <button class="go" id="scan-save">Save this check</button></div>'+findingsHtml(d);
+    $("scan-save").addEventListener("click",function(){saveCheck(j.out,$("scan-save")).then(function(){$("scan-save-row").innerHTML='<span class="mut">Saved: '+esc(j.out)+"</span>"})});
+    wireFindingButtons(box)}).catch(function(){})}
   else if(j.tool==="health"){fetch(base+"health.json").then(function(r){return r.ok?r.json():null}).then(function(d){if(d)renderHealth(box,d,j.out)})}
   else if(j.tool==="watch"){fetch(base+"watch.json").then(function(r){return r.ok?r.json():null}).then(function(w){if(!w)return;
     box.innerHTML=Object.keys(w.per_link).map(function(k){var p=w.per_link[k],bad=p.link_changes||p.down||Object.keys(p.errors_grew).length;
@@ -979,6 +983,18 @@ function liveBad(f,bad){
   return esc(nodes+" not reached")+" - "+order.map(function(w){
     var ns=groups[w],raw=ns.map(function(n){return n+": "+String(f[n].error||"")}).join("\n");
     return '<b title="'+esc(raw)+'">'+esc(ns.map(function(n){return n.split(" ")[0]}).join(", "))+"</b>: "+w.replace(/\.$/,"")}).join("; ")}
+/* Live writes nothing by itself: what it read is saved as a check (Scan / Mark lists) or its change log, on request */
+var liveSaved="";
+function liveSaveHtml(){return '<button class="sec" id="live-save-check" title="keep what Live read as a check of the rack: it appears in the Scan and Mark lists">Save as check</button>'+
+  '<button class="sec" id="live-save-log" title="write Live\'s change log (kept in memory until then) to the results folder">Save change log</button>'+
+  (liveSaved?'<span class="mut">'+liveSaved+"</span>":"")}
+function liveSaveWire(){
+  function go(btn,url,msg){btn.disabled=true;api(url,{}).then(function(r){liveSaved=msg(r);$("live-bar").dataset.key="";liveBar();if(url.indexOf("check")>0)mapLoadScans().then(mapSaveRow)})
+    .catch(function(e){btn.disabled=false;liveSaved=esc(e.message);$("live-bar").dataset.key="";liveBar()})}
+  var c=$("live-save-check"),g=$("live-save-log");
+  if(c)c.addEventListener("click",function(){go(c,"/api/live/save-check",function(r){return "saved as a check: "+esc(r.summary)})});
+  if(g)g.addEventListener("click",function(){go(g,"/api/live/save-log",function(r){return "saved "+r.changes+" change(s) to "+esc(r.saved)})});
+}
 function liveBar(){
   var b=$("live-bar");if(!b)return;var i=inv();
   if(liveMine()){
@@ -993,8 +1009,8 @@ function liveBar(){
       " · "+(live.max_s?"stops by itself at "+esc(new Date((live.started+live.max_s)*1000).toLocaleString([],{weekday:"short",hour:"2-digit",minute:"2-digit"})):"runs until turned off")+
       (live.idle_s?" or "+Math.round(live.idle_s/60)+" min after no page is open":"")+"</span>"+
       (bad.length?'<span class="err">'+liveBad(f,bad)+"</span>":"")+
-      '<button class="sec" id="live-off">Turn live off</button>';
-    $("live-off").addEventListener("click",function(){api("/api/live/stop",{}).then(livePoll)});
+      '<button class="sec" id="live-off">Turn live off</button>'+liveSaveHtml();
+    $("live-off").addEventListener("click",function(){api("/api/live/stop",{}).then(livePoll)});liveSaveWire();
   }else{
     var other=live&&live.running?' <span class="mut">(live mode is on for '+esc(live.rack)+" - turning it on here turns that off)</span>":"";
     var why=live&&!live.running&&live.stop_reason&&live.inventory===(i&&i.file)?' <span class="mut">Last live session: '+esc(live.stop_reason)+".</span>":"";
@@ -1009,7 +1025,8 @@ function liveBar(){
       '<label class="checks" style="margin:0">re-read every <select id="live-rec" style="width:auto;margin-left:4px"><option value="60">1 min</option><option value="300" selected>5 min</option><option value="900">15 min</option></select></label>'+
       '<label class="checks" style="margin:0">stop after <select id="live-max" style="width:auto;margin-left:4px"><option value="8" selected>8 h</option><option value="24">24 h</option><option value="72">3 days</option><option value="0">until turned off</option></select></label>'+
       '<label class="checks" style="margin:0" title="otherwise Live stops 30 min after the last page showing this UI was closed"><input type="checkbox" id="live-keep">keep on when no page is open</label>'+
-      '<button class="go" id="live-on">Turn live on</button>'+other+why+(liveErr?'<span class="err">'+friendly(liveErr)+"</span>":"");
+      '<button class="go" id="live-on">Turn live on</button>'+other+why+(why?liveSaveHtml():"")+(liveErr?'<span class="err">'+friendly(liveErr)+"</span>":"");
+    if(why)liveSaveWire();
     $("live-on").addEventListener("click",function(){$("live-on").disabled=true;$("live-on").textContent="starting ...";
       liveErr="";
       api("/api/live/start",{inventory:i.file,reconcile_s:+$("live-rec").value,max_h:+$("live-max").value,keep_unwatched:$("live-keep").checked}).then(function(){liveSeq=0;liveChanges=[];livePoll()})
@@ -1569,7 +1586,7 @@ function mapLoadScans(){
   return api("/api/results").then(function(r){
     var i=inv(),rack=i&&i.rack;
     mapScans=r.results.filter(function(x){return x.tool==="scan"&&x.files.indexOf("link_check.json")>=0&&(!rack||x.rack===rack)});
-    var o=mapScans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+(noLinks(x)?" (no links read)":"")+"</option>"}).join("");
+    var o=mapScans.map(function(x){return '<option value="'+esc(x.path)+'">'+esc(new Date(x.mtime*1000).toLocaleString()+" - "+x.summary)+(noLinks(x)?" (no links read)":"")+(x.unsaved?" (not saved)":"")+"</option>"}).join("");
     $("map-scan").innerHTML=o||"<option value=''>no scan yet - run one on the Scan tab</option>";
     $("map-prev").innerHTML='<option value="">-</option>'+o;
     /* the newest check that read links, and the one before it: a check that could read nothing (g02-g17 2 Nov, every
@@ -1587,7 +1604,13 @@ function loadMap(){
   }).catch(function(e){$("map-sum").innerHTML='<span class="err">'+esc(e.message)+"</span>"});
 }
 var mapGen=0;
+function mapSaveRow(){var p=$("map-scan").value;$("map-save-row").classList.toggle("hide",!mapScans.some(function(x){return x.path===p&&x.unsaved}))}
+function saveCheck(p,btn){btn.disabled=true;btn.textContent="saving ...";
+  return api("/api/scan/save",{path:p}).then(function(){btn.textContent="saved";
+    var a=$("map-scan").value,b=$("map-prev").value;return mapLoadScans().then(function(){$("map-scan").value=a;$("map-prev").value=b;mapSaveRow()})})
+  .catch(function(e){btn.disabled=false;btn.textContent="Save this check";alert(e.message)})}
 function mapFetch(){
+  mapSaveRow();
   var p=$("map-scan").value;if(!p){$("map").innerHTML="";$("map-sum").textContent="";return}
   var g=++mapGen;                                   /* the last choice wins: an older, slower fetch is dropped */
   api("/api/scan?path="+encodeURIComponent(p)).then(fillMissing).then(function(d){if(g!==mapGen)return;mapData=d;
@@ -2228,6 +2251,7 @@ function mapDetail(k){
   wireCrumbs();portExtra(k);aiPanel($("ai-link"),{path:mapData.path,link:k,label:"link "+k});$("map-detail").scrollIntoView({block:"nearest"});
 }
 ["map-scan","map-prev"].forEach(function(id){$(id).addEventListener("change",mapFetch)});
+$("map-save").addEventListener("click",function(){var b=$("map-save");saveCheck($("map-scan").value,b).then(function(){b.disabled=false;b.textContent="Save this check"})});
 $("map-view").addEventListener("change",drawMap);$("map-q").addEventListener("input",drawMap);
 $("link-afm").addEventListener("change",function(){$("link-pw-box").classList.toggle("hide",!$("link-afm").checked)});
 $("link-target").addEventListener("keydown",function(e){if(e.key==="Enter")run("link")});

@@ -132,6 +132,7 @@ class LiveRack:
         self.reconcile_s, self.max_s, self.idle_s, self.afm = reconcile_s, max_s, idle_s, afm
         self.last_view, self.stream_cls, self.jump_limited = last_view, stream_cls, jump_limited
         self.check_time = check_time                 # the check Live started from (its states until a link is read)
+        self.check_path = None                       # that check's link_check.json (set by the UI)
         self.filled = dict(filled or {})             # {switch / tray that check missed: the earlier check its links came from}
         self.lock = threading.RLock()
         self.stop_ev = threading.Event()
@@ -139,8 +140,10 @@ class LiveRack:
         self.links: dict[str, dict] = {}
         self.by_port: dict[tuple, str] = {}
         self.by_gpu: dict[tuple, list[str]] = {}
+        self.src: dict[str, dict] = {}               # the check's own link records ('Save as check' keeps their fields)
         for ln in links:
             k = f"{ln['switch']} {ln['sw_port']}"
+            self.src[k] = ln
             self.links[k] = {"switch": ln["switch"], "asic": ln.get("asic"), "sw_port": ln["sw_port"], "tray": ln.get("tray"),
                              "bdf": ln.get("bdf"), "gpu_port": ln.get("gpu_port"), "scan_state": ln.get("state"),
                              "scan_kind": ln.get("kind"), "sw_oper": None, "sw_admin": None, "gpu_link": None,
@@ -149,7 +152,7 @@ class LiveRack:
             self.by_port[(ln["switch"], ln["sw_port"])] = k
             if ln.get("tray") and ln.get("bdf") and ln.get("gpu_port") is not None:
                 self.by_gpu.setdefault((ln["tray"], ln["bdf"]), []).append(k)
-        self.changes: deque = deque(maxlen=2000)
+        self.changes: deque = deque(maxlen=20000)   # in memory only; written when the user saves the log
         self.seq = 0
         self.followers: dict[str, dict] = {}
         self.streams: list = []

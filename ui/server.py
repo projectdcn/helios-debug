@@ -17,6 +17,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -118,7 +119,8 @@ class State:
                     break
             rows.append({"rack": d.parent.name, "name": d.name, "tool": tool, "mtime": d.stat().st_mtime,
                          "files": sorted(f for f in files if f.endswith((".html", ".txt", ".json"))),
-                         "path": f"link-check/{d.parent.name}/{d.name}", "summary": summary})
+                         "path": f"link-check/{d.parent.name}/{d.name}", "summary": summary,
+                         "unsaved": (d / UNSAVED).exists()})
         return sorted(rows, key=lambda r: -r["mtime"])[:limit]
 
 
@@ -623,7 +625,7 @@ def ai_ticket(state: State, req: dict) -> dict:
     """A ticket for one audience: facts from the check, summary / request drafted by the AI (if one is connected)."""
     from heliosdbg import ai, ticket
     rel = str(req.get("path") or "").strip("/")
-    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/scan-[0-9]{8}-[0-9]{6}", rel):
+    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/scan-[0-9]{8}-[0-9]{6}(-live)?", rel):
         raise BadRequest("path: link-check/<rack>/scan-...")
     audience = str(req.get("audience") or "all")
     if audience not in ticket.AUDIENCES:
@@ -724,7 +726,7 @@ def ai_chat(state: State, req: dict) -> dict:
     if not q:
         raise BadRequest("type a question")
     rel = str(req.get("path") or "").strip("/")
-    if not re.fullmatch(rf"link-check/{re.escape(rack)}/scan-[0-9]{{8}}-[0-9]{{6}}", rel):
+    if not re.fullmatch(rf"link-check/{re.escape(rack)}/scan-[0-9]{{8}}-[0-9]{{6}}(-live)?", rel):
         runs = sorted((state.results_dir / "link-check" / rack).glob("scan-*/link_check.json"), reverse=True)
         lf = latest_full(rack, runs, len(inv.computes)).get("latest_full")
         if not lf:
@@ -1018,8 +1020,9 @@ def live_start(state: State, req: dict) -> dict:
                        ifcp_in_use=bool((d.get("learned") or {}).get("ifcp_in_use", False)),
                        reconcile_s=reconcile_s, afm=afm, max_s=None if max_h == 0 else max_h * 3600.0,
                        idle_s=None if req.get("keep_unwatched") is True else 1800.0,
-                       log_dir=state.results_dir / "live", last_view=lambda: state.live_view,
+                       log_dir=None, last_view=lambda: state.live_view,
                        jump_limited=jump.get("via") == "exec", check_time=d.get("time_utc"), filled=filled)
+        new.check_path = str(runs[at])
         # everything checked and built: only now is the running session stopped
         with state.lock:
             old, state.live = state.live, None
@@ -1062,6 +1065,9 @@ def start_job(state: State, req: dict) -> dict:
                "out": str(out.relative_to(state.results_dir)), "status": "running", "rc": None,
                "started": time.time(), "ended": None, "log": "", "proc": None}
         (state.results_dir / "ui-jobs").mkdir(parents=True, exist_ok=True)
+        if req["tool"] == "scan":                     # kept only if the user saves it
+            out.mkdir(parents=True, exist_ok=True)
+            (out / UNSAVED).write_text("run from the UI; removed when a newer check of the rack finishes, unless saved\n")
         logf = open(state.results_dir / "ui-jobs" / f"{jid}.log", "w")
         logf.write("$ link_check.py " + " ".join(args) + "\n")
         logf.flush()
@@ -1096,8 +1102,87 @@ def start_job(state: State, req: dict) -> dict:
                 job["rc"], job["ended"] = rc, time.time()
                 job["status"] = ("stopped" if job.get("stopping") else
                                  {0: "ok", 1: "problems found", 2: "incomplete"}.get(rc, f"failed (rc {rc})"))
+            if job["tool"] == "scan" and (out / "link_check.json").is_file():
+                job["dropped"] = drop_unsaved(out.parent, out)
     threading.Thread(target=pump, daemon=True).start()
     return public(job)
+
+
+UNSAVED = ".unsaved"          # a check run from the UI is kept only when the user saves it (3 Nov: "allow user to save")
+SCAN_RX = re.compile(r"^link-check/[\w.-]+/scan-\d{8}-\d{6}(-live)?$")
+
+
+def drop_unsaved(rack_dir: Path, keep: Path) -> list[str]:
+    """A newer check of the rack finished: earlier checks the user did not save are removed (only ones marked unsaved;
+    checks from before this choice, or run outside the UI, have no mark and stay)."""
+    gone = []
+    for d in rack_dir.glob("scan-*"):
+        if d != keep and d.is_dir() and (d / UNSAVED).is_file():
+            shutil.rmtree(d, ignore_errors=True)
+            gone.append(d.name)
+    return gone
+
+
+def save_scan(state: State, rel: str) -> dict:
+    if not SCAN_RX.match(rel or ""):
+        raise BadRequest("not a check folder")
+    d = (state.results_dir / rel).resolve()
+    if state.results_dir.resolve() not in d.parents or not d.is_dir():
+        raise BadRequest("no such check")
+    (d / UNSAVED).unlink(missing_ok=True)
+    return {"saved": rel}
+
+
+def live_save(state: State, what: str) -> dict:
+    """Live writes nothing by itself: 'check' keeps what it read as a check of the rack (in the Scan / Mark lists),
+    'log' writes its change log (the last 20000 changes, kept in memory)."""
+    with state.lock:
+        lv = state.live
+    if lv is None:
+        raise BadRequest("no live session to save - turn live on first")
+    st = lv.status(0)
+    now = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    if what == "log":
+        out = state.results_dir / "live" / f"{lv.rack_name}-{now}.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with lv.lock:
+            rows = list(lv.changes)
+        out.write_text("".join(json.dumps(c) + "\n" for c in rows))
+        return {"saved": str(out.relative_to(state.results_dir)), "changes": len(rows)}
+    src = lv.check_path
+    try:
+        d = json.loads(Path(src).read_text()) if src else {}
+    except (OSError, ValueError):
+        d = {}
+    links, counts = [], {}
+    with lv.lock:
+        for k, ln in lv.src.items():
+            cur = lv.links[k]
+            x = {f: v for f, v in ln.items() if f != "filled_from"}
+            stt = cur["state"] or "unknown"
+            if cur["read"]:
+                said = (f"switch oper {cur['sw_oper'] or '?'} / admin {cur['sw_admin'] or '?'}, GPU {cur['gpu_link'] or 'not read'}"
+                        f", IFCP ll_up {cur['ll_up'] or '?'}")
+                if stt != ln.get("state"):
+                    x.update(kind="live", cause=f"read by Live: {said}")
+                x["evidence"] = [f"Live {time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime())}: {said}"] + list(ln.get("evidence") or [])[:6]
+            else:
+                stt = "unknown" if not (ln.get("kind") == "tray_quarantined") else (ln.get("state") or "unknown")
+                x["cause"] = "not read by Live (switch and tray not reached)" + (f" - the check said {ln.get('state')}" if ln.get("state") else "")
+            x["state"] = stt
+            counts[stt] = counts.get(stt, 0) + 1
+            links.append(x)
+    bad = [{"node": n.split()[0], "error": f.get("error")} for n, f in st["followers"].items() if f.get("ok") is False]
+    d.update(links=links, time_utc=now, patterns=[], root_causes=[], not_checked=bad,
+             live={"from_check": lv.check_time, "filled": lv.filled, "started": lv.started, "reconciles": lv.reconciles})
+    out = state.results_dir / "link-check" / lv.rack_name / f"scan-{now}-live"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "link_check.json").write_text(json.dumps(d, indent=1))
+    line = (f"{len(links)} GPU links: {counts.get('ok', 0)} ok, {counts.get('degraded', 0)} degraded, {counts.get('down', 0)} down"
+            + (f", {counts['unknown']} not known" if counts.get("unknown") else "") + " (saved from Live)")
+    (out / "report.txt").write_text(f"Scale-up link check saved from Live ({lv.rack_name})\n{line}\n"
+                                    f"Live started from the check of {lv.check_time}; {lv.reconciles} re-read(s) of the rack.\n")
+    return {"saved": f"link-check/{lv.rack_name}/{out.name}", "summary": line}
 
 
 def stop_job(state: State, jid: str) -> dict:
@@ -1343,6 +1428,10 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/live/start":
                 pw = req.pop("afm_password", None)
                 return self._json(200, live_start(self.state, dict(req, afm_password=pw)))
+            if u.path == "/api/scan/save":
+                return self._json(200, save_scan(self.state, str(req.get("path") or "")))
+            if u.path in ("/api/live/save-check", "/api/live/save-log"):
+                return self._json(200, live_save(self.state, "check" if u.path.endswith("check") else "log"))
             if u.path == "/api/live/stop":
                 with self.state.lock:
                     lv = self.state.live

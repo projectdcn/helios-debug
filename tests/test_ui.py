@@ -631,3 +631,64 @@ def test_live_follows_switches_its_check_missed(ui, monkeypatch):
     assert ls["st2 Ethernet8"]["state"] == "unknown" and ls["st2 Ethernet8"]["filled_from"] == "20261019-000000"
     assert "st2 Ethernet0" not in ls                                      # only the newest earlier check that read st2
     assert json.loads(body)["filled"] == seen["filled"] == {"st2": "20261019-000000", "c2": "20261019-000000"}
+
+
+def _run_scan(base):
+    job = json.loads(call(base, "/api/run", {"tool": "scan", "inventory": "lab.local.yaml"})[1])
+    for _ in range(100):
+        j = json.loads(call(base, f"/api/job/{job['id']}")[1])
+        if j["status"] != "running":
+            return j
+        time.sleep(0.1)
+    raise AssertionError("scan did not finish")
+
+
+def test_a_check_is_kept_only_when_saved(ui):
+    """A check run from the UI is 'not saved' until the user saves it; the next check removes an unsaved one. Checks
+    without the mark (older ones, CLI runs) are never removed."""
+    base, tmp = ui
+    old = tmp / "results" / "link-check" / "lab" / "scan-20261001-000000"
+    old.mkdir(parents=True)
+    (old / "link_check.json").write_text("{}")
+    a = _run_scan(base)
+    rows = {r["path"]: r for r in json.loads(call(base, "/api/results")[1])["results"]}
+    assert rows[a["out"]]["unsaved"] is True and rows["link-check/lab/scan-20261001-000000"]["unsaved"] is False
+    time.sleep(1.1)                                    # check folders are named by the second
+    b = _run_scan(base)
+    assert not (tmp / "results" / a["out"]).exists() and b["dropped"] == [a["out"].rsplit("/", 1)[1]]
+    assert old.is_dir()
+    assert call(base, "/api/scan/save", {"path": b["out"]})[0] == 200
+    time.sleep(1.1)
+    c = _run_scan(base)
+    assert (tmp / "results" / b["out"]).is_dir() and c["dropped"] == []          # saved: kept
+    assert call(base, "/api/scan/save", {"path": "link-check/lab/../../x"})[0] == 400
+
+
+def test_live_saves_only_on_request(tmp_path):
+    """Live writes no log by itself; 'Save as check' writes a check from what it read (Scan / Mark lists), 'Save
+    change log' its changes."""
+    from heliosdbg.live import LiveRack
+    st = server.State(tmp_path / "inv", tmp_path / "results")
+    chk = tmp_path / "results" / "link-check" / "r" / "scan-20261019-000000"
+    chk.mkdir(parents=True)
+    links = [{"switch": "st1", "sw_port": "Ethernet257", "tray": "c1", "bdf": "0002:01:00.1", "gpu_port": 13, "state": "ok"},
+             {"switch": "st1", "sw_port": "Ethernet8", "tray": "c2", "bdf": "0001:01:00.1", "gpu_port": 1, "state": "ok"}]
+    (chk / "link_check.json").write_text(json.dumps({"links": links, "time_utc": "20261019-000000", "learned": {"slots": {"c1": 0}}}))
+
+    class R:
+        switches, computes = {}, {}
+    lv = LiveRack(R(), [dict(x) for x in links], rack_name="r", check_time="20261019-000000")
+    lv.check_path = str(chk / "link_check.json")
+    lv.apply_gpu_ports("c1", "0002:01:00.1", [{"id": 13, "status": {"link_status": "NO_PHY_LINK", "ifcp": {"ll_up": "no"}}}], "re-read")
+    lv._mark_unread()
+    st.live = lv
+    assert not (tmp_path / "results" / "live").exists()
+    out = server.live_save(st, "check")
+    d = json.loads((tmp_path / "results" / out["saved"] / "link_check.json").read_text())
+    by = {x["sw_port"]: x for x in d["links"]}
+    assert by["Ethernet257"]["state"] == "down" and "NO_PHY_LINK" in by["Ethernet257"]["cause"]
+    assert by["Ethernet8"]["state"] == "unknown" and d["learned"]["slots"] == {"c1": 0}
+    assert out["saved"].endswith("-live") and "1 down" in out["summary"]
+    assert server.SCAN_RX.match(out["saved"])
+    log = server.live_save(st, "log")
+    assert log["changes"] >= 1 and (tmp_path / "results" / log["saved"]).is_file()

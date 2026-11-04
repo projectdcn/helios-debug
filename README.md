@@ -138,7 +138,12 @@ ssh admin@<switch> 'tar -xzf helios-debug-ui-<v>.tar.gz && helios-debug-ui-<v>/i
   the inventory has one). The password is used for that one login and kept nowhere.
 - Live mode (Rack map): off by default; follows the switch / tray logs and re-reads periodically so the map
   changes as links change; one rack at a time, stops by itself after 8 h / 24 h / 3 days or runs until turned off
-  (your choice), and 30 min after no page is open unless 'keep on when no page is open' is ticked.
+  (your choice), and 30 min after no page is open unless 'keep on when no page is open' is ticked. Live writes
+  nothing by itself: 'Save as check' keeps what it read as a check (`scan-<UTC time>-live`, in the Scan / Mark
+  lists), 'Save change log' writes its changes to `results/live/`.
+- Saving checks: a check run from the UI is 'not saved' until you click 'Save this check' (on its result or on the
+  Rack map); when the next check of that rack finishes, an unsaved one is removed. Checks run from the command line,
+  and those from before this, are kept.
 - The AFM password for a scan's AFM view is typed in the page, handed to that one run in its environment and kept
   nowhere else.
 - Topology tab: Links / IFCP / VLAN views of the rack's newest full check (a newer one-switch or empty check is noted
