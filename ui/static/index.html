@@ -975,9 +975,15 @@ function mm2(x){x=Math.max(0,Math.round(x));return x>=3600?Math.floor(x/3600)+" 
 function checkAge(t){if(!t)return "?";var m=/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(t),d=m?new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])):new Date(t);
   if(isNaN(d))return String(t);var h=(Date.now()-d.getTime())/3600000;
   return d.toLocaleString([],{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})+", "+(h<1?"under an hour":h<48?Math.round(h)+" h":Math.round(h/24)+" days")+" ago"}
+/* switches whose GPU links the trays read as up: the switch is powered and running, whatever its SSH says
+   (g02-g17 3 Nov: st1-st4, st6 'not on the network - powered off?' while every tray saw LINK_UP to them) */
+function liveAliveSw(){var a={},L=(live&&live.links)||{};
+  for(var k in L){var l=L[k];if(l.read&&/^LINK_UP/i.test(l.gpu_link||""))a[k.split(" ")[0]]=1}return a}
 function liveBad(f,bad){
-  var groups={},order=[],seen={},nodes=0;
+  var groups={},order=[],seen={},nodes=0,alive=liveAliveSw();
   bad.forEach(function(n){var w=friendlyWhy(f[n].error)||esc(String(f[n].error||"no reason given").slice(0,160)),node=n.split(" ")[0];
+    if(alive[node]&&/^(Not on the network|No answer)/.test(w))
+      w="Powered and running (the trays read its GPU links up), but its management address does not answer from here - check the management network / route to it, not its power.";
     if(seen[node])return;seen[node]=1;nodes++;      /* 'st3 log' and 'st3 re-read': st3 once */
     if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
   return esc(nodes+" not reached")+" - "+order.map(function(w){
