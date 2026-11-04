@@ -9,6 +9,7 @@ Nothing is written. Each section is {"title", "data" (parsed JSON or text), "err
 from __future__ import annotations
 
 import json
+import re
 import shlex
 
 
@@ -40,6 +41,13 @@ def compute_config(ct) -> dict:
         return afm("show device --json")
 
     dev = _section("GPUs (afmctl show device)", devices)
+    if dev["error"] and re.search(r"no route|timed out|refused|unreachable|rc=255|authenticat|permission denied",
+                                  dev["error"], re.I):
+        # the tray did not answer: the other parts would come back empty, not failed (g02-g17 3 Nov: ct06 / ct10
+        # 'read' with empty ports and OS while off the network)
+        return {"kind": "compute", "sections": {k: {"title": t, "data": None, "error": dev["error"]} for k, t in
+                                                (("devices", dev["title"]), ("ports", "GPU ports (afmctl show port)"),
+                                                 ("os", "OS and interfaces"))}}
     from .afmctl import _devices                  # the same reading of `show device --json` as the scans
     bdfs = [str(d["bdf"]) for d in (_devices(dev["data"]) if dev.get("data") is not None else []) if d.get("bdf")]
 
@@ -170,7 +178,7 @@ def odd_ones(cfgs: dict) -> list[dict]:
             if val == common:
                 continue
             findings.append({"what": what, "value": val, "nodes": sorted(n for n, v in per_node.items() if v == val),
-                             "others": common})
+                             "others": common, "others_n": c[common]})
     gpu_fields = ("phase", "mode", "failover", "firmware", "factory_mac", "vpod")
     per = defaultdict(dict)
     for node, cfg in cfgs.items():

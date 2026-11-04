@@ -1610,7 +1610,7 @@ $("cfg-rack").addEventListener("click",function(){
 function cfgRackHtml(r,i){
   var errs=Object.keys(r.errors||{}),groups={},order=[];errs.forEach(function(n){var w=friendlyWhy(r.errors[n])||esc(String(r.errors[n]).slice(0,120));if(!groups[w]){groups[w]=[];order.push(w)}groups[w].push(n)});
   function nl(ns){return ns.length>8?ns.slice(0,8).join(", ")+" and "+(ns.length-8)+" more":ns.join(", ")}
-  var odd=(r.odd||[]).map(function(o){return "<li><b>"+esc(o.what)+" = "+esc(o.value)+"</b> on "+esc(nl(o.nodes))+' <span class="mut">(the others: '+esc(o.others)+")</span></li>"}).join("");
+  var odd=(r.odd||[]).map(function(o){return "<li><b>"+esc(o.what)+" = "+esc(o.value===""?"(empty)":o.value)+"</b> on "+o.nodes.length+": "+esc(nl(o.nodes))+' <span class="mut">(the other '+(o.others_n||"")+": "+esc(o.others===""?"(empty)":o.others)+")</span></li>"}).join("");
   var nodes=(r.nodes||[]).slice().sort(function(a,b){return a.node<b.node?-1:1}).map(function(n){var s=n.summary||{},t="";
     if(s.gpus){var na=s.gpus.filter(function(g){return g.phase!=="ACTIVE"}).length,fm=s.gpus.filter(function(g){return g.factory_mac}).length;
       t=s.gpus.length+" GPUs"+(na?", "+na+" not ACTIVE":"")+(fm?", "+fm+" factory MAC":"")}

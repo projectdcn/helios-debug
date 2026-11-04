@@ -46,3 +46,11 @@ def test_odd_ones_by_tray_and_switch_port():
     assert odd[("GPU factory_mac", "True")]["nodes"] == ["ct01"]
     assert odd[("PORT mtu", "1500")]["nodes"] == ["st3 asic0 Ethernet1"]
     assert not any(o["what"] == "GPU firmware" for o in odd.values())
+
+
+def test_unreachable_tray_is_not_read_with_empty_parts():
+    class Off:
+        def run(self, *a, **k):
+            raise RuntimeError("[ct06] no route to host: off the network (rc=255: afmctl show device --json)")
+    r = cv.compute_config(Off())
+    assert all(x["error"] and "no route" in x["error"] for x in r["sections"].values())
