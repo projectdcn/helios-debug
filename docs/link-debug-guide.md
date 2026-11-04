@@ -17,6 +17,17 @@ When the problem is not one link (many links, a whole switch or tray, a failure 
 
 ## Run the link check tool first
 
+**Getting the tools.** Everything named `tools/...` in this guide is in the helios-debug repository, https://github.com/projectdcn/helios-debug (Python 3.10 or newer; it needs only paramiko and PyYAML):
+
+```
+git clone https://github.com/projectdcn/helios-debug && cd helios-debug
+python3 -m venv .venv && .venv/bin/pip install -e .
+cp inventory/example-fullrack.yaml inventory/<rack>.local.yaml     # your rack's trays, users and addresses
+.venv/bin/python tools/link_check.py scan --inventory inventory/<rack>.local.yaml
+```
+
+No checkout is needed to use the web UI where it is already running (a switch tray or the rack's jump host): every tool in this guide has a tab there. To put the UI on a switch tray or jump host yourself, `tools/build_switch_bundle.py` builds one archive with the code and an install script (README, Web UI on a switch tray). `tools/rack_health.py` is in the test automation repository (helios-tests), not here.
+
 `tools/link_check.py` does this whole guide in one run: it checks every GPU link of a rack and names the root cause of each one that is down or degraded. It works on any rack described by an inventory (`inventory/example-fullrack.yaml`, see the README), needs SSH (with sudo) to the switch and compute trays; the AFM password is optional (see GPU state and the AFM view below). It only reads, except for one L2 ping in `path` mode.
 
 ```
@@ -105,7 +116,7 @@ python tools/link_check.py watch --inventory <inventory> "st6 Ethernet257; ct13 
 
 **Evidence for a ticket.** Every run folder can be zipped with its raw outputs and a `ticket.txt` (the UI's bundle.zip link); password-like text is redacted.
 
-**From a browser: the web UI.** The same tools have a web UI. It runs on your own machine (`python -m ui` in the helios-debug repo, http://localhost:8780) or on a switch tray (see Installing the UI on a switch tray). On a switch it listens on localhost only: open it with `ssh -L 8780:localhost:8780 admin@<switch>`. Pick the rack at the top right.
+**From a browser: the web UI.** The same tools have a web UI. It runs on your own machine (`python -m ui` in the helios-debug repo, http://localhost:8780) or on a switch tray (see Getting the tools above). On a switch it listens on localhost only: open it with `ssh -L 8780:localhost:8780 admin@<switch>`. Pick the rack at the top right.
 
 - **Start here** (opens first): three steps with ticks - the rack, access to its trays (Check access now), a check of all links (Check all links now) - then what the last check found in plain words: each problem with what it means, what to do, who fixes it (operator, site team, AMD, switch vendor), and Show on the map / Diagnose buttons.
 - **Simple and Expert mode** (top right). Simple: Start here, Check all links, Rack map, Diagnose a link, Earlier results, Access to the rack, Add / edit a rack, Topology, Debug guide. Expert adds All racks, Watch links, Cabling plan, Switch signal (Broadcom), GPU-to-GPU path, Ping map and Isolate (disruptive). Every tab has a "What is this?" (what, when, how long, safe?); the Glossary explains tray, BDF, plane, AFM, vPOD, IFCP, FEC.
