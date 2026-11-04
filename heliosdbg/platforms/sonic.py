@@ -19,11 +19,18 @@ READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platf
          r"processes\s+summary|uptime|services|environment|reboot-cause)", False),
     (rf"show\s+(?:pfc\s+counters|queue\s+counters|pfcwd\s+stats|buffer_pool\s+watermark){_NS}", False),
     (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?", False),
-    (r"show\s+logging(?:\s+-f)?", True),
+    (r"show\s+logging", True),                    # not -f: it never ends and holds a jump-host session
     (rf"show\s+lldp\s+(?:table|neighbors){_NS}", False),
     (rf"sonic-db-cli{_NS}\s+(?:APPL_DB|ASIC_DB|CONFIG_DB|STATE_DB|COUNTERS_DB)\s+(?:keys|hgetall|hget|exists|scan)\s+{_WORD}(?:\s+{_WORD})?", True),
     (r"docker\s+ps(?:\s+-a)?", True),
     (r"uptime|free\s+-[mh]|df\s+-h", False),
+    # QFX5252 switch tray (HPE guide, 3 Nov 2026): leak, PCIe, interface errors / flaps / FEC, NTP, images, management, BMC
+    (rf"show\s+(?:platform\s+(?:leak\s+(?:status|channels)|pcieinfo|current)|ntp|interfaces\s+(?:alias|errors\s+Ethernet\d+|"
+         rf"flap\s+Ethernet\d+|fec\s+status{_NS}(?:\s+Ethernet\d+)?|transceiver\s+(?:info|status){_NS}(?:\s+Ethernet\d+)?))", False),
+    (r"chronyc\s+(?:tracking|sources(?:\s+-v)?)|ip\s+-br\s+(?:-4\s+|-6\s+)?(?:address|addr|link)\s+show\s+eth[01]|"
+     r"ip\s+route\s+show\s+(?:default|dev\s+eth[01])|pgrep\s+-af\s+'dhclient\.\*eth0'", False),
+    (r"sonic-installer\s+list|bmc-manager\s+(?:status|health|power-status|version|flash-info|check)|"
+     r"bmc-manager\s+(?:dmesg|journal)\s+errors", True),
     (r"show\s+(?:system-health\s+(?:summary|detail|monitor-list|sysready-status)|platform\s+(?:voltage|current|ssdhealth)|"
          r"reboot-cause(?:\s+history)?|feature\s+status|interfaces\s+counters\s+errors|ip\s+interfaces|ndp|arp)", False),
     (r"crm\s+show\s+(?:resources\s+(?:all|fdb|ipv4\s+route|ipv6\s+route|nexthop|neighbor|acl\s+table|acl\s+group)|thresholds\s+all|summary)", True),

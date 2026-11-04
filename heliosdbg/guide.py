@@ -21,7 +21,10 @@ from . import platforms
 from .checks import _NS, _WORD  # noqa: F401
 
 OUTPUT_MAX = 6000
-_TAIL = rf"(?:\s*\|\s*(?:grep(?:\s+-[iwEFv]+)*\s+{_WORD}|tail\s+-n?\s*\d+|head\s+-n?\s*\d+))?"
+# the grep pattern: quoted, or one word with no glob / quote characters and no leading '-' - it runs in a shell, and a
+# pattern like /etc/[gs]hadow expanded to file names made grep print them (audit 4 Nov)
+_GREP_PAT = r"(?:'[^'|]{1,80}'|\"[^\"|]{1,80}\"|[A-Za-z0-9_.:/=,@+][A-Za-z0-9_.:/=,@+-]{0,79})"
+_TAIL = rf"(?:\s*\|\s*(?:grep(?:\s+-[iwEFv]+)*\s+{_GREP_PAT}|tail\s+-n?\s*\d+|head\s+-n?\s*\d+))?"
 
 SWITCH_RO = platforms.read_only("switch")     # (pattern, needs sudo), from each platform's READ_ONLY
 COMPUTE_RO = platforms.read_only("compute")
@@ -41,7 +44,7 @@ def check(command: str, role: str) -> tuple[str, bool]:
         raise GuideError("only a single command (optionally '| grep / tail / head') is allowed - no ; && $( ) ` or redirects")
     rules = SWITCH_RO if role == "switch" else COMPUTE_RO if role == "compute" else []
     for pat, sudo in rules:
-        if re.fullmatch(pat + _TAIL, c):
+        if re.fullmatch(f"(?:{pat}){_TAIL}", c):            # grouped: the tail applies to every alternative
             return c, sudo
     kind = "switch tray (SONiC)" if role == "switch" else "compute tray"
     raise GuideError(f"'{c}' is not on the read-only list for a {kind} - the guided mode runs only show / read commands "
@@ -191,7 +194,12 @@ def run(host, transport, command: str, role: str, log_dir: Path | None = None) -
     c, sudo = check(command, role)
     t0 = time.time()
     try:
-        r = transport.run(c, timeout=90, sudo=sudo)       # sudo -n applies to the command, not a final grep / tail
+        if sudo and "|" in c:                             # sudo for the command only; the grep / tail runs as the user
+            from .transport import build_command
+            head, tail = c.split("|", 1)
+            r = transport.run(build_command(head.strip(), sudo=True) + " | " + tail.strip(), timeout=90, sudo=False)
+        else:
+            r = transport.run(c, timeout=90, sudo=sudo)
         rc, out = r.rc, (r.stdout or "") + (("\n[stderr] " + r.stderr) if getattr(r, "stderr", "") else "")
     except Exception as e:  # noqa: BLE001 - shown as the step's output
         rc, out = -1, f"{type(e).__name__}: {str(e)[:300]}"

@@ -82,7 +82,10 @@ def missing(r: dict) -> bool:
         return True
     if MISSING_RX.search(err + "\n" + "\n".join(out.splitlines()[:3])) and not (rc == 0 and out and not MISSING_RX.search(out[:200])):
         return True
-    return rc not in (0, 1) and not out
+    if rc == 1 and not out:                  # 'no match' only for a grep; any other command failed (audit 4 Nov:
+        cmd = str(r.get("cmd") or "")                    # amd-smi / afmctl rc 1 with no output read as healthy)
+        return bool(cmd) and "grep" not in cmd
+    return rc != 0 and not out
 
 
 # ------------------------------------------------------------------------------------------------ Linux, any node
@@ -115,7 +118,7 @@ def _memory(node, role, outs, F, area):
     if t is None:
         return
     kv = {m.group(1): int(m.group(2)) for m in re.finditer(r"(MemTotal|MemAvailable):\s+(\d+)", t)}
-    if kv.get("MemTotal"):
+    if kv.get("MemTotal") and "MemAvailable" in kv:       # no MemAvailable line: not read, not '0 % available'
         pct = 100 * kv.get("MemAvailable", 0) / kv["MemTotal"]
         if pct < LIMITS["mem_avail_warn"]:
             F.append(finding(node, role, "memory", area, CRITICAL if pct < LIMITS["mem_avail_crit"] else WARNING,

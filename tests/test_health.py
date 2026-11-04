@@ -6,7 +6,7 @@ import json
 import time
 from pathlib import Path
 
-from heliosdbg import guide, health
+from heliosdbg import checks, guide, health
 
 FX = Path(__file__).parent / "fixtures" / "health"
 HEALTH_OK = "System status summary\n\n  System status LED  green\n  Services:\n    Status: OK\n  Hardware:\n    Status: OK\n"
@@ -28,7 +28,7 @@ def switch_ok() -> dict:
         "reboot": r("User issued 'reboot' command [User: admin, Time: Tue Oct 13 12:01:12 AM UTC 2026]"),
         "psu": r((FX / "psustatus.txt").read_text()), "fan": r((FX / "platform_fan.txt").read_text()),
         "temperature": r((FX / "temperature.txt").read_text()), "voltage": r((FX / "voltage.txt").read_text()),
-        "watchdog": r((FX / "watchdog.txt").read_text()), "syslog": r("", rc=1), "afm_agent": r("active"),
+        "watchdog": r((FX / "watchdog.txt").read_text()), "syslog": r("", rc=1, cmd="grep -hE ' (ERR|CRIT|ALERT|EMERG) ' /var/log/syslog"), "afm_agent": r("active"),
         "critical:swss0": r(CRIT_SWSS),
     }
 
@@ -239,3 +239,16 @@ def test_sudo_refused_is_not_healthy():
     s = [f for f in fs if f["check"] == "sudo"]
     assert s and "1 check(s) not run (gpu_ecc)" in s[0]["what"] and s[0]["owner"] == "operator"
     assert health.not_run({"gpu_ecc": r}) == ["gpu_ecc"]
+
+
+def test_rc1_without_output_is_an_answer_only_for_grep():
+    """Audit 4 Nov: amd-smi / afmctl failing with rc 1 and no output was read as healthy."""
+    assert checks.missing({"cmd": "amd-smi metric --ecc --json", "rc": 1, "out": "", "err": "AMDSMI_STATUS_NO_PERM"})
+    assert not checks.missing({"cmd": "grep -hE ' (ERR|CRIT) ' /var/log/syslog", "rc": 1, "out": "", "err": ""})
+
+
+def test_memory_without_memavailable_is_not_critical():
+    F = []
+    checks._memory("ct01", "compute", {"memory": {"cmd": "grep", "rc": 0, "out": "MemTotal: 16000000 kB\n", "err": ""}},
+                   F, "os")
+    assert F == []

@@ -106,6 +106,8 @@ class Redfish:
             try:
                 chan.exec_command(cmd)
                 if auth and self.user:
+                    if re.search(r"[\r\n]", self.user + self.password):   # would start a new curl option line
+                        raise ValueError("the BMC user / password contains a line break")
                     user = (self.user + ":" + self.password).replace("\\", "\\\\").replace('"', '\\"')
                     chan.sendall(f'user = "{user}"\n'.encode())
                 chan.shutdown_write()
@@ -177,10 +179,16 @@ def snapshot(rf: Redfish, authed: bool) -> dict:
         snap["auth"] = "refused"
         return snap
     snap["auth"] = "ok"
+    unread = [p for p, (c, _b) in tops.items() if c != 200]
+    if unread:                                  # answered the root, then not these: not read, not 'healthy'
+        snap["errors"].append("not read: " + ", ".join(f"{p} ({c or 'no answer'})" for p, (c, _b) in tops.items() if c != 200))
     sys_p, mgr_p, ch_p = (_members(tops[p][1]) for p in ("/redfish/v1/Systems", "/redfish/v1/Managers", "/redfish/v1/Chassis"))
     got = rf.get_many(sys_p + mgr_p + ch_p)
     for p in sys_p:
         s = got[p][1] or {}
+        if got[p][0] != 200:
+            snap["errors"].append(f"not read: {p} ({got[p][0] or 'no answer'})")
+            continue
         snap["systems"].append({"id": s.get("Id") or p.rsplit("/", 1)[-1], "power": s.get("PowerState"),
                                 "health": _health(s), "path": p})
     for p in mgr_p:
@@ -257,8 +265,15 @@ def judge(node: str, role: str, snap: dict, ssh_ok: bool | None, finding, critic
                              "give the BMC password (health: BMC view) to read the power state and event log, or open "
                              "the BMC's web console", [f"BMC {snap['address']} answers ({snap['product'] or 'Redfish'})"], cmd))
         return F
+    if snap.get("errors") and not snap["systems"]:
+        F.append(finding(node, role, "bmc", "bmc", warning, f"BMC {snap['address']} answered, but its system was not read",
+                         "the BMC answers its service root and times out / fails on the system resources - power state "
+                         "and health are unknown, not fine", "try again; if it stays, the BMC is overloaded or hung "
+                         "(hardware owner)", snap["errors"][:4], cmd))
     for s in snap["systems"]:
-        power = str(s["power"] or "?")
+        if not s["power"]:                      # not reported: unknown, not 'off'
+            continue
+        power = str(s["power"])
         if power.lower() != "on":
             F.append(finding(node, role, "bmc", "power", critical, f"powered {power.lower()} (BMC: system {s['id']})",
                              "the host is not powered on - someone powered it off, a power fault, or a protective "

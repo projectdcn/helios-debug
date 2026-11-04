@@ -197,3 +197,27 @@ def test_same_moment_ties_ports_that_dropped_together():
     assert "Ethernet300" not in t.split("same second")[1].split("\n")[0]
     ev, _s = ai.link_context(scan, "st2 Ethernet300")
     assert "same second" not in ev.block()
+
+
+def test_grep_tail_cannot_glob_root_files_and_runs_without_sudo():
+    """Audit 4 Nov: 'docker ps | grep -v /etc/[gs]hadow' ran as root and grep printed /etc/shadow."""
+    import pytest
+    from heliosdbg import guide
+    for bad in ("docker ps | grep -v /etc/[gs]hadow", "dmesg | grep -v /root/.ssh/[ai]*", "docker ps | grep -f/etc/shadow",
+                "docker ps | grep -v -/etc/shadow"):
+        with pytest.raises(guide.GuideError):
+            guide.check(bad, "switch")
+    assert guide.check("docker ps | grep swss", "switch") == ("docker ps | grep swss", True)
+    sent = []
+
+    class T:
+        def run(self, cmd, timeout=90, sudo=False):
+            sent.append((cmd, sudo))
+            return type("R", (), {"rc": 0, "stdout": "", "stderr": ""})()
+    guide.run(type("H", (), {"name": "st5"})(), T(), "docker ps | grep swss", "switch")
+    assert sent == [("sudo -n bash -c 'docker ps' | grep swss", False)]
+    assert guide.check("show platform leak status", "switch")[1] is False
+    assert guide.check("sudo bmc-manager health", "switch")[1] is True
+    for bad in ("bmc-manager power-cycle --yes", "sonic-installer install x.bin", "show logging -f"):
+        with pytest.raises(guide.GuideError):
+            guide.check(bad, "switch")
