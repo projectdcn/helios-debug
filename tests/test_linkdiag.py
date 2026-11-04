@@ -77,7 +77,10 @@ def test_one_sided_bit_errors_ifcp_not_programmed():
 def test_tray_unreachable_and_quarantined():
     tr = _tray(error="TimeoutError: ssh", slot=2)
     tr["gpus"] = []
-    assert _one(_switch(oper="down", fdb=False), tr)[0].kind == "tray_unreachable"
+    ln = _one(_switch(oper="down", fdb=False), tr)[0]
+    assert ln.kind == "tray_unreachable" and ln.owner == ld.SITE
+    ln = _one(_switch(oper="up", fdb=False), tr)[0]       # g02-g17 ct10: switch end up - powered and cabled, not cabling
+    assert ln.kind == "tray_unreachable" and ln.owner == ld.OPERATOR and "powered and cabled" in ln.cause
     ln = _one(_switch(oper="down", fdb=False), None, quarantined={2: ("ct05", "Down")})[0]
     assert ln.kind == "tray_quarantined" and "ct05" in ln.cause
     g = ld.group_causes([ln])

@@ -488,6 +488,12 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
         if acc and acc["kind"] in ("host_key", "sudo", "dns", "jump_session"):   # an access problem, not the tray
             return set_("down", "tray_unreachable", f"compute tray {ln.tray}: {acc['what']}", OPERATOR,
                         acc["next"][:1].upper() + acc["next"][1:] + ". The links themselves are not judged.")
+        if up(ln.sw_oper):              # g02-g17 3 Nov: ct10 'site (cabling)' while st5 read all 24 of its ports up
+            return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH"
+                        + (f" ({acc['what']})" if acc else "") + " - its switch ports are up, so it is powered and cabled",
+                        OPERATOR, "Find why it does not answer from here: its management network / route, or its OS (the "
+                        "BMC console shows which). Every link of the tray is affected (one root cause); the links themselves "
+                        "are not judged.")
         return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH"
                     + (f" ({acc['what']})" if acc else ""), SITE,
                     "Check the tray's power and BMC; every link of the tray is affected (one root cause).")
