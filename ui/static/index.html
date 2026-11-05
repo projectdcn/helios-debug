@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Helios debug</title>
 <style>
-:root{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--card:#fff;--acc:#2f5bd3;--ok:#067647;--deg:#b54708;--down:#b42318;
---okbg:#e7f6ec;--degbg:#fef3e2;--downbg:#fdecea;--code:#eef1f5}
+:root{--bg:#f6f7f9;--fg:#1b2129;--mut:#5d6977;--rule:#d9dee4;--card:#fff;--acc:#2f5bd3;--ok:#067647;--deg:#8f6400;--degfill:#f0b400;--down:#b42318;
+--okbg:#e7f6ec;--degbg:#fdf6d8;--downbg:#fdecea;--code:#eef1f5}
 @media (prefers-color-scheme:dark){:root{--bg:#12161b;--fg:#e6eaef;--mut:#96a2b0;--rule:#2b3540;--card:#1a2027;--acc:#7da2ff;
---ok:#47cd89;--deg:#fdb022;--down:#f97066;--okbg:#10291b;--degbg:#33250c;--downbg:#3a1512;--code:#0f1318}}
+--ok:#47cd89;--deg:#fdd34d;--degfill:#eab308;--down:#f97066;--okbg:#10291b;--degbg:#33250c;--downbg:#3a1512;--code:#0f1318}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Arial,sans-serif}
 header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px max(16px,3vw);
@@ -60,11 +60,11 @@ table.dl td,table.dl th{padding:4px 8px}
 table.kv2{min-width:0}table.kv2 th{width:45%;font-weight:400;color:var(--mut)}
 .hist{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}.hist a{display:inline-flex;flex-direction:column;align-items:center;font-size:11px;color:var(--mut);cursor:pointer;text-decoration:none;padding:2px 4px;border-radius:4px}
 .hist a i{width:22px;height:12px;border-radius:3px;background:var(--rule)}.hist a.cur{outline:2px solid var(--acc)}
-.hist i.ok{background:var(--ok)}.hist i.degraded{background:var(--deg)}.hist i.down{background:var(--down)}
+.hist i.ok{background:var(--ok)}.hist i.degraded{background:var(--degfill)}.hist i.down{background:var(--down)}
 .rel{display:flex;flex-wrap:wrap;gap:6px}.rel a{font:12px ui-monospace,Menlo,Consolas,monospace;padding:2px 8px;border-radius:10px;border:1px solid var(--rule);cursor:pointer;color:var(--fg);text-decoration:none}
 .rel a.ok{border-color:var(--ok)}.rel a.degraded{border-color:var(--deg);color:var(--deg)}.rel a.down{border-color:var(--down);color:var(--down)}table.dl tr.clk{cursor:pointer}table.dl tr.clk:hover td{background:var(--code)}
 .st-ok{color:var(--ok)}.st-degraded{color:var(--deg);font-weight:600}.st-down{color:var(--down);font-weight:600}.st-unknown{color:var(--mut)}.cell{width:14px;height:14px;border-radius:3px;border:0;padding:0;cursor:pointer;background:var(--rule)}
-.cell.ok{background:var(--ok);opacity:.55}.cell.unknown{background:var(--mut);opacity:.45}.cell.degraded{background:var(--deg)}.cell.down{background:var(--down)}
+.cell.ok{background:var(--ok);opacity:.55}.cell.unknown{background:var(--mut);opacity:.45}.cell.degraded{background:var(--degfill)}.cell.down{background:var(--down)}
 .cell.hit{outline:2px solid var(--acc);outline-offset:1px;opacity:1}.cell.chg{box-shadow:0 0 0 2px var(--fg)}.cell.dim{opacity:.15}
 .legend span{display:inline-flex;align-items:center;gap:4px;margin-right:12px}.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
 details.help{background:var(--code);border-radius:6px;padding:6px 10px;margin:0 0 10px;font-size:13px}details.help summary{cursor:pointer;color:var(--acc);font-weight:600}
@@ -1983,7 +1983,7 @@ function drawMap(){
       (rc.length?" ("+rc.slice(0,6).map(function(l){return esc(lkey(l))}).join(", ")+(rc.length>6?", ...":"")+")":"")+".";
   }else{$("map-banner").classList.add("hide")}
   var gs=gpuStateSum(d);
-  $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--deg)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
+  $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--degfill)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
     (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?unknownWhy(d,lv):d.missing&&(d.missing.switches.length||d.missing.trays.length)?" not known (not read by this check)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
     (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+(odd.length?", "+odd.length+" link(s) as Live last read them":"")+"</span>")+
     cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err" title="'+esc((d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join("\n"))+'">GPU state: '+esc(gs)+"</span>":"");
