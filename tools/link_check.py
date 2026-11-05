@@ -876,6 +876,17 @@ def link_cmd(a) -> int:
                 cab = parse_port_description(hits[0].desc or "")
                 ctx = linkctx.collect(rack.switches[hits[0].switch], rack.computes.get(hits[0].tray or ""),
                                       cab[0] if cab else None, hits[0], len(inv.switches))
+                dead = linkctx.cpu_dead(ctx)
+                if dead and hits[0].kind == "ifcp":        # not this GPU: the switch hears nothing on any port
+                    h = hits[0]
+                    h.cause = (f"physical link up but no IFCP session - the switch CPU receives nothing from its ports "
+                               f"({dead}), so IFCP discovery on {h.switch} cannot hear any GPU: the switch, not this link")
+                    h.kind, h.owner = "switch_ifcp", linkdiag.OPERATOR
+                    h.action = (f"Not the GPU or the cable: on {h.switch} every port with link receives nothing on the CPU. "
+                                f"Read 'docker ps' (syncd) and 'show logging | grep -i syncd' on {h.switch}; restarting its "
+                                f"switch services or rebooting it changes the switch - only with a go-ahead; switch owner / "
+                                f"AMD with the counters if it stays.")
+                    h.evidence.append(f"{h.switch} {h.asic}: {dead}")
             if hits and not a.no_timeline:
                 from heliosdbg import timeline
                 h0 = hits[0]

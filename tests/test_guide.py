@@ -435,3 +435,88 @@ def test_afm_agent_logs_readable_on_switch_only_as_tails():
                 "tail -n 100 /opt/amd/afm/agent/logs/../../../../etc/shadow", "sudo systemctl restart afm-agent"):
         with pytest.raises(Exception):
             guide.check(cmd, "switch")
+
+
+def _scan_two_problems():
+    """st4: no IFCP on any link (switch-wide); st5: a tray AFM did not program; ct06 unreadable; a GPU in PROVIDER."""
+    links = [{"switch": "st4", "asic": "asic1", "sw_port": f"Ethernet{i}", "tray": f"ct0{1 + i % 4}", "state": "degraded",
+              "kind": "ifcp", "ifcp": {"ll": "no"}} for i in range(12)]
+    links += [{"switch": "st5", "asic": "asic0", "sw_port": f"Ethernet{100 + i}", "tray": "ct03", "state": "degraded",
+               "kind": "tray_not_programmed"} for i in range(4)]
+    return {"rack": "g02-g17", "time_utc": "20261104-225936", "links": links,
+            "root_causes": [{"kind": "switch_ifcp", "title": "switch_ifcp", "switch": "st4", "owner": "operator",
+                             "cause": "st4: no IFCP session on any of its problem links", "links": [f"st4 Ethernet{i}" for i in range(12)]},
+                            {"kind": "tray_not_programmed", "title": "tray_not_programmed", "owner": "operator",
+                             "cause": "no forwarding entry matches the tray", "links": [f"st5 Ethernet{100 + i}" for i in range(4)]}],
+            "not_checked": [{"node": "ct06", "error": "rc=112: afmctl show port"}],
+            "gpus": [{"tray": "ct01", "bdf": "0001:01:00.1", "state": "degraded", "kind": "gpu_not_active", "cause": "PROVIDER"}]}
+
+
+def test_a_question_about_one_problem_gets_only_its_evidence():
+    scan = _scan_two_problems()
+    ev, _s = ai.chat_context(scan, "why IFCP session is down ?", live=[
+        {"t": "x", "link": "st6 Ethernet302", "what": "state", "from": "degraded", "to": "ok", "source": "re-read"},
+        {"t": "y", "link": "st4 Ethernet3", "what": "ll_up", "from": "no", "to": "yes", "source": "re-read"}])
+    text = "\n".join(x["text"] for x in ev.items)
+    assert "switch_ifcp" in text and "ip -n asicN -s -o link show" in text
+    assert "st5" not in text and "PROVIDER" not in text and "ct06" not in text and "st6 Ethernet302" not in text
+    assert "st4 Ethernet3" in text and "left out" in text and ev.focus == ["st4"]
+    ev, _s = ai.chat_context(scan, "what is wrong with ct06?")              # a node named: that node's problems
+    assert ev.focus == ["ct06"] and "rc=112" in "\n".join(x["text"] for x in ev.items)
+    ev, _s = ai.chat_context(scan, "What is wrong with this rack?")         # the whole rack: everything, as before
+    text = "\n".join(x["text"] for x in ev.items)
+    assert "st5" in text and "ct06" in text and not getattr(ev, "focus", None)
+
+
+def test_a_reading_the_evidence_does_not_show_is_flagged():
+    ev = ai.Evidence()
+    ev.add("[Problem 1: switch_ifcp] st4: no IFCP session on any of its 384 links (ll_up no)")
+    r = ai.review("The session is down because status.ifcp.peer_enabled = no [E1]; ll_up is no.", ev)
+    assert r["not_in_evidence"] == ["status.ifcp.peer_enabled no"]
+    assert ai.review("ll_up is no on every link [E1]", ev)["not_in_evidence"] == []
+
+
+def test_step_by_step_stays_on_the_problem_and_asks_again_for_json(monkeypatch):
+    ev = ai.Evidence()
+    ev.add("[Problem 1: switch_ifcp] st4: no IFCP session")
+    replies = ['{"done": false, "node": "ct03", "command": "sudo afmctl show device --json", "why": "another tray"}',
+               '{"done": false, "node": "st4", "command": "sudo ip -n asic1 -s -o link show", "why": "CPU"}',
+               "The CPU receives nothing, so ...",
+               '{"done": true, "conclusion": "st4 receives nothing on the CPU [S1]; peer_enabled is no", "next": "switch owner"}']
+    seen = []
+    monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (seen.append(msgs) or replies.pop(0), "m"))
+    nodes = {"st4": "switch", "ct03": "compute"}
+    p = guide.propose(ai, ev, "this check of the rack", [], nodes, stay={"st4"})
+    assert p["allowed"] and p["node"] == "st4" and p["retried"] and "stay on st4" in seen[-1][-1]["content"]
+    p = guide.propose(ai, ev, "this check of the rack", [{"node": "st4", "command": p["command"], "rc": 0,
+                                                          "output": "CPU receive asic1: 257 Ethernet ports, 216 with link; 0 of those have received packets on the CPU, 216 none; 216 have sent"}],
+                      nodes, stay={"st4"})
+    assert p["done"] and p["retried"] and "JSON object" in seen[-1][-1]["content"]
+    assert p["not_in_evidence"] == ["peer_enabled no"]
+    assert any("none of its 216 ports" in f for f in p["facts"])
+
+
+def test_cpu_receive_listing_is_read_and_judged():
+    from heliosdbg.platforms import sonic
+    row = ("{n}: Ethernet{n}: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9100 qdisc mq state UP\\    link/ether 12:34\\    "
+           "RX:  bytes packets errors dropped  missed   mcast           \\    {b} {p} 0 0 0 0 \\    "
+           "TX:  bytes packets errors dropped carrier collsns           \\    900 9 0 0 0 0 ")
+    dead = "\n".join(row.format(n=i, b=0, p=0) for i in range(1, 11))
+    alive = "\n".join(row.format(n=i, b=440, p=9) for i in range(1, 11))
+    assert sonic.cpu_rx(dead) == {"ports": 10, "up": 10, "rx": 0, "tx": 10, "quiet": [f"Ethernet{i}" for i in range(1, 7)]}
+    F = sonic.judge("st4", {"cpu_rx:asic1": {"cmd": "ip -n asic1 -s -o link show", "rc": 0, "out": dead, "err": ""}})
+    assert [f["check"] for f in F] == ["cpu_rx"] and "none of the 10 ports" in F[0]["what"]
+    assert not sonic.judge("st6", {"cpu_rx:asic1": {"cmd": "x", "rc": 0, "out": alive, "err": ""}})
+    assert guide.compact(dead).startswith("CPU receive: 10 Ethernet ports, 10 with link; 0 of those")
+    assert guide.check("sudo ip -n asic0 -s -o link show", "switch") == ("ip -n asic0 -s -o link show", True)
+    with pytest.raises(guide.GuideError):
+        guide.check("ip -n asic0 link set Ethernet1 down", "switch")
+
+
+def test_ifcp_error_log_age_is_read_by_code():
+    import datetime as dt
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%S.123Z")
+    line = '{"level":"error","ts":"%s","caller":"ll.go:635","pid":"1","msg":"Ethernet%d: Error sending discover message: x"}'
+    out = "\n".join(line % (old, n) for n in (475, 476))
+    f = guide.step_facts([{"node": "st4", "command": "tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log", "rc": 0, "output": out}])
+    assert "40 min before" in f[0] and "2 port(s)" in f[0] and "cleared" in f[0]

@@ -59,6 +59,9 @@ SYSTEM_BASE = (
     "There is no `show mac` or SONiC CLI on a compute tray and no afmctl on a switch tray.\n"
     "Answer ONLY from the evidence items [E1].. you are given - cite them like [E3]; if the evidence does not say, "
     "say what is missing and which read-only command would show it. Never invent port numbers, MACs or commands.\n"
+    "Never state a reading of this rack (a field and its value, such as peer_enabled no) that no [E] item or step "
+    "output shows: documentation passages [D..] say what a field means, not what this rack reads. A citation must "
+    "say what you cite it for.\n"
     ""
 )
 FORMAT = (
@@ -123,12 +126,18 @@ class AIError(RuntimeError):
 
 # ------------------------------------------------------------------------------------------------ model server
 
-# a whole switch without IFCP (st4 4 Nov): the switch's agent first, not one GPU end - the GPUs are fine on other switches
-SWITCH_IFCP_NEXT = ("Check the switch, not a GPU: on {sw} 'systemctl status afm-agent', 'sudo ls -lt /opt/amd/afm/agent/logs/' "
+# a whole switch without IFCP (st4 4 Nov): the switch first, not one GPU end - the GPUs are fine on other switches.
+# Two items: one evidence item holds 600 characters
+SWITCH_IFCP_NEXT = ("Check the switch, not a GPU: on {sw} 'sudo ip -n asicN -s -o link show' (whether the switch CPU receives "
+                    "anything from its ports: on a working switch every port with link does; none = the chip passes "
+                    "nothing up to the CPU, so IFCP discovery hears no GPU), 'systemctl status afm-agent', "
+                    "'sudo ls -lt /opt/amd/afm/agent/logs/' "
                     "(an ifcp.log that stopped being written = a stuck agent) and 'sudo tail -n 100 "
-                    "/opt/amd/afm/agent/logs/ifcp-err.log' (discover-send errors such as 'resource temporarily unavailable'). "
-                    "Restarting the agent on {sw} ('sudo systemctl restart afm-agent') re-runs discovery but changes the "
-                    "switch: only with the operator's go-ahead; if the same errors return, AMD with the logs.")
+                    "/opt/amd/afm/agent/logs/ifcp-err.log' (discover-send errors such as 'resource temporarily unavailable').",
+                    "When the agent runs but the CPU receives nothing, the agent is not the first suspect: the switch's "
+                    "packet path to its CPU is (on st4, 4 Nov, it cleared by itself after ~5 h). Restarting the agent, "
+                    "the switch services or rebooting changes the switch: only with the operator's go-ahead; if it "
+                    "stays, the switch owner / AMD with the counters and the logs.")
 
 
 def settings(env=None) -> dict:
@@ -333,8 +342,10 @@ def link_context(scan: dict, key: str) -> tuple[Evidence, str]:
             ev.add(f"The checker groups it under: {rc.get('title') or rc.get('kind')} - {rc.get('cause') or ''} "
                    f"({len(rc.get('links') or [])} links)", "check")
             if rc.get("kind") == "switch_ifcp":
-                ev.add(SWITCH_IFCP_NEXT.format(sw=rc.get("switch")), "check")
+                for t in SWITCH_IFCP_NEXT:
+                    ev.add(t.format(sw=rc.get("switch")), "check")
             break
+    ev.focus = sorted(x for x in (ln.get("switch"), ln.get("tray")) if x)      # its two ends
     return ev, f"link {key}"
 
 
@@ -374,9 +385,18 @@ def diagnose_context(detail: dict) -> tuple[Evidence, str]:
     return ev, f"diagnosed link {ln.get('switch')} {ln.get('sw_port')}"
 
 
-def check_context(scan: dict) -> tuple[Evidence, str]:
+def _rc_nodes(rc: dict, ls: list[dict]) -> list:
+    """The switches and trays a root-cause group touches."""
+    keys = set(rc.get("links") or [])
+    return [rc.get("switch"), rc.get("tray")] + sorted({k.split()[0] for k in keys if k}) + sorted(
+        {x.get("tray") for x in ls if f"{x.get('switch')} {x.get('sw_port')}" in keys and x.get("tray")})
+
+
+def check_context(scan: dict, focus: set | None = None, topic: "re.Pattern | None" = None) -> tuple[Evidence, str]:
     """Evidence for a whole check, as separate numbered problems ([Problem 1] ..) so a small model keeps independent
-    faults apart (24 Oct: one answer merged ct05's quarantine with st6 asic0's missing IFCP sessions)."""
+    faults apart (24 Oct: one answer merged ct05's quarantine with st6 asic0's missing IFCP sessions). With a focus
+    (nodes) or a topic (IFCP, VLAN, ..) only the problems about it: 4 Nov, 'why is the IFCP session down' about st4 was
+    answered from st5's unprogrammed trays, the whole rack's problems being in the evidence."""
     names, ev = _names(scan), Evidence()
     ls = scan.get("links") or []
     c: dict = {}
@@ -388,13 +408,12 @@ def check_context(scan: dict) -> tuple[Evidence, str]:
     if cab:
         ev.add(f"Cables confirmed by IFCP: {cab.get('confirmed')}, miscabled: {cab.get('miscabled')}, "
                f"not confirmable: {cab.get('unconfirmed')}", "check")
-    n = 0
+    probs: list[tuple[str, list[str], set, set]] = []
 
-    def problem(title: str, lines: list[str]) -> None:
-        nonlocal n
-        n += 1
-        for t in lines:
-            ev.add(f"[Problem {n}: {title}] {t}", "check")
+    def problem(title: str, lines: list[str], nodes=(), where=None) -> None:
+        """nodes: what it touches (a question about one of them gets it); where: where it is (step by step stays there)."""
+        touch = {x for x in nodes if x}
+        probs.append((title, lines, touch, {x for x in where if x} if where is not None else touch))
     # 1. chips where most links share one IFCP fault
     chips: dict = {}
     for x in ls:
@@ -406,7 +425,7 @@ def check_context(scan: dict) -> tuple[Evidence, str]:
         if d["nosess"] >= max(8, d["n"] // 4):
             problem(f"IFCP on {_nm(sw, names)} {asic}",
                     [f"{d['nosess']} of the chip's {d['n']} links are physically up but have no IFCP session (link-level "
-                     f"control not up); the other chips' links have theirs - so it is this chip, not the GPUs"])
+                     f"control not up); the other chips' links have theirs - so it is this chip, not the GPUs"], [sw])
     # 2. switches whose forwarding table breaks `show mac`
     by: dict = {}
     for f in scan.get("fdb_broken") or []:
@@ -419,7 +438,7 @@ def check_context(scan: dict) -> tuple[Evidence, str]:
                 [f"SONiC `show mac` fails on {sw}: {len(fs)} forwarding entries without a switch port ("
                  + ", ".join(f"{v} {k}" for k, v in src.items()) + "), e.g. " +
                  "; ".join(f"{f.get('ns') or ''} Vlan{f.get('vlan') or '?'} {f.get('mac')} -> {f.get('port') or 'no port'}"
-                           for f in fs[:3]) + f"; so none of {sw}'s links could be checked"])
+                           for f in fs[:3]) + f"; so none of {sw}'s links could be checked"], [sw])
     # 3. the checker's own root-cause groups (not the IFCP chip ones already above)
     for rc in (scan.get("root_causes") or [])[:8]:
         title = rc.get("title") or rc.get("kind") or "group"
@@ -427,18 +446,34 @@ def check_context(scan: dict) -> tuple[Evidence, str]:
             continue
         problem(title, [f"{rc.get('cause') or ''} - {len(rc.get('links') or [])} links, e.g. "
                         f"{', '.join((rc.get('links') or [])[:3])}" + (f" (owner: {rc['owner']})" if rc.get("owner") else "")]
-                + ([SWITCH_IFCP_NEXT.format(sw=rc.get("switch"))] if rc.get("kind") == "switch_ifcp" else []))
+                + ([t.format(sw=rc.get("switch")) for t in SWITCH_IFCP_NEXT] if rc.get("kind") == "switch_ifcp" else []),
+                _rc_nodes(rc, ls), [rc.get("switch")] if rc.get("kind") == "switch_ifcp" else None)
     # 4. nodes not read for other reasons
     other = [x for x in scan.get("not_checked") or [] if "without a switch port" not in str(x.get("error"))]
     if other:
-        problem("nodes that could not be read", [f"{x.get('role') or 'node'} {x.get('node')}: {str(x.get('error'))[:160]}" for x in other[:6]])
+        problem("nodes that could not be read", [f"{x.get('role') or 'node'} {x.get('node')}: {str(x.get('error'))[:160]}" for x in other[:6]],
+                [x.get("node") for x in other])
     vf = scan.get("vlan_findings") or []
     if vf:
-        problem("VLANs", [f"{f.get('kind')} on {f.get('switch')} {f.get('asic') or ''}: {f.get('detail')}" for f in vf[:5]])
-    elif scan.get("vlans"):
+        problem("VLANs", [f"{f.get('kind')} on {f.get('switch')} {f.get('asic') or ''}: {f.get('detail')}" for f in vf[:5]],
+                [f.get("switch") for f in vf])
+    elif scan.get("vlans") and not (focus or topic):
         ev.add("VLANs: no VLAN problem found on the chips read", "check")
     for g in (scan.get("gpus") or [])[:4]:
-        problem(f"GPU {g.get('tray')} {g.get('bdf')}", [f"{g.get('state')} {g.get('kind')}: {g.get('cause')}"])
+        problem(f"GPU {g.get('tray')} {g.get('bdf')}", [f"{g.get('state')} {g.get('kind')}: {g.get('cause')}"], [g.get("tray")])
+    keep = probs
+    if focus or topic:
+        keep = [p for p in probs if (not focus or p[2] & focus)
+                and (not topic or topic.search(p[0] + " " + " ".join(p[1])))]
+        if keep and len(keep) < len(probs):
+            ev.add(f"Asked about {', '.join(_nm(x, names) for x in sorted(focus)) if focus else 'this kind of problem'}: "
+                   f"{len(probs) - len(keep)} other problem(s) of the rack are left out - they are separate", "check")
+        keep = keep or probs
+    for n, (title, lines, _touch, _where) in enumerate(keep, 1):
+        for t in lines:
+            ev.add(f"[Problem {n}: {title}] {t}", "check")
+    narrowed = len(keep) < len(probs)
+    ev.focus = sorted(focus or ({x for p in keep for x in p[3]} if narrowed else ()))   # where step by step stays
     return ev, "this check of the rack"
 
 
@@ -489,8 +524,33 @@ HOWTO_ASK = ("\n(This is a general how-to question, not about the evidence's pro
              "how it applies to the [E] evidence. Never write a placeholder like <bdf> when the evidence names the value.)")
 
 
+# what a question is about when it names no node: the problems whose text matches (an IFCP question gets the IFCP problems)
+TOPICS = [
+    (re.compile(r"\bifcp\b|\bll_?up\b|\bsessions?\b|\bdiscover", re.I), re.compile(r"IFCP|session", re.I)),
+    (re.compile(r"\bvlans?\b", re.I), re.compile(r"VLAN", re.I)),
+    (re.compile(r"\bforwarding\b|\bfdb\b|show mac|\bprogramm", re.I), re.compile(r"forwarding|programm|show mac", re.I)),
+    (re.compile(r"\bcabl|\bmiscabl", re.I), re.compile(r"cabl", re.I)),
+    (re.compile(r"\bPROVIDER\b|\bvPOD\b|config_phase|not set up|\bGPU state", re.I), re.compile(r"PROVIDER|vPOD|config_phase|GPU", re.I)),
+    (re.compile(r"could not be read|unreachable|\bcannot (?:reach|read)|rc=?\d+", re.I), re.compile(r"could not be read", re.I)),
+]
+
+
+def focus_of(scan: dict, question: str, nodes=()) -> tuple[set, "re.Pattern | None"]:
+    """(nodes, topic) a question is about: the nodes it names (rack or AFM names, plus the ones given - the Ask button's
+    or the chat's), else the topic its words match."""
+    names = scan.get("afm_names") or {}
+    rev = {v.lower(): k for k, v in names.items()}
+    known = {x.get(k) for x in scan.get("links") or [] for k in ("switch", "tray")} | {
+        x.get("node") for x in scan.get("not_checked") or []} | set(names)
+    got = {rev.get(m.group(1).lower(), m.group(1)) for m in _NODE_RX.finditer(question or "")
+           if not m.group(1).lower().startswith(("ethernet", "asic"))}
+    got = {n for n in got | set(nodes or ()) if n in known}
+    topic = None if got else next((t for rx, t in TOPICS if rx.search(question or "")), None)
+    return got, topic
+
+
 def chat_context(scan: dict, question: str, link: str = "", live: list | None = None, docs=None,
-                 macs: dict | None = None) -> tuple[Evidence, str]:
+                 macs: dict | None = None, focus=()) -> tuple[Evidence, str]:
     """Evidence for one chat question: the open link (or the whole check), the rack map facts it asks about (which GPU
     port is cabled where, MACs, accelerator ids, VLANs, the path between two GPUs - heliosdbg/rackmap.py), facts about
     the nodes / ports it names, the newest Live changes, and documentation passages that match it."""
@@ -504,7 +564,8 @@ def chat_context(scan: dict, question: str, link: str = "", live: list | None = 
         ev.add(f"Rack {scan.get('rack')}, check of {scan.get('time_utc')} (UTC): {len(ls0)} GPU links checked", "check")
         ev.howto = True
     else:
-        ev, subject = (link_context(scan, link) if link else check_context(scan))
+        ev, subject = (link_context(scan, link) if link else check_context(scan, *focus_of(scan, q0, focus)))
+    mine_only = set(getattr(ev, "focus", None) or ()) if not link else {link.split()[0]}
     mapfacts = rackmap.facts(scan, q0, macs)
     ev.map_facts = mapfacts                     # shown to the person exactly as they are (the model only explains them)
     for t in mapfacts:
@@ -537,7 +598,7 @@ def chat_context(scan: dict, question: str, link: str = "", live: list | None = 
             ev.add(f"{x['switch']} {x.get('asic') or ''} {pt} <-> {x.get('tray') or '?'} {x.get('bdf') or '?'} port {x.get('gpu_port')}: "
                    f"{x.get('state')} {x.get('kind') or ''}; IFCP {((x.get('ifcp') or {}).get('ll'))}; VLAN "
                    + (", ".join(v for v, _m in x["vlans"]) if x.get("vlans") else "?"), "chat")
-    for ch in (live or [])[-12:]:
+    for ch in [c for c in live or [] if not mine_only or str(c.get("link") or "").split(" ")[0] in mine_only][-12:]:
         ev.add(f"Live change {ch.get('t')}: {ch.get('link') or ''} {ch.get('what')}: {ch.get('from')} -> {ch.get('to')} "
                f"[{ch.get('source')}]", "live")
     ev.plan_facts = []
@@ -600,12 +661,31 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
             {"role": "user", "content": f"Evidence about {subject}:\n{ev.block()}\n\nQuestion: {q}"}]
 
 
-def review(text: str, ev: Evidence) -> dict:
-    """The checks on an answer: a step that changes the rack, a command on the wrong kind of node, citations."""
+# 'status.ifcp.peer_enabled = no', 'peer_enabled: no', 'll_up is no' - a reading stated as this rack's
+_READING = re.compile(r"`?\b((?:[a-z][a-z0-9]*\.){0,3}[a-z][a-z0-9]*_[a-z0-9_]+)`?\s*(?:=|:|\bis\b|\bwas\b)\s*`?"
+                      r"(yes|no|true|false|none|null|[A-Z][A-Z_]{2,})\b`?")
+
+
+def invented(text: str, ev: Evidence, extra: str = "") -> list[str]:
+    """Readings an answer states (field = value) that no evidence item / step output shows (4 Nov: 'peer_enabled = no'
+    for st4, from a documentation passage that only says what the field means)."""
+    have = re.sub(r"\s+", " ", " ".join(x["text"] for x in ev.items) + " " + (extra or "")).lower()
+    out = []
+    for f, v in _READING.findall(text or ""):
+        leaf = f.split(".")[-1].lower()
+        if not re.search(rf"\b{re.escape(leaf)}\b\W{{0,3}}(?:is\s+|=\s*|:\s*)?{re.escape(v.lower())}\b", have):
+            out.append(f"{f} {v}")
+    return list(dict.fromkeys(out))[:4]
+
+
+def review(text: str, ev: Evidence, extra: str = "") -> dict:
+    """The checks on an answer: a step that changes the rack, a command on the wrong kind of node, citations, readings
+    that no evidence shows."""
     refs = {x["ref"] for x in ev.items} | {d["ref"] for d in getattr(ev, "docs", None) or []}
     cited = sorted(set(re.findall(r"\b([ED]\d+)\b", text)), key=lambda x: (x[0], int(x[1:])))
     return {"unsafe": unsafe_text(text), "wrong_device": wrong_device(text),
-            "cited": [c for c in cited if c in refs], "unknown_citations": [c for c in cited if c not in refs]}
+            "cited": [c for c in cited if c in refs], "unknown_citations": [c for c in cited if c not in refs],
+            "not_in_evidence": invented(text, ev, extra)}
 
 
 # the exact messages behind the newest answers, by answer id: a 👍 / 👎 on an answer stores the prompt it came from
@@ -631,5 +711,5 @@ def ask(ev: Evidence, subject: str, question: str = "", history: list | None = N
     return {"answer": text, "answer_id": remember(msgs, text, model, subject), "model": model, "evidence": ev.items,
             "docs": getattr(ev, "docs", None) or [],
             "map_facts": getattr(ev, "map_facts", None) or [], "plan_facts": getattr(ev, "plan_facts", None) or [],
-            **review(text, ev),
+            **review(text, ev), "focus": getattr(ev, "focus", None) or [],
             "seconds": round(time.time() - t0, 1), "subject": subject}

@@ -19,7 +19,7 @@ READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platf
     (r"show\s+(?:version|platform\s+(?:summary|psustatus|fan|temperature|syseeprom|firmware\s+status)|system-memory|"
          r"processes\s+summary|uptime|services|environment|reboot-cause)", False),
     (rf"show\s+(?:pfc\s+counters|queue\s+counters|pfcwd\s+stats|buffer_pool\s+watermark){_NS}", False),
-    (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?", False),
+    (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+(?:--no-pager|-l|--full|-n\s+\d{1,3}))*", False),
     (r"show\s+logging", True),                    # not -f: it never ends and holds a jump-host session
     (rf"show\s+lldp\s+(?:table|neighbors){_NS}", False),
     (rf"sonic-db-cli{_NS}\s+(?:APPL_DB|ASIC_DB|CONFIG_DB|STATE_DB|COUNTERS_DB)\s+(?:keys|hgetall|hget|exists|scan)\s+(?:{_DBKEY}|{_WORD})(?:\s+{_WORD})?", True),
@@ -46,6 +46,8 @@ READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platf
     # the AFM agent's own logs on the switch (st4 4 Nov: IFCP stuck on 'resource temporarily unavailable'), last lines only
     (r"tail\s+-n\s+\d{1,4}\s+/opt/amd/afm/agent/logs/(?:ifcp|ifcp-err|switch_agent_out|sb_agent_out|switch_agent_err|sb_agent_err)\.log", True),
     (r"ls\s+-lt\s+/opt/amd/afm/agent/logs/?", True),
+    # whether the chip passes packets up to the CPU at all (st4 4 Nov: 0 of 216 ports with link had received one)
+    (r"ip(?:\s+-n\s+asic\d+)?\s+-s\s+-o\s+link\s+show", True),
     # the Broadcom shell, reads only (docs/link-debug-guide.md, heliosdbg/bcm.py) - never prbs / eyescan / loopback / set
     (r"bcmcmd(?:\s+-n\s+\d)?\s+(?:'(?:show pmap|ps(?:\s+\w+)?)'|\"(?:show pmap|ps(?:\s+\w+)?)\"|"
      r"'bsh -c \"(?:PortStatus(?:\s+\d+)?|lt LM_LINK_STATE traverse|lt (?:PC_PORT_STATUS|PC_PHY_STATUS|PC_PHY_STATUS_2|"
@@ -499,6 +501,46 @@ def _drift(node, outs, F):
                              diffs[:8], outs[key].get("cmd", "")))
 
 
+CPU_RX_CMD = "ip{ns} -s -o link show"
+_IP_LINE = re.compile(r"^\d+:\s+(Ethernet\d+)(?:@\S+)?:\s+<([^>]*)>.*?RX:[^\\]*\\\s+(\d+)\s+(\d+).*?TX:[^\\]*\\\s+(\d+)\s+(\d+)", re.M)
+
+
+def cpu_rx(text: str) -> dict | None:
+    """What the switch CPU receives from the front ports, from 'ip -s -o link show' (one line per netdev): {ports,
+    up (ports with link), rx (of those, received a packet on the CPU), tx, quiet: up ports with RX 0 (a few)}.
+    None when the text is not that listing."""
+    rows = _IP_LINE.findall(text or "")
+    if not rows:
+        return None
+    up = [(p, int(rxp), int(txp)) for p, flags, _rb, rxp, _tb, txp in rows if "LOWER_UP" in flags.split(",")]
+    return {"ports": len(rows), "up": len(up), "rx": sum(1 for _p, r, _t in up if r > 0),
+            "tx": sum(1 for _p, _r, t in up if t > 0), "quiet": [p for p, r, _t in up if r == 0][:6]}
+
+
+def cpu_rx_line(s: dict, ns: str = "") -> str:
+    return (f"CPU receive{' ' + ns if ns else ''}: {s['ports']} Ethernet ports, {s['up']} with link; {s['rx']} of those "
+            f"have received packets on the CPU, {s['up'] - s['rx']} none" + (f" (e.g. {', '.join(s['quiet'])})" if s["quiet"] else "")
+            + f"; {s['tx']} have sent")
+
+
+def _cpu_rx(node, outs, F):
+    for key in sorted(k for k in outs if k == "cpu_rx" or k.startswith("cpu_rx:")):
+        s = cpu_rx(_out(outs, key) or "")
+        ns = key.split(":", 1)[1] if ":" in key else ""
+        if not s or s["up"] < 8 or s["rx"]:
+            continue
+        F.append(finding(node, "switch", "cpu_rx", "switch", CRITICAL,
+                         f"{ns or 'switch'}: none of the {s['up']} ports with link has received a packet on the switch CPU",
+                         "the switch chip passes nothing up to the CPU (its CPU packet path: SONiC syncd / the kernel "
+                         "network driver) - whatever listens on the ports from the CPU (IFCP discovery, LLDP) hears nothing, "
+                         "so IFCP sessions stay down on every link of this chip although the links are up; on a working "
+                         "switch every port with link receives",
+                         "compare with another switch ('sudo ip -n asicN -s -o link show'); read 'docker ps' (syncd) and "
+                         "'show logging | grep -i syncd'; restarting the switch services or rebooting the switch changes "
+                         "the switch - only with the operator's go-ahead; switch owner / AMD if it stays",
+                         [cpu_rx_line(s, ns)], outs[key].get("cmd", "")))
+
+
 def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
     F: list[dict] = []
     up = _num((_out(outs, "uptime") or "").split(" ")[0]) if _out(outs, "uptime") else None
@@ -514,6 +556,7 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
     _tray(node, outs, F)
     _syslog(node, outs, F)
     _drift(node, outs, F)
+    _cpu_rx(node, outs, F)
     return F
 
 
@@ -528,6 +571,12 @@ def collect(sw, outs: dict, opts: dict) -> None:
     for c in names:
         if CRITICAL_CONTAINERS.match(c):
             _run(sw, f"critical:{c}", SUPERVISOR_CMD.format(c=c), True, outs, timeout=60)
+    try:
+        nss = sw.namespaces()
+    except Exception:  # noqa: BLE001
+        nss = []
+    for ns in nss:
+        _run(sw, f"cpu_rx:{ns or ''}", CPU_RX_CMD.format(ns=f" -n {ns}" if ns else ""), True, outs, timeout=60)
     if opts.get("drift", True):
         try:
             nss = sw.namespaces()

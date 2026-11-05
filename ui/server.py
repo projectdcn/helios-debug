@@ -599,13 +599,20 @@ def _ai_subject(state: State, req: dict, past: bool = False):
         else:
             scan = scan_view(state, rel)
             link = str(req.get("link") or "").strip()
-            ev, subject = ai.link_context(scan, link) if link else ai.check_context(scan)
+            ev, subject = ai.link_context(scan, link) if link else ai.check_context(
+                scan, *ai.focus_of(scan, str(req.get("question") or ""), _focus(req)))
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
     if past:
         lk = str(req.get("link") or "").strip() or (subject[5:] if subject.startswith("link ") else "")
         add_past_resolutions(state, ev, rack, lk, str(req.get("question") or "") + " " + " ".join(x["text"] for x in ev.items[:8]))
     return ev, subject, rack
+
+
+def _focus(req: dict) -> list[str]:
+    """The nodes a question is about (from the Ask button or an earlier answer): names only."""
+    f = req.get("focus") or []
+    return [str(x) for x in f if isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", x)][:16] if isinstance(f, list) else []
 
 
 def _rack_nodes(state: State, rack: str):
@@ -624,10 +631,23 @@ def ai_guide(state: State, req: dict) -> dict:
         raise BadRequest("step by step needs the rack (its nodes are where the commands run) - pick one")
     _inv, roles = _rack_nodes(state, rack)
     steps = [s for s in (req.get("steps") or []) if isinstance(s, dict)][:12]
+    stay = _stay(ev, roles, _rack_aliases(state, rack))
     try:
-        return guide.propose(ai, ev, subject, steps, roles)
+        return guide.propose(ai, ev, subject, steps, roles, stay=stay)
     except (ai.AIError, guide.GuideError) as e:
         raise BadRequest(str(e)) from None
+
+
+def _stay(ev, roles: dict, aliases: dict) -> set:
+    """Where step by step may run commands when the question is about some nodes: those, and the nodes the evidence
+    names (a link's other end) - not the rack's other problems (4 Nov: an st4 IFCP question went on to ct01, st5, ct03)."""
+    focus = set(getattr(ev, "focus", None) or ())
+    if not focus:
+        return set()
+    text = " ".join(x["text"] for x in ev.items if x.get("source") != "resolution")
+    named = {n for n in roles if re.search(rf"\b{re.escape(n)}\b", text)} | {
+        t for a, t in aliases.items() if t in roles and re.search(rf"\b{re.escape(a)}\b", text)}
+    return (focus | named) & set(roles)
 
 
 def ai_run(state: State, req: dict) -> dict:
@@ -794,7 +814,8 @@ def ai_chat(state: State, req: dict) -> dict:
             except (OSError, ValueError, EOFError):
                 macs = None
         ev, subject = ai.chat_context(scan, q, link if link and any(
-            f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load(), macs)
+            f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load(), macs,
+            _focus(req))
         if not getattr(ev, "map_facts", None):              # a map lookup is exact on its own
             add_past_resolutions(state, ev, rack, link or "", q)
         hist = req.get("history") or []
@@ -810,7 +831,7 @@ def ai_chat(state: State, req: dict) -> dict:
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
     return out | {"context": {"rack": rack, "path": rel, "time_utc": scan.get("time_utc"), "link": link or None,
-                              "live_changes": len(live)}}
+                              "live_changes": len(live), "focus": getattr(ev, "focus", None) or []}}
 
 
 CONFIG_KEEP = 30                                       # saved reads kept per node (the oldest go)

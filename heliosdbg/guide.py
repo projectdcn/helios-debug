@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import platforms
+from .platforms import sonic as _sonic
 from .checks import _NS, _WORD  # noqa: F401
 
 OUTPUT_MAX = 6000
@@ -101,10 +102,12 @@ GUIDE_SYSTEM_ADD = (
     "sudo docker exec <container> supervisorctl status, sudo docker logs --tail 100 <container>, show reboot-cause history, "
     "sudo journalctl -k -p err -n 200 --no-pager, sudo amd-smi metric --ecc --json, sudo amd-smi bad-pages -g N; "
     "the switch ASIC's own view of a link that is down, flaps or has errors: bcm-view -n asicN EthernetX; "
-    "no IFCP session on a switch's links: systemctl status afm-agent, sudo tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log, "
+    "no IFCP session on a switch's links: sudo ip -n asicN -s -o link show (does the switch CPU receive from its ports), "
+    "systemctl status afm-agent, sudo tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log, "
     "sudo ls -lt /opt/amd/afm/agent/logs/ - a log that stopped being written means a stuck agent). One command, no ; && pipes except '| grep X' or '| tail -N'. "
     "Use only PCI addresses (-b ..) seen in the evidence or an earlier step; when none is, list them first "
-    "(sudo afmctl show device --json). Do not repeat a command already run. At most 6 steps; conclude earlier when you can."
+    "(sudo afmctl show device --json). Do not repeat a command already run. Stay on the problem asked about: its nodes "
+    "only, not the rack's other problems. At most 6 steps; conclude earlier when you can."
 )
 
 
@@ -112,6 +115,9 @@ def compact(output: str) -> str:
     """afmctl's --json port / device listings in one line per port / GPU (36 ports of JSON are ~6000 characters on one
     line: cut for the model, the ports after the first dozen were never seen). Anything else unchanged."""
     t = (output or "").strip()
+    rx = _sonic.cpu_rx(t) if not t.startswith("{") else None
+    if rx is not None:                      # 'ip -s -o link show': ~110 KB for 257 ports - what it says, in one line
+        return _sonic.cpu_rx_line(rx)
     if not t.startswith("{"):
         return output
     try:
@@ -138,6 +144,19 @@ def compact(output: str) -> str:
     return "\n".join(lines) if lines else output
 
 
+_IFCP_ERR = re.compile(r'"ts":"(\d{4}-\d\d-\d\dT[\d:.]+)Z?"[^\n]*?"msg":"(Ethernet\d+): Error sending discover')
+
+
+def _age_min(ts: str) -> int | None:
+    import datetime as dt
+    try:
+        t = dt.datetime.fromisoformat(ts[:19]).replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return None
+    return int((dt.datetime.now(dt.timezone.utc) - t).total_seconds() // 60)
+
+
+_CPU_RX = re.compile(r"^CPU receive[^:]*: \d+ Ethernet ports, (\d+) with link; (\d+) of those", re.M)
 _GPU_PORT = re.compile(r"^\s*port (\d+): (\S+?)(?:, (\S+?))?, admin (\w+)", re.M)
 _SW_PORT = re.compile(r"^(Ethernet\d+)\s+\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+(up|down)\s+(up|down)\b", re.M)
 
@@ -146,7 +165,7 @@ def step_facts(steps: list[dict]) -> list[str]:
     """What the outputs of the steps show, read by code (not the model): GPU ports with no signal against the rest of
     the GPU, switch ports admin up / oper down. g02-g17 4 Nov (mr2): one link down at both ends, and the model's
     conclusion was to power the switch tray off and on."""
-    facts, gpu_down, sw_down, sw_dark = [], 0, 0, False
+    facts, gpu_down, sw_down, sw_dark, cpu_dead = [], 0, 0, False, False
     sw_remote = sw_lane = False
     sw_cfg = ""
     for i, s in enumerate(steps, 1):
@@ -170,6 +189,25 @@ def step_facts(steps: list[dict]) -> list[str]:
                 sw_lane = True
             elif "configured differently" in verdict or "loopback" in verdict or "disabled" in verdict:
                 sw_cfg = verdict
+        errs = _IFCP_ERR.findall(out) if "ifcp-err.log" in str(s.get("command") or "") else []
+        if errs:
+            newest = max(t for t, _p in errs)
+            age = _age_min(newest)
+            ports = {p_ for _t, p_ in errs}
+            facts.append(f"[S{i}] {node} ifcp-err.log: the newest error is from {newest[:19].replace('T', ' ')} UTC"
+                         + (f" ({age} min before this was read)" if age is not None else "")
+                         + f", 'Error sending discover message' on {len(ports)} port(s) in these lines"
+                         + ("; nothing newer - if the links are ok again now, the fault has cleared (check IFCP again)"
+                            if age is not None and age >= 10 else ""))
+        m = _CPU_RX.search(out)
+        if m and int(m.group(1)) >= 8 and int(m.group(2)) == 0:
+            cpu_dead = True
+            facts.append(f"[S{i}] {node}: none of its {m.group(1)} ports with link has received a packet on the switch CPU "
+                         "- the chip passes nothing up, so IFCP discovery on this switch hears no GPU (the switch's packet "
+                         "path: its switch services / kernel driver), not the cables or the GPUs")
+        elif m:
+            facts.append(f"[S{i}] {node}: {m.group(2)} of its {m.group(1)} ports with link receive packets on the CPU - "
+                         "the switch's packet path to the CPU works")
         for port, oper, admin in _SW_PORT.findall(out):
             if oper == "down" and admin == "up":
                 sw_down += 1
@@ -188,6 +226,10 @@ def step_facts(steps: list[dict]) -> list[str]:
     elif sw_cfg:
         facts.append(f"Together: the switch end is set up wrong for this link ({sw_cfg.split(':')[0]}) - fix the "
                      "configuration before touching the cable.")
+    elif cpu_dead:
+        facts.append("Together: the switch CPU receives nothing from any port while the links are up - the AFM agent "
+                     "is not the first suspect, the switch's packet path to its CPU is (it can clear by itself: st4 4 Nov "
+                     "after ~5 h; restarting switch services or rebooting changes the switch: only with a go-ahead).")
     elif gpu_down and sw_down:
         facts.append("Together: one link has no signal at either end - the cable, a connector or a transceiver (site / "
                      "cabling: reseat or swap that one cable). Restarting or powering a whole tray is out of proportion for it.")
@@ -368,6 +410,7 @@ def messages(ai, ev, subject: str, steps: list[dict], nodes: dict) -> list[dict]
          + (f"Steps run so far:\n{steps_block(steps)}\n" if steps else "No step run yet.\n")
          + ("What code read in these outputs (exact - where your reading differs, this is right; build on it):\n"
             + "\n".join("- " + f for f in facts) + "\n" if facts else "")
+         + (f"{len(steps)} steps run: conclude now ({{\"done\": true, ...}}).\n" if len(steps) >= 6 else "")
          + "What is the next read-only step (or your conclusion)?")
     msgs[-1]["content"] = msgs[-1]["content"].rsplit("\n\nQuestion:", 1)[0] + "\n\n" + q
     return msgs
@@ -378,19 +421,32 @@ EXAMPLES = {   # exact forms a refused proposal is shown again (models add flags
                "show platform psustatus", "show platform temperature", "show reboot-cause history",
                "docker exec pmon supervisorctl status", "docker logs --tail 100 swss0", "show interfaces status -n asic0",
                "show logging | grep watchdog", "systemctl status watchdog-control", "bcm-view -n asic0 Ethernet8",
-               "systemctl status afm-agent", "tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log", "ls -lt /opt/amd/afm/agent/logs/"],
+               "systemctl status afm-agent", "tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log", "ls -lt /opt/amd/afm/agent/logs/",
+               "ip -n asic0 -s -o link show"],
     "compute": ["sudo afmctl show device --json", "sudo amd-smi list --json", "sudo amd-smi metric --ecc --json",
                 "sudo journalctl -k -p err -n 200 --no-pager", "dmesg | grep -i amdgpu", "lspci -d 1002:", "rdma link show",
                 "systemctl --failed --no-pager", "df -h", "free -m"],
 }
 
 
-def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retries: int = 1) -> dict:
+class NotJSON(GuideError):
+    def __init__(self, text: str):
+        super().__init__("the model did not answer with a step (JSON) - ask again")
+        self.text = text
+
+
+def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retries: int = 1, stay=()) -> dict:
     """The model's next step: {done, node, command, why, allowed, refused} or {done, conclusion, next}. A proposal the
     read-only list refuses goes back to the model with the reason and the exact forms allowed, once (g02-g17 2 Nov:
     'show system-health detail -n asic0 -d all' was refused, and proposed again on every 'Another step')."""
     msgs = messages(ai, ev, subject, steps, nodes)
-    out = _propose_once(ai, msgs, subject, steps, nodes, env)
+    try:
+        out = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
+    except NotJSON as e:                     # once more, told so (g02-g17 4 Nov: step 8 came back as prose)
+        msgs = msgs + [{"role": "assistant", "content": e.text[:1500]},
+                       {"role": "user", "content": "That was not the JSON object. Answer with ONE JSON object only: the next "
+                        "step, or {\"done\": true, \"conclusion\": ..., \"next\": ...}."}]
+        out = _propose_once(ai, msgs, subject, steps, nodes, env, stay) | {"retried": True}
     for _ in range(retries):
         if out.get("done") or out.get("allowed") or not out.get("refused") or out["refused"].startswith("already run"):
             break
@@ -399,26 +455,38 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
                        {"role": "user", "content": f"Refused: {out['refused']}. Propose ONE command that exists on that node, "
                         f"exactly in one of these forms (or another plain show / read command without extra flags): "
                         f"{'; '.join(EXAMPLES.get(role, EXAMPLES['switch']))}. Answer with the JSON object only."}]
-        out = _propose_once(ai, msgs, subject, steps, nodes, env) | {"retried": True}
+        out = _propose_once(ai, msgs, subject, steps, nodes, env, stay) | {"retried": True}
     out.pop("_text", None)
     return out
 
 
-def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=None) -> dict:
+def _seen(msgs: list[dict]) -> str:
+    """What the model was shown about the rack: evidence and step outputs, not the documentation passages."""
+    return "\n".join(str(m.get("content") or "").split("\n\nDocumentation passages:")[0] for m in msgs if m.get("role") == "user")
+
+
+def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=None, stay=()) -> dict:
     text, model = ai.chat(msgs, env, max_tokens=500)
-    st = parse_step(text)
+    try:
+        st = parse_step(text)
+    except GuideError:
+        raise NotJSON(text) from None
     st["model"] = model
     if st.get("done"):          # remembered: a 👍 / 👎 on the conclusion teaches the guided mode (helios-slm)
-        from .ai import unsafe_text
+        from .ai import Evidence, invented, unsafe_text
         concl, nxt = str(st.get("conclusion") or ""), str(st.get("next") or "")
         return {"done": True, "conclusion": concl, "next": nxt, "model": model, "facts": step_facts(steps),
                 "unsafe": unsafe_text(concl + "\n" + nxt),
+                "not_in_evidence": invented(concl, Evidence(), _seen(msgs)),
                 "answer_id": ai.remember(msgs, text, model, subject + " (step by step)")}
     node = str(st.get("node") or "").strip()
     out = {"done": False, "node": node, "command": str(st.get("command") or "").strip(), "why": str(st.get("why") or ""),
            "model": model, "allowed": False, "refused": None, "_text": text}
     if node not in nodes:
         out["refused"] = f"'{node}' is not a node of this rack"
+        return out
+    if stay and node not in stay:
+        out["refused"] = (f"{node} is not part of the problem asked about - stay on {', '.join(sorted(stay))}, or conclude")
         return out
     down = next((u for s_ in steps if s_.get("node") == node for u in [unreachable(s_)] if u), None)
     if down:

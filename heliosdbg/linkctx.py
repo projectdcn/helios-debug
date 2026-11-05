@@ -19,6 +19,14 @@ def _clock(node) -> dict:
             "offset_s": (remote - (t0 + t1) / 2) if remote else None, "rtt_s": t1 - t0}
 
 
+CPU_RX_CHECK = "switch CPU receives from its ports"
+
+
+def cpu_dead(checks: list[dict]) -> str | None:
+    """The detail of a failed CPU receive check, else None."""
+    return next((c["detail"] for c in checks or [] if c.get("check") == CPU_RX_CHECK and c.get("ok") is False), None)
+
+
 def collect(sw, tray, slot: int | None, ln, switches_in_rack: int = 1) -> list[dict]:
     """[{check, ok (True / False / None = unknown), detail}]"""
     checks: list[dict] = []
@@ -41,6 +49,19 @@ def collect(sw, tray, slot: int | None, ln, switches_in_rack: int = 1) -> list[d
                            f"not on {ln.switch} (it may run on another switch tray of the rack)"))
     except Exception as e:  # noqa: BLE001
         add("afm-agent on the switch", None, f"not read: {type(e).__name__}: {str(e)[:120]}")
+    # IFCP discovery runs on the switch CPU: a chip that passes nothing up leaves every link of it without a session
+    # although the agent runs (st4 4 Nov: 0 of 216 ports with link had received a packet, the agent was up)
+    from .platforms import sonic
+    try:
+        ns = getattr(ln, "asic", "") or ""
+        out = sw.sh(f"sudo {sonic.CPU_RX_CMD.format(ns=f' -n {ns}' if ns else '')}", timeout=60)
+        r = sonic.cpu_rx(out)
+        if r is None:
+            add(CPU_RX_CHECK, None, "not read: no port listing")
+        else:
+            add(CPU_RX_CHECK, (r["rx"] > 0) if r["up"] >= 8 else None, sonic.cpu_rx_line(r, ns))
+    except Exception as e:  # noqa: BLE001
+        add(CPU_RX_CHECK, None, f"not read: {type(e).__name__}: {str(e)[:120]}")
     clocks = {}
     for node, val, exc in fan_out(_clock, [n for n in (sw, tray) if n is not None]):
         clocks[node.host.name] = val if not exc else {"error": f"{type(exc).__name__}: {str(exc)[:100]}"}
