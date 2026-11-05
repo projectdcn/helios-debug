@@ -100,7 +100,9 @@ GUIDE_SYSTEM_ADD = (
     "ibv_devinfo, systemctl status <unit>; health: show system-health detail, crm show resources all, watchdogutil status, "
     "sudo docker exec <container> supervisorctl status, sudo docker logs --tail 100 <container>, show reboot-cause history, "
     "sudo journalctl -k -p err -n 200 --no-pager, sudo amd-smi metric --ecc --json, sudo amd-smi bad-pages -g N; "
-    "the switch ASIC's own view of a link that is down, flaps or has errors: bcm-view -n asicN EthernetX). One command, no ; && pipes except '| grep X' or '| tail -N'. "
+    "the switch ASIC's own view of a link that is down, flaps or has errors: bcm-view -n asicN EthernetX; "
+    "no IFCP session on a switch's links: systemctl status afm-agent, sudo tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log, "
+    "sudo ls -lt /opt/amd/afm/agent/logs/ - a log that stopped being written means a stuck agent). One command, no ; && pipes except '| grep X' or '| tail -N'. "
     "Use only PCI addresses (-b ..) seen in the evidence or an earlier step; when none is, list them first "
     "(sudo afmctl show device --json). Do not repeat a command already run. At most 6 steps; conclude earlier when you can."
 )
@@ -197,7 +199,7 @@ _ON_CMD = re.compile(r"\bon\s+(?:the\s+)?([A-Za-z0-9][\w.-]*)(?:\s*\(([\w.-]+)\)
 
 
 _CMD_START = re.compile(r"^(?:sudo\s+)?(?:show|bcm-view|bcmcmd|afmctl|amd-smi|sonic-db-cli|docker|dmesg|journalctl|systemctl|"
-                        r"rdma|nicctl|crm|watchdogutil|ip\s|lspci|ibv_devinfo|ipmitool\s+sel)\b")
+                        r"rdma|nicctl|crm|watchdogutil|ip\s|lspci|ibv_devinfo|ipmitool\s+sel|tail\s+-n|ls\s+-lt)\b")
 _BDF = r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d"
 
 
@@ -375,7 +377,8 @@ EXAMPLES = {   # exact forms a refused proposal is shown again (models add flags
     "switch": ["show system-health detail", "show system-health summary", "watchdogutil status", "crm show resources all",
                "show platform psustatus", "show platform temperature", "show reboot-cause history",
                "docker exec pmon supervisorctl status", "docker logs --tail 100 swss0", "show interfaces status -n asic0",
-               "show logging | grep watchdog", "systemctl status watchdog-control", "bcm-view -n asic0 Ethernet8"],
+               "show logging | grep watchdog", "systemctl status watchdog-control", "bcm-view -n asic0 Ethernet8",
+               "systemctl status afm-agent", "tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log", "ls -lt /opt/amd/afm/agent/logs/"],
     "compute": ["sudo afmctl show device --json", "sudo amd-smi list --json", "sudo amd-smi metric --ecc --json",
                 "sudo journalctl -k -p err -n 200 --no-pager", "dmesg | grep -i amdgpu", "lspci -d 1002:", "rdma link show",
                 "systemctl --failed --no-pager", "df -h", "free -m"],

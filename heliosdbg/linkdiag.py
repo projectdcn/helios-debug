@@ -46,6 +46,7 @@ KINDS = {
     "gpu_not_programmed": "GPU in a vPOD in AFM but not programmed on the tray",
     "afm_port_failed": "AFM reports the GPU port failed although the link and IFCP are up",
     "afm_port_stale": "AFM still reports the GPU port ready although the link is down",
+    "switch_ifcp": "no IFCP session on any link of one switch tray, while the same GPUs have theirs on the other switches",
 }
 
 
@@ -917,18 +918,46 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
             "interval_s": span, "gpus": gpu_findings}
 
 
-def group_causes(links: list[Link]) -> list[dict]:
+def _get(ln, f):
+    return ln.get(f) if isinstance(ln, dict) else getattr(ln, f, None)
+
+
+def switch_wide(links: list) -> dict[str, list]:
+    """{switch: its IFCP links} when a switch's problem links are all 'ifcp', on 3+ trays, and those trays' GPUs have
+    IFCP up on the other switches: the switch (its AFM agent / IFCP), not the cables or GPUs (st4 4 Nov: 384 links)."""
+    by: dict = {}
+    for ln in links:
+        by.setdefault(_get(ln, "switch"), []).append(ln)
+    out = {}
+    for sw, ls in by.items():
+        bad = [x for x in ls if _get(x, "state") in ("degraded", "down")]
+        trays = {_get(x, "tray") for x in bad if _get(x, "tray")}
+        if len(bad) < 8 or len(trays) < 3 or any(_get(x, "kind") != "ifcp" for x in bad):
+            continue
+        fine = {_get(x, "tray") for o, os_ in by.items() if o != sw for x in os_ if _get(x, "state") == "ok"}
+        if trays <= fine:
+            out[sw] = bad
+    return out
+
+
+def group_causes(links: list) -> list[dict]:
     """Problem links grouped by root-cause kind (and owner), down before degraded, most links first: a powered-off
     or quarantined tray is one line, not 144."""
-    groups = {}
+    groups, out = {}, []
+    wide = switch_wide(links)
+    for sw, v in wide.items():
+        trays = sorted({_get(x, "tray") for x in v})
+        out.append({"state": "degraded", "kind": "switch_ifcp", "switch": sw, "owner": OPERATOR, "count": len(v), "links": v,
+                    "cause": f"{sw}: no IFCP session on any of its {len(v)} problem links ({len(trays)} trays), while the same "
+                             f"GPUs have theirs on the other switches - the switch's AFM agent / IFCP, not cables or GPUs"})
     for ln in links:
-        if ln.state == "ok":
+        if _get(ln, "state") in ("ok", None) or (_get(ln, "switch") in wide and _get(ln, "kind") == "ifcp"):
             continue
-        tray = ln.tray if ln.kind == "tray_unreachable" else \
-            (ln._quarantined[0] if ln.kind == "tray_quarantined" and getattr(ln, "_quarantined", None) else "")
-        key = (ln.state, ln.kind, ln.owner, tray)
+        kind = _get(ln, "kind")
+        q = getattr(ln, "_quarantined", None) if not isinstance(ln, dict) else None
+        tray = _get(ln, "tray") if kind == "tray_unreachable" else (q[0] if kind == "tray_quarantined" and q else "")
+        key = (_get(ln, "state"), kind, _get(ln, "owner"), tray)
         groups.setdefault(key, []).append(ln)
-    out = []
     for (state, kind, owner, tray), v in groups.items():
         label = KINDS.get(kind, kind)
         if tray:

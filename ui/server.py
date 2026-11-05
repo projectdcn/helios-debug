@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from heliosdbg import linkdiag  # noqa: E402
 from heliosdbg.inventory import load_inventory  # noqa: E402
 from heliosdbg.transport import is_local  # noqa: E402
 from heliosdbg.term import TermError  # noqa: E402
@@ -589,7 +590,7 @@ def _ai_subject(state: State, req: dict, past: bool = False):
             add_past_resolutions(state, ev, rack, "", str(req.get("question") or "") + " " + " ".join(x["text"] for x in ev.items[:8]))
         return ev, subject, rack
     rel = str(req.get("path") or "").strip("/")
-    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", rel):
+    if not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(?:scan-[0-9]{8}-[0-9]{6}(?:-live)?|link-[0-9]{8}-[0-9]{6})", rel):   # -live: saved from Live
         raise BadRequest("path: a saved result (link-check/<rack>/<tool>-...), test {run, tc_id}, or blocks [{node, command, output}]")
     rack = rel.split("/")[1]
     try:
@@ -634,7 +635,7 @@ def ai_run(state: State, req: dict) -> dict:
     from heliosdbg import guide
     from heliosdbg.transport import make_transport
     rel = str(req.get("path") or "").strip("/")
-    if re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/[a-z]+-[0-9]{8}-[0-9]{6}", rel):
+    if re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/[a-z]+-[0-9]{8}-[0-9]{6}(?:-live)?", rel):
         rack = rel.split("/")[1]
     elif re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", str(req.get("rack") or "")):
         rack = str(req["rack"])
@@ -1031,12 +1032,29 @@ def scan_view(state: State, rel: str) -> dict:
     sw_ids = afm_switch_ids(state, d.get("rack"))
     return {"path": rel, "time_utc": d.get("time_utc"), "rack": d.get("rack"), "links": links, "gpus": d.get("gpus") or [],
             "afm_view": (d.get("learned") or {}).get("afm_view"), "patterns": d.get("patterns") or [],
-            "root_causes": d.get("root_causes") or [], "not_checked": d.get("not_checked") or [],
+            "root_causes": d.get("root_causes") or live_causes(d), "not_checked": d.get("not_checked") or [],
             "scope": d.get("scope") or {}, "fdb_broken": d.get("fdb_broken") or [],
             "vlan_findings": d.get("vlan_findings") or [], "vlans": (d.get("learned") or {}).get("vlans") or {},
             "slots": slots, "switch_ids": sw_ids, "afm_names": afm_names(state, d.get("rack"), slots, sw_ids), "cabling": cabling,
             "gpu_map": (d.get("learned") or {}).get("gpu_map") or {}, "gpu_acc": acc,
             "ifcp_in_use": (d.get("learned") or {}).get("ifcp_in_use", True)}
+
+
+def live_causes(d: dict) -> list[dict]:
+    """Findings of a check saved from Live before it wrote its own (4 Nov: 695 degraded, no finding listed): its links
+    grouped, Live's 'll_up no' readings as IFCP."""
+    if not d.get("live"):
+        return []
+    ls = []
+    for x in d.get("links") or []:
+        if x.get("state") == "unknown":
+            continue
+        if (x.get("kind") == "live" and x.get("state") == "degraded" and "GPU LINK_UP" in (x.get("cause") or "")
+                and re.search(r"IFCP ll_up (?!yes)\w", x.get("cause") or "")):
+            x = dict(x, kind="ifcp", owner=x.get("owner") or "GPU / AFM vendor")
+        ls.append(x)
+    return [dict({k: v for k, v in g.items() if k != "links"}, links=[f"{x['switch']} {x['sw_port']}" for x in g["links"]])
+            for g in linkdiag.group_causes(ls)]
 
 
 SECRET_RX = re.compile(r"^\s*(password|passwd|token|secret)\s*:\s*\S", re.I | re.M)
@@ -1393,7 +1411,11 @@ def live_save(state: State, what: str) -> dict:
             if cur["read"]:
                 said = (f"switch oper {cur['sw_oper'] or '?'} / admin {cur['sw_admin'] or '?'}, GPU {cur['gpu_link'] or 'not read'}"
                         f", IFCP ll_up {cur['ll_up'] or '?'}")
-                if stt != ln.get("state"):
+                if (stt == "degraded" and cur["sw_oper"] == "up" and cur["gpu_link"] == "LINK_UP"
+                        and cur["ll_up"] not in (None, "yes")):   # Live's own reading names the cause (st4 4 Nov)
+                    x.update(kind="ifcp", cause=f"physical link up but no IFCP session (read by Live: {said})",
+                             owner=x.get("owner") or "GPU / AFM vendor", check_kind=ln.get("kind") or "")
+                elif stt != ln.get("state"):
                     x.update(kind="live", cause=f"read by Live: {said}", check_kind=ln.get("kind") or "")
                 x["evidence"] = [f"Live {time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime())}: {said}"] + list(ln.get("evidence") or [])[:6]
             else:
@@ -1405,7 +1427,9 @@ def live_save(state: State, what: str) -> dict:
             counts[stt] = counts.get(stt, 0) + 1
             links.append(x)
     bad = [{"node": n.split()[0], "error": f.get("error")} for n, f in st["followers"].items() if f.get("ok") is False]
-    d.update(links=links, time_utc=now, patterns=[], root_causes=[], not_checked=bad,
+    root = [dict({k: v for k, v in g.items() if k != "links"}, links=[f"{x['switch']} {x['sw_port']}" for x in g["links"]])
+            for g in linkdiag.group_causes([x for x in links if x.get("state") != "unknown"])]
+    d.update(links=links, time_utc=now, patterns=[], root_causes=root, not_checked=bad,
              live={"from_check": lv.check_time, "filled": lv.filled, "started": lv.started, "reconciles": lv.reconciles})
     out = state.results_dir / "link-check" / lv.rack_name / f"scan-{now}-live"
     out.mkdir(parents=True, exist_ok=True)

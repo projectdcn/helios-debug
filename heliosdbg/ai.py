@@ -123,6 +123,14 @@ class AIError(RuntimeError):
 
 # ------------------------------------------------------------------------------------------------ model server
 
+# a whole switch without IFCP (st4 4 Nov): the switch's agent first, not one GPU end - the GPUs are fine on other switches
+SWITCH_IFCP_NEXT = ("Check the switch, not a GPU: on {sw} 'systemctl status afm-agent', 'sudo ls -lt /opt/amd/afm/agent/logs/' "
+                    "(an ifcp.log that stopped being written = a stuck agent) and 'sudo tail -n 100 "
+                    "/opt/amd/afm/agent/logs/ifcp-err.log' (discover-send errors such as 'resource temporarily unavailable'). "
+                    "Restarting the agent on {sw} ('sudo systemctl restart afm-agent') re-runs discovery but changes the "
+                    "switch: only with the operator's go-ahead; if the same errors return, AMD with the logs.")
+
+
 def settings(env=None) -> dict:
     env = os.environ if env is None else env
     url = (env.get("HELIOS_AI_URL") or DEFAULT_URL).strip().rstrip("/")
@@ -324,6 +332,8 @@ def link_context(scan: dict, key: str) -> tuple[Evidence, str]:
         if key in (rc.get("links") or []):
             ev.add(f"The checker groups it under: {rc.get('title') or rc.get('kind')} - {rc.get('cause') or ''} "
                    f"({len(rc.get('links') or [])} links)", "check")
+            if rc.get("kind") == "switch_ifcp":
+                ev.add(SWITCH_IFCP_NEXT.format(sw=rc.get("switch")), "check")
             break
     return ev, f"link {key}"
 
@@ -413,10 +423,11 @@ def check_context(scan: dict) -> tuple[Evidence, str]:
     # 3. the checker's own root-cause groups (not the IFCP chip ones already above)
     for rc in (scan.get("root_causes") or [])[:8]:
         title = rc.get("title") or rc.get("kind") or "group"
-        if "ifcp" in str(rc.get("kind", "")).lower() and any(k for k in chips if chips[k]["nosess"] >= 8):
+        if rc.get("kind") == "ifcp" and any(k for k in chips if chips[k]["nosess"] >= 8):
             continue
         problem(title, [f"{rc.get('cause') or ''} - {len(rc.get('links') or [])} links, e.g. "
-                        f"{', '.join((rc.get('links') or [])[:3])}" + (f" (owner: {rc['owner']})" if rc.get("owner") else "")])
+                        f"{', '.join((rc.get('links') or [])[:3])}" + (f" (owner: {rc['owner']})" if rc.get("owner") else "")]
+                + ([SWITCH_IFCP_NEXT.format(sw=rc.get("switch"))] if rc.get("kind") == "switch_ifcp" else []))
     # 4. nodes not read for other reasons
     other = [x for x in scan.get("not_checked") or [] if "without a switch port" not in str(x.get("error"))]
     if other:

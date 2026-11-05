@@ -43,6 +43,9 @@ READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platf
     (r"journalctl\s+(?:-k|-u\s+[A-Za-z0-9@_.-]+|-p\s+(?:err|warning|crit))(?:\s+-p\s+(?:err|warning|crit))?(?:\s+-n\s+\d+)?"
          r"(?:\s+--since\s+-?\d+[hm]|\s+--since\s+'-\d+\s+min')?(?:\s+--no-pager)?(?:\s+-q)?", True),
     (r"systemctl\s+(?:status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?|--failed(?:\s+--no-pager)?|is-active\s+[A-Za-z0-9@_.-]+)", False),
+    # the AFM agent's own logs on the switch (st4 4 Nov: IFCP stuck on 'resource temporarily unavailable'), last lines only
+    (r"tail\s+-n\s+\d{1,4}\s+/opt/amd/afm/agent/logs/(?:ifcp|ifcp-err|switch_agent_out|sb_agent_out|switch_agent_err|sb_agent_err)\.log", True),
+    (r"ls\s+-lt\s+/opt/amd/afm/agent/logs/?", True),
     # the Broadcom shell, reads only (docs/link-debug-guide.md, heliosdbg/bcm.py) - never prbs / eyescan / loopback / set
     (r"bcmcmd(?:\s+-n\s+\d)?\s+(?:'(?:show pmap|ps(?:\s+\w+)?)'|\"(?:show pmap|ps(?:\s+\w+)?)\"|"
      r"'bsh -c \"(?:PortStatus(?:\s+\d+)?|lt LM_LINK_STATE traverse|lt (?:PC_PORT_STATUS|PC_PHY_STATUS|PC_PHY_STATUS_2|"

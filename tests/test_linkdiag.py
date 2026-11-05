@@ -347,3 +347,19 @@ def test_tray_that_answers_but_afmctl_fails_is_not_unreachable():
     tr["gpus"] = []
     ln = _one(_switch(oper="up", fdb=False), tr)[0]
     assert ln.kind == "tray_unreachable" and "answered, but its GPU ports could not be read" in ln.cause
+
+
+def _d(sw, tray, state, kind="", port="Ethernet1"):
+    return {"switch": sw, "sw_port": port, "tray": tray, "state": state, "kind": kind, "owner": "x"}
+
+
+def test_switch_wide_ifcp_is_one_finding():
+    ls = [_d("st4", f"ct{t:02}", "degraded", "ifcp", f"Ethernet{t}{p}") for t in range(1, 5) for p in range(3)]
+    ls += [_d("st1", f"ct{t:02}", "ok") for t in range(1, 5)] + [_d("st1", "ct09", "down", "phys_went_down")]
+    g = ld.group_causes(ls)
+    assert [x["kind"] for x in g] == ["phys_went_down", "switch_ifcp"]
+    assert g[1]["switch"] == "st4" and g[1]["count"] == 12 and "4 trays" in g[1]["cause"]
+    ls2 = [x for x in ls if x["switch"] == "st4"]                 # no other switch with those GPUs fine: per-link IFCP
+    assert [x["kind"] for x in ld.group_causes(ls2)] == ["ifcp"]
+    ls3 = ls + [_d("st4", "ct01", "down", "phys_never_up")]       # another cause on the switch: not switch-wide
+    assert "switch_ifcp" not in [x["kind"] for x in ld.group_causes(ls3)]

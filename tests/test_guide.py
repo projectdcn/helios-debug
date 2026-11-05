@@ -426,3 +426,12 @@ def test_new_broadcom_reads_allowed_and_both_ends_facts():
               "remote fault: the switch receives the GPU and locks\n")
     f = guide.step_facts([{"node": "c1", "output": gpu}, {"node": "st1", "output": remote}])
     assert any("only the switch-to-GPU direction" in x for x in f)
+
+
+def test_afm_agent_logs_readable_on_switch_only_as_tails():
+    for cmd in ("tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log", "ls -lt /opt/amd/afm/agent/logs/"):
+        guide.check(cmd, "switch")
+    for cmd in ("tail -f /opt/amd/afm/agent/logs/ifcp.log", "tail -n 100 /etc/shadow",
+                "tail -n 100 /opt/amd/afm/agent/logs/../../../../etc/shadow", "sudo systemctl restart afm-agent"):
+        with pytest.raises(Exception):
+            guide.check(cmd, "switch")

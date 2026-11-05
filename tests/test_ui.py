@@ -699,6 +699,7 @@ def test_live_saves_only_on_request(tmp_path):
     assert by["Ethernet8"]["state"] == "unknown" and d["learned"]["slots"] == {"c1": 0}
     assert out["saved"].endswith("-live") and "1 down" in out["summary"]
     assert server.SCAN_RX.match(out["saved"])
+    assert [g["links"] for g in d["root_causes"] if g["state"] == "down"] == [["st1 Ethernet257"]]   # findings, not []
     log = server.live_save(st, "log")
     assert log["changes"] >= 1 and (tmp_path / "results" / log["saved"]).is_file()
 
@@ -744,3 +745,16 @@ def test_config_reads_are_kept_compared_and_downloadable(ui, monkeypatch):
     code, body = call(base, "/api/config", {"inventory": "cfg.local.yaml", "node": "st1"})   # off the network: 400, not kept
     assert code == 400 and b"No route to host" in body
     assert "st1" not in json.loads(call(base, "/api/config/saved?inventory=cfg.local.yaml")[1])["nodes"]
+
+
+def test_live_saved_check_without_findings_gets_them():
+    """A check saved from Live before it wrote findings (4 Nov: 695 degraded, none listed): Live's 'll_up no' readings
+    become one switch-wide IFCP finding when the same trays are fine on the other switches."""
+    said = "read by Live: switch oper up / admin up, GPU LINK_UP, IFCP ll_up {}"
+    ls = [{"switch": "st4", "sw_port": f"Ethernet{i}", "tray": f"ct{i % 4 + 1:02}", "state": "degraded", "kind": "live",
+           "cause": said.format("no")} for i in range(12)]
+    ls += [{"switch": "st1", "sw_port": f"Ethernet{i}", "tray": f"ct{i % 4 + 1:02}", "state": "ok", "kind": "live",
+            "cause": said.format("yes")} for i in range(12)]
+    g = server.live_causes({"live": {"from_check": "x"}, "links": ls})
+    assert [(x["kind"], x["switch"], x["count"]) for x in g] == [("switch_ifcp", "st4", 12)]
+    assert server.live_causes({"links": ls}) == []                  # a normal check keeps what it wrote

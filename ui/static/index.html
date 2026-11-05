@@ -52,6 +52,7 @@ svg.topo text{fill:var(--fg)}svg.topo text.m{fill:var(--mut)}svg.topo .box{fill:
 .cnts{display:inline-flex;flex-wrap:wrap;gap:4px;font-size:12px;font-weight:400;margin-left:8px;vertical-align:middle}
 .cnts span{padding:0 6px;border-radius:8px;background:var(--code);white-space:nowrap}.cnts .ok{color:var(--ok);background:var(--okbg)}
 .cnts .degraded{color:var(--deg);background:var(--degbg)}.cnts .down{color:var(--down);background:var(--downbg)}.cnts .unknown{color:var(--mut)}
+.ask-ai{font-size:12px;padding:2px 8px}.why{font-size:12.5px;font-weight:600;margin-left:6px;vertical-align:middle}.why.degraded{color:var(--deg)}.why.down{color:var(--down)}
 .mrow .cnts{margin-left:6px;flex:none;min-width:250px}
 a.dd{color:inherit;text-decoration:none;border-bottom:1px dashed var(--mut);cursor:pointer}a.dd:hover{color:var(--acc);border-color:var(--acc)}
 .crumbs{font-size:13px;margin-bottom:6px}.crumbs a{color:var(--acc);cursor:pointer}.crumbs span.sep{color:var(--mut);margin:0 6px}
@@ -687,6 +688,7 @@ var KIND_HELP={
   gpu_not_programmed:{t:"GPU not programmed although AFM uses it",m:"AFM has the GPU in a group, but the tray reports it not set up - e.g. after a GPU reset.",s:["Reconfigure the compute tray from AFM.","If a GPU reset keeps leaving it like this, raise it with AMD."]},
   afm_port_failed:{t:"AFM reports the port failed while it works",m:"The link is up with traffic control, but AFM marks it failed.",s:["Compare with AFM's events for the port; raise it with AMD if the link stays up."]},
   afm_port_stale:{t:"AFM still reports a dead link as fine",m:"AFM's view lags behind the real link state.",s:["Raise it with AMD with the evidence bundle."]},
+  switch_ifcp:{t:"One switch tray has no IFCP session on any link",m:"Every link of this switch tray is physically up at both ends but has no IFCP session, while the same GPUs have theirs with the other switch trays: the fault is on this switch (its AFM agent / IFCP), not the cables or the GPUs.",s:["Ask the AI (button below) - it reads the switch's afm-agent status and IFCP log with you, read-only.","On the switch: 'systemctl status afm-agent', 'tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log' - look for discover-send errors or a silent log.","If IFCP is stuck, 'sudo systemctl restart afm-agent' on that switch re-runs discovery. It changes the switch: only with a go-ahead, and when nobody else is working on it. If the same errors come back, raise it with AMD with the logs."]},
   fdb_empty:{t:"Switch had no forwarding table when read",m:"AFM was probably reprogramming the switch at that moment.",s:["Check again in a minute."]}
 };
 function kindHelp(k){return KIND_HELP[k]||{t:k||"Problem",m:"",s:[]}}
@@ -736,7 +738,7 @@ function cableSum(d){var c=d.cabling;if(!c)return "";
   /* from the check's IFCP peers, not from Live: say so while Live colours the map (3 Nov: '1017 confirmed' beside
      Live's 384 ok read as a contradiction) */
   var at=liveMine()&&live.rack===d.rack?"At the check ("+esc(checkAge(d.time_utc))+"): ":"";var t="the GPU port's IFCP peer is the switch port the description and forwarding table say - the cable really lands there";
-  return '<span title="'+esc(t)+'">'+at+'Cables: <b>'+c.confirmed+"</b> confirmed by IFCP"+(c.miscabled?' · <b class="err">'+c.miscabled+" miscabled</b>":" · 0 miscabled")+(c.unconfirmed?" · "+c.unconfirmed+" not confirmable (link down / tray not read)":"")+"</span>"+
+  return '<span title="'+esc(t)+'">'+at+'Cables: <b>'+c.confirmed+"</b> confirmed by IFCP"+(c.miscabled?' · <b class="err">'+c.miscabled+" miscabled</b> "+askBtn(c.miscabled+" GPU port(s) are miscabled - the IFCP peer is a different switch port than described"+(c.examples&&c.examples.length?": "+c.examples.slice(0,4).join("; "):"")+". How do I confirm it and what should the site move?","",d.path,"Ask the AI"):" · 0 miscabled")+(c.unconfirmed?" · "+c.unconfirmed+" not confirmable (link down / tray not read)":"")+"</span>"+
     (c.examples&&c.examples.length?'<span class="err">'+esc(c.examples.slice(0,4).join("; "))+"</span>":"")}
 function swName(sw,ids){var a=((mapData||{}).afm_names||{})[sw];return a?a+" ("+sw+")":sw+(ids&&ids[sw]!=null?" (AFM "+ids[sw]+")":"")}
 function verdictHtml(state,kind,detail,owner,extraSteps){
@@ -750,18 +752,30 @@ function findingsHtml(d){
   var n={ok:0,degraded:0,down:0};(d.links||[]).forEach(function(l){n[l.state]=(n[l.state]||0)+1});
   var tot=(d.links||[]).length,h="";
   h+='<p><b>'+tot+' links checked</b> on '+esc(stampLocal(d.time_utc))+': <span style="color:var(--ok)">'+n.ok+' working</span>, <span style="color:var(--deg)">'+(n.degraded||0)+' degraded</span>, <span style="color:var(--down)">'+(n.down||0)+" down</span>.</p>";
-  (d.not_checked||[]).forEach(function(x){h+='<div class="finding down"><span class="cnt">!</span><div class="body"><b>'+esc(x.role+" "+x.node)+" could not be read</b><div>"+friendly(x.error)+"</div></div></div>"});
+  (d.not_checked||[]).forEach(function(x){h+='<div class="finding down"><span class="cnt">!</span><div class="body"><b>'+esc((x.role?x.role+" ":"")+x.node)+" could not be read</b><div>"+friendly(x.error)+"</div>"+
+    '<div class="row" style="margin-top:6px">'+askBtn((x.role?x.role+" ":"")+x.node+" could not be read: "+String(x.error||"").slice(0,300)+". Why, and how do I fix it?","",d.path)+"</div></div></div>"});
   if(tot&&!n.degraded&&!n.down&&!(d.not_checked||[]).length)h+='<div class="verdict ok"><h3>All links are working</h3></div>';
   (d.root_causes||[]).slice(0,10).forEach(function(g){
     var k=kindHelp(g.kind),first=(g.links||[])[0]||"";
-    h+='<div class="finding '+esc(g.state)+'"><span class="cnt">'+g.count+'</span><div class="body"><b>'+esc(k.t)+"</b>"+
+    var ask=(g.switch?g.switch+": ":"")+k.t+" - "+g.count+" link(s), e.g. "+(g.links||[]).slice(0,3).join(", ")+". What is wrong, how do I check it, and how do I fix it?";
+    h+='<div class="finding '+esc(g.state)+'"><span class="cnt">'+g.count+'</span><div class="body"><b>'+esc((g.switch?g.switch+": ":"")+k.t)+"</b>"+
       (k.m?'<div class="mut">'+esc(k.m)+"</div>":"")+(k.s&&k.s.length?"<div>Next: "+esc(k.s[0])+"</div>":"")+
       '<div class="who">Who: '+esc(who(g.owner))+" · e.g. "+esc((g.links||[]).slice(0,4).join(", "))+(g.count>4?" ...":"")+"</div>"+
-      '<div class="row" style="margin-top:6px"><button class="sec" data-mapq="'+esc(first)+'">Show on the map</button>'+(first?'<button class="sec" data-diag="'+esc(first)+'">Diagnose '+esc(first)+"</button>":"")+"</div></div></div>";
+      '<div class="row" style="margin-top:6px"><button class="sec" data-mapq="'+esc(first)+'">Show on the map</button>'+(first?'<button class="sec" data-diag="'+esc(first)+'">Diagnose '+esc(first)+"</button>":"")+askBtn(ask,first,d.path)+"</div></div></div>";
   });
-  (d.gpus||[]).forEach(function(g){var k=kindHelp(g.kind);h+='<div class="finding '+esc(g.state)+'"><span class="cnt">GPU</span><div class="body"><b>'+esc(k.t)+": "+esc(g.tray+" "+g.bdf)+'</b><div class="mut">'+esc(k.m)+"</div></div></div>"});
+  var gk={};(d.gpus||[]).forEach(function(g){(gk[g.kind]=gk[g.kind]||[]).push(g)});    /* one finding per kind: 52 GPUs were 52 rows */
+  Object.keys(gk).forEach(function(kd){var gs=gk[kd],k=kindHelp(kd),tr={};gs.forEach(function(g){(tr[g.tray]=tr[g.tray]||[]).push(g.bdf)});
+    var where=Object.keys(tr).sort().map(function(t){return t+(tr[t].length<4?" ("+tr[t].join(", ")+")":"")}).join(", ");
+    h+='<div class="finding '+esc(gs[0].state)+'"><span class="cnt">'+gs.length+'</span><div class="body"><b>'+esc(k.t)+": "+gs.length+" GPU(s)</b>"+
+      '<div class="mut">'+esc(k.m)+"</div><div>"+esc(where)+"</div>"+(k.s&&k.s.length?"<div>Next: "+esc(k.s[0])+"</div>":"")+
+      '<div class="row" style="margin-top:6px">'+askBtn(k.t+": "+gs.length+" GPU(s) on "+Object.keys(tr).sort().join(", ")+". What does it mean for the links, and how do I get them set up again?","",d.path)+"</div></div></div>"});
   return h;
 }
+/* "Ask the AI" on any problem the page shows (findings, drill-downs, topology, cabling, VLANs, GPU state): one handler
+   for the page, the question carries what was seen; the chat reads the same check (path) and the link if there is one */
+function askBtn(q,link,path,label){return '<button class="sec ask-ai" data-ask="'+esc(q)+'" data-asklink="'+esc(link||"")+'" data-askpath="'+esc(path||(mapData&&mapData.path)||"")+'">'+esc(label||"Ask the AI")+"</button>"}
+document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-ask]");if(!b)return;e.preventDefault();e.stopPropagation();
+  chat.link=b.dataset.asklink||null;chat.keepLink=!!chat.link;chat.path=b.dataset.askpath||null;chatOpen();chatSend(b.dataset.ask)},true);
 function wireFindingButtons(root){
   root.querySelectorAll("button[data-diag]").forEach(function(b){b.addEventListener("click",function(){$("link-target").value=b.dataset.diag;tab("link");run("link")})});
   root.querySelectorAll("button[data-mapq]").forEach(function(b){b.addEventListener("click",function(){tab("map");setTimeout(function(){$("map-q").value=(b.dataset.mapq||"").split(" ").pop();drawMap()},600)})});
@@ -1399,12 +1413,12 @@ function ticketWrite(el,ctx,aud,btn){
 }
 
 /* ---------------------------------------------------------------- chat: free questions about the rack */
-var chat={hist:[],inv:null,link:null,keepLink:true};
+var chat={hist:[],inv:null,link:null,keepLink:true,path:null};   /* path: the check a finding's Ask came from */
 var CHAT_SUGGEST=["What is wrong with this rack, and in what order should it be fixed?","Which links on st6 asic0 have no IFCP session, and why?",
   "What do the forwarding entries without a switch port on st4 mean?","How do I read the IFCP state of a GPU port?","What changed since the previous check?"];
 function chatCtx(){
   var i=inv(),el=$("chat-ctx");if(!el)return;
-  if(chat.inv!==(i&&i.file)){chat.inv=i&&i.file;chat.hist=[];$("chat-log").innerHTML="";chatEmpty()}
+  if(chat.inv!==(i&&i.file)){chat.inv=i&&i.file;chat.hist=[];chat.path=null;$("chat-log").innerHTML="";chatEmpty()}
   var lk=chat.keepLink&&chat.link;
   el.innerHTML="About: <b>"+esc(i?i.rack:"no rack")+"</b> - "+(mapData&&i&&mapData.rack===i.rack?"the check of "+esc(stampLocal(mapData.time_utc)):"its newest full check")+
     (lk?' · link <b>'+esc(lk)+'</b> <a href="#" id="chat-droplink" title="ask about the whole rack instead">(drop)</a>':"")+
@@ -1438,7 +1452,7 @@ function chatSend(q){
   var ad=document.createElement("div");ad.className="ch-a";ad.innerHTML='<p class="mut">reading the check'+(chat.keepLink&&chat.link?" and link "+esc(chat.link):"")+" ...</p>";log.appendChild(ad);log.scrollTop=log.scrollHeight;
   $("chat-send").disabled=true;
   var lk=chat.keepLink?chat.link:null;
-  api("/api/ai/chat",{inventory:i.file,path:mapData&&mapData.rack===i.rack?mapData.path:"",link:lk||"",question:q,history:chat.hist}).then(function(a){
+  api("/api/ai/chat",{inventory:i.file,path:chat.path||(mapData&&mapData.rack===i.rack?mapData.path:""),link:lk||"",question:q,history:chat.hist}).then(function(a){
     chat.hist.push({q:q,a:a.answer});
     var refs=(a.evidence||[]).concat((a.docs||[]).map(function(d){return {ref:d.ref,text:d.title+": "+d.text}}));
     ad.innerHTML=((a.map_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Rack map - exact, from the check'+
@@ -1464,7 +1478,7 @@ function chatSend(q){
 }
 $("chat-open").addEventListener("click",function(){$("chat").classList.contains("hide")?chatOpen():chatClose()});
 $("chat-close").addEventListener("click",chatClose);
-$("chat-new").addEventListener("click",function(){chat.hist=[];chat.keepLink=true;$("chat-log").innerHTML="";chatCtx();chatEmpty()});
+$("chat-new").addEventListener("click",function(){chat.hist=[];chat.keepLink=true;chat.path=null;$("chat-log").innerHTML="";chatCtx();chatEmpty()});
 $("chat-copy").addEventListener("click",function(){var t=chat.hist.map(function(h){return "Q: "+h.q+"\n\n"+h.a}).join("\n\n---\n\n");try{navigator.clipboard.writeText(t)}catch(e){}});
 $("chat-form").addEventListener("submit",function(e){e.preventDefault();var v=$("chat-q").value;$("chat-q").value="";chatSend(v)});
 $("chat-q").addEventListener("keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("chat-form").requestSubmit()}});
@@ -1939,6 +1953,20 @@ function drawMap(){
     return '<span class="cnts" title="links of this '+(view==="tray"?"tray / GPU":"switch chip")+'"><span>'+ls.length+" links</span>"+
       (c.ok?'<span class="ok">'+c.ok+" ok</span>":"")+(c.degraded?'<span class="degraded">'+c.degraded+" degraded</span>":"")+
       (c.down?'<span class="down">'+c.down+" down</span>":"")+(c.unknown?'<span class="unknown">'+c.unknown+" not known</span>":"")+"</span>"}
+  /* a tray / switch header says why its links are not ok when most of them share one reason (st4 4 Nov: 384 degraded, no word why) */
+  function effCause(l){var z=lv&&lv[lkey(l)];
+    if(z&&z.read&&z.state){if(z.sw_oper&&z.sw_oper!=="up")return "switch port "+z.sw_oper;
+      if(z.gpu_link&&z.gpu_link!=="LINK_UP")return "GPU port "+z.gpu_link;
+      if(z.ll_up&&z.ll_up!=="yes")return "no IFCP session - the port is up at both ends (switch up, GPU LINK_UP) but IFCP ll_up "+z.ll_up}
+    return (l.cause||"").replace(/^read by Live: /,"")}
+  function why(ls){var by={},tr={},n=0;
+    ls.forEach(function(l){var e=eff(l);if(e!=="degraded"&&e!=="down")return;n++;
+      var c=effCause(l).replace(/\bct\d+\b/g,"the tray");if(!c)return;(by[c]=by[c]||[]).push(l);if(l.tray)(tr[c]=tr[c]||{})[l.tray]=1});
+    var top=Object.keys(by).sort(function(a,b){return by[b].length-by[a].length})[0];
+    if(!top||by[top].length*2<n)return "";
+    var k=Object.keys(tr[top]||{}).length,lead=(by[top].length===n?"all "+n:by[top].length+" of "+n)+" not ok: ",on=k>2?" - on "+k+" trays":"",
+        short=top.length>120&&top.indexOf(" - ")>0?top.slice(0,top.indexOf(" - ")):top;
+    return ' <span class="why '+(by[top].every(function(l){return eff(l)==="down"})?"down":"degraded")+'" title="'+esc(lead+top+on)+'">'+esc(lead+short+on)+"</span>"}
   function gpuLab(l){if(l.bdf)return l.bdf;var x=dsc(l);return x?"GPU"+x.gpu+" (described)":"?"}
   function gpuPort(l){if(l.bdf)return l.gpu_port||0;var x=dsc(l);return x?x.port:0}
   if(view==="topo"){html=topoSvg(d);}
@@ -1946,7 +1974,7 @@ function drawMap(){
     var by={};d.links.forEach(function(l){var t=l.tray||"(no tray)";(by[t]=by[t]||{});var g=gpuLab(l);(by[t][g]=by[t][g]||[]).push(l)});
     Object.keys(by).sort().forEach(function(t){
       var all=[];Object.keys(by[t]).forEach(function(g){all=all.concat(by[t][g])});
-      html+='<div class="mblk"><h3><a href="#" class="dd" data-dt="'+esc(t)+'" title="drill down into this tray">'+esc(t==="(no tray)"?t:trayName(t,d.slots))+"</a>"+counts(all)+"</h3>";
+      html+='<div class="mblk"><h3><a href="#" class="dd" data-dt="'+esc(t)+'" title="drill down into this tray">'+esc(t==="(no tray)"?t:trayName(t,d.slots))+"</a>"+counts(all)+why(all)+"</h3>";
       Object.keys(by[t]).sort(gOrder(t)).forEach(function(g){
         var ls=by[t][g].sort(function(a,b){return gpuPort(a)-gpuPort(b)});
         html+='<div class="mrow"><a href="#" class="lab dd" data-dg="'+esc(t+"|"+g)+'" title="'+esc(gName(t,g))+' - drill down into this GPU">'+esc(gShort(t,g)+gAcc(t,g))+'</a><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
@@ -1957,7 +1985,7 @@ function drawMap(){
     var lastSw=null;
     Object.keys(bs).sort().forEach(function(k){
       var ls=bs[k].sort(function(a,b){return (+a.sw_port.replace(/\D/g,""))-(+b.sw_port.replace(/\D/g,""))}),sw=ls[0].switch;
-      if(sw!==lastSw){if(lastSw!==null)html+="</div>";html+='<div class="mblk"><h3><a href="#" class="dd" data-ds="'+esc(sw)+'" title="drill down into this switch tray">'+esc(swName(sw,d.switch_ids))+"</a>"+counts(bsw[sw])+"</h3>";lastSw=sw}
+      if(sw!==lastSw){if(lastSw!==null)html+="</div>";html+='<div class="mblk"><h3><a href="#" class="dd" data-ds="'+esc(sw)+'" title="drill down into this switch tray">'+esc(swName(sw,d.switch_ids))+"</a>"+counts(bsw[sw])+why(bsw[sw])+"</h3>";lastSw=sw}
       html+='<div class="mrow"><a href="#" class="lab dd" data-da="'+esc(sw+"|"+(ls[0].asic||""))+'" title="drill down into this switch chip"><b>'+esc(k)+'</b></a><div class="cells">'+ls.map(cell).join("")+"</div>"+counts(ls)+"</div>";
     });
     if(lastSw!==null)html+="</div>";
@@ -1986,7 +2014,7 @@ function drawMap(){
   $("map-sum").innerHTML='<span class="legend"><span><i style="background:var(--ok)"></i>'+(cnt.ok||0)+' ok</span><span><i style="background:var(--degfill)"></i>'+(cnt.degraded||0)+' degraded</span><span><i style="background:var(--down)"></i>'+(cnt.down||0)+" down</span>"+
     (cnt.unknown?'<span><i style="background:var(--mut)"></i>'+cnt.unknown+(lv?unknownWhy(d,lv):d.missing&&(d.missing.switches.length||d.missing.trays.length)?" not known (not read by this check)":" not known (GPU end not readable - see Access to the rack)")+"</span>":"")+"</span>"+
     (lv?"":'<span class="mut">from the check of '+esc(checkAge(d.time_utc))+(odd.length?", "+odd.length+" link(s) as Live last read them":"")+"</span>")+
-    cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err" title="'+esc((d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join("\n"))+'">GPU state: '+esc(gs)+"</span>":"");
+    cableSum(d)+missingSw(d)+(q?"<span>"+hits+" match</span>":"")+(mapPrev?"<span>"+chg+" changed since the earlier scan (outlined)</span>":"")+(gs?'<span class="err" title="'+esc((d.gpus||[]).map(function(g){return g.tray+" "+g.bdf+" ("+g.phase+")"}).join("\n"))+'">GPU state: '+esc(gs)+"</span>"+askBtn("GPU state: "+gs+". What does it mean for the links, and how do I get these GPUs set up again?","",d.path):"");
   document.querySelectorAll("#map .cell").forEach(function(b){b.addEventListener("click",function(){mapDetail(b.dataset.k)})});
   document.querySelectorAll("#map a.dd").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();
     if(a.dataset.dt)drillTray(a.dataset.dt);else if(a.dataset.dg){var x=a.dataset.dg.split("|");drillGpu(x[0],x[1])}
@@ -2010,13 +2038,24 @@ function crumbs(a,b){
 function wireCrumbs(){var f=crumbs._fns||[];
   $("map-detail").querySelectorAll("a[data-cr]").forEach(function(x){x.addEventListener("click",function(){f[0][+x.dataset.cr][1]()})});
   $("map-detail").querySelectorAll("a[data-crb]").forEach(function(x){x.addEventListener("click",function(){f[1][+x.dataset.crb][1]()})});}
+function scopeOf(ls){var sw={},tr={};ls.forEach(function(l){sw[l.switch+(l.asic?" "+l.asic:"")]=1;sw[l.switch]=1;tr[l.tray||"?"]=1});
+  var s=Object.keys(sw).filter(function(x){return x.indexOf(" ")<0}),a=Object.keys(sw).filter(function(x){return x.indexOf(" ")>0}),t=Object.keys(tr);
+  return s.length===1?(a.length===1?a[0]:s[0]):t.length===1?trayName(t[0],mapData.slots):"the rack"}
+function liveKind(l){var z=liveMine()&&mapData&&live.rack===mapData.rack&&live.links&&live.links[lkey(l)];   /* Live's reading names the cause where the check could not */
+  if(z&&z.read&&z.state==="degraded"&&z.sw_oper==="up"&&z.gpu_link==="LINK_UP"&&z.ll_up&&z.ll_up!=="yes")return "ifcp";
+  return l.kind==="live"&&/GPU LINK_UP, IFCP ll_up (?!yes)\w/.test(l.cause||"")?"ifcp":l.kind}
 function causesHtml(ls){
-  var g={};ls.filter(function(l){return mEff(l)!=="ok"}).forEach(function(l){var k=(mEff(l)==="down"&&l.state!=="down")?"live_down":(l.kind||mEff(l));(g[k]=g[k]||[]).push(l)});
+  var g={};ls.filter(function(l){return mEff(l)!=="ok"}).forEach(function(l){var k=(mEff(l)==="down"&&l.state!=="down")?"live_down":(liveKind(l)||mEff(l));(g[k]=g[k]||[]).push(l)});
+  if(g.ifcp){var sws={},trs={};g.ifcp.forEach(function(l){sws[l.switch]=1;trs[l.tray]=1});
+    if(Object.keys(sws).length===1&&Object.keys(trs).length>=3&&mapData.links.some(function(l){return l.switch!==g.ifcp[0].switch&&trs[l.tray]&&mEff(l)==="ok"})){g.switch_ifcp=g.ifcp;delete g.ifcp}}
+  var where=scopeOf(ls);
   var ks=Object.keys(g).sort(function(a,b){return g[b].length-g[a].length});
   if(!ks.length)return '<div class="verdict ok"><h3>All '+ls.length+" links are working</h3></div>";
   return "<h3 style=\"font-size:.95rem\">What is wrong</h3>"+ks.map(function(k){var h=k==="live_down"?{t:"Went down since the check (live)",m:"",s:["Diagnose one of them to see why."]}:kindHelp(k),x=g[k],st=mEff(x[0]);
     return '<div class="finding '+esc(st)+'"><span class="cnt">'+x.length+'</span><div class="body"><b>'+esc(h.t)+"</b>"+(h.m?'<div class="mut">'+esc(h.m)+"</div>":"")+
-      (h.s&&h.s.length?"<div>Next: "+esc(h.s[0])+"</div>":"")+(x[0].owner?'<div class="who">Who: '+esc(who(x[0].owner))+"</div>":"")+"</div></div>"}).join("");
+      (h.s&&h.s.length?"<div>Next: "+esc(h.s[0])+"</div>":"")+(x[0].owner?'<div class="who">Who: '+esc(who(x[0].owner))+"</div>":"")+
+      '<div class="row" style="margin-top:6px">'+askBtn("On "+where+": "+h.t+" - "+x.length+" link(s) "+mEff(x[0])+", e.g. "+x.slice(0,3).map(lkey).join(", ")+
+        ". What is wrong, how do I check it, and how do I fix it?",x.length===1?lkey(x[0]):"")+"</div></div></div>"}).join("");
 }
 function problemTable(ls,first){
   var bad=ls.filter(function(l){return mEff(l)!=="ok"}).sort(function(a,b){return ({down:0,degraded:1,unknown:2}[mEff(a)]||3)-({down:0,degraded:1,unknown:2}[mEff(b)]||3)});
@@ -2463,7 +2502,8 @@ function vlanTable(ls,where){
     names.map(function(v){var x=by[v];return "<tr><td>"+esc(v)+"</td><td>"+x.n+"</td><td>"+esc(Object.keys(x.p).sort(function(a,b){return a-b}).join(", "))+"</td><td>"+
       esc(Object.keys(x.t).map(function(t){return t+(Object.keys(x.t).length>1?" ("+x.t[t]+")":"")}).join(", "))+"</td><td>"+Object.keys(x.tr).length+"</td></tr>"}).join("")+
     (none.length?'<tr><td class="st-down">no VLAN</td><td>'+none.length+"</td><td colspan=3>"+esc(none.slice(0,8).map(lkey).join(", "))+"</td></tr>":"")+"</table></div>"+
-    (f.length?'<div class="verdict down"><h3>VLAN problems on '+esc(where)+"</h3>"+f.slice(0,12).map(function(x){return "<div>"+esc(x.kind.replace(/_/g," ")+": "+x.detail)+"</div>"}).join("")+"</div>":"");
+    (f.length?'<div class="verdict down"><h3>VLAN problems on '+esc(where)+"</h3>"+f.slice(0,12).map(function(x){return "<div>"+esc(x.kind.replace(/_/g," ")+": "+x.detail)+"</div>"}).join("")+
+      '<div class="row">'+askBtn("VLAN problems on "+where+": "+f.slice(0,4).map(function(x){return x.kind.replace(/_/g," ")+": "+x.detail}).join("; ")+". What is wrong and how do I fix it?")+"</div></div>":"");
 }
 /* the VLAN picker: the rack's VLANs that have members, shown in the VLAN view */
 function vlanPicker(){
