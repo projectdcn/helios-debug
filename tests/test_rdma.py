@@ -44,7 +44,7 @@ def test_empty_cage_with_reason_none_is_no_optic_too():
     o = outs(POLLING, nicctl([("0000:01:00.0", "1.130.6-a-11", port(reason="None")),
                               ("0001:41:00.0", "1.130.5-a-7", port())]))
     f = rdma.judge("ct10", o)[0]
-    assert "Transceiver removed' on 2" in f["cause"] and f["owner"] == "site"
+    assert "Transceiver removed' for every one" in f["cause"] and f["owner"] == "site"
 
 
 def test_other_down_reasons_and_no_nicctl():
@@ -78,3 +78,15 @@ def test_firmware_differs_between_trays():
     assert "1.130.5-a-7 + 1.130.8-a-5 on 1" in rdma.judge_rack({"ct01": mix, "ct02": b})[0]["what"]
     got = health.judge_rack({"ct01": a, "ct02": b}, {"ct01": "compute", "ct02": "compute"})
     assert [x["check"] for x in got] == ["nic_firmware_rack"]
+
+
+def test_rack_firmware_finding_takes_the_per_tray_mix_in():
+    """g02-g17 5 Nov: 'differs between trays' and '9 of 18 trays: NICs run 2 firmware versions' said one thing twice."""
+    mix = outs("", nicctl([("0001:41:00.0", "1.130.5-a-7", port("UP", "None")),
+                           ("0003:41:00.0", "1.130.8-a-5", port("UP", "None"))]))
+    b = outs("", nicctl([("0001:41:00.0", "1.130.8-a-5", port("UP", "None"))]))
+    raw = {"ct01": mix, "ct02": mix, "ct03": mix, "ct04": b}
+    fs = [f for n, o in raw.items() for f in rdma.judge(n, o)] + rdma.judge_rack(raw)
+    got = health.rack_wide(fs, {"compute": 4})
+    fw = [f for f in got if "firmware" in f["check"]]
+    assert [f["check"] for f in fw] == ["nic_firmware_rack"] and "3 of them also mix versions" in fw[0]["cause"]

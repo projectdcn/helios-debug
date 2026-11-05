@@ -50,9 +50,12 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
     F: list[dict] = []
     expect_gpus = (ctx or {}).get("gpus", 4)
     gpus = _gpu_list(_out(outs, "gpus"))
-    smi_err = (outs.get("gpus") or {}).get("rc") not in (0, None) and re.search(r"Exception|not supported|error", (outs.get("gpus") or {}).get("out", ""), re.I)
+    g_out = outs.get("gpus") or {}
+    said = (g_out.get("out") or "") + "\n" + (g_out.get("err") or "")   # amd-smi puts its error on stderr (ct06 5 Nov)
+    smi_err = g_out.get("rc") not in (0, None) and not gpus and re.search(r"Exception|not supported|error|Unable to detect", said, re.I)
     if smi_err:
-        msg = re.sub(r"\s+", " ", outs["gpus"]["out"]).strip()[:240]
+        bad = [ln for ln in said.splitlines() if re.search(r"Exception|not supported|error|Unable", ln, re.I)]
+        msg = re.sub(r"\s+", " ", " ".join(bad) or said).strip()[:240]
         F.append(finding(node, "compute", "gpus", "gpu", CRITICAL, "amd-smi cannot read the GPUs on this tray",
                          "amd-smi fails (the amdgpu driver is not loaded, the GPUs are not initialised, or amd-smi does not "
                          "match the driver) - nothing on the tray can use the GPUs as they are", "read 'sudo dmesg | grep -i "
@@ -60,6 +63,8 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
                          "(CHANGES THE TRAY)", [msg], _cmd(outs, "gpus")))
     elif _out(outs, "gpus") is not None and len(gpus) < expect_gpus:
         F.append(finding(node, "compute", "gpus", "gpu", CRITICAL, f"{len(gpus)} of {expect_gpus} GPUs visible to amd-smi",
+                         "no GPU at all: the amdgpu driver is not loaded or failed at boot more likely than every GPU failing"
+                         " - read 'lsmod | grep amdgpu' and 'sudo dmesg | grep -i amdgpu'" if not gpus else
                          "a GPU is missing from the OS - not seated, failed, or lost on the PCIe bus",
                          "read 'sudo lspci -d 1002:' and 'sudo dmesg | grep -i amdgpu' for the missing one; the BMC event log "
                          "next (hardware owner)", [f"GPU {g.get('gpu')}: {g.get('bdf', '')}" for g in gpus],

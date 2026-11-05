@@ -70,5 +70,6 @@ def pick(res: dict, every: bool = False, max_n: int = 10) -> tuple[list[dict], i
     # per-node findings on every run (a first run sent the rack-wide '4 of 18 trays' ones, later runs per-node ones:
     # one problem, two incident ids); older health.json without them: the grouped findings
     pool = (res.get("node_findings") or res["findings"]) if every or not ch.get("since") else ch.get("new") or []
-    pool = sorted(pool, key=lambda f: (f["severity"] != "critical", f["node"], f["check"]))
+    pool = sorted((f for f in pool if f["severity"] != "info"),            # noted, not a problem: no incident
+                  key=lambda f: (f["severity"] != "critical", f["node"], f["check"]))
     return pool[:max_n], max(0, len(pool) - max_n)

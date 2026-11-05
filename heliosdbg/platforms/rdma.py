@@ -89,8 +89,10 @@ def _down_cause(down_ports: list[dict]) -> tuple[str, str, bool]:
         r = "Transceiver removed" if str(p["xcvr"]).upper() == "REMOVED" else str(p["reason"] or "unknown")
         reasons[r] = reasons.get(r, 0) + 1
     if reasons and set(reasons) <= {"Transceiver removed"}:
-        return (f"no optic / cable in these NIC ports (the NIC says 'Transceiver removed' on {sum(reasons.values())} "
-                "port(s)) - the scale-out cabling is not installed, or was pulled",
+        # no count here: the rack-wide grouping keeps one node's cause, and ct05's '4 port(s)' read wrong next to
+        # ct10's 8 (5 Nov) - the evidence lines carry each node's count
+        return ("no optic / cable in these NIC ports (the NIC says 'Transceiver removed' for every one of them) - the "
+                "scale-out cabling is not installed, or was pulled",
                 "site: plug in / check the optics and cables of these NICs and their leaf switch ports", True)
     if reasons:
         return ("the NIC gives: " + ", ".join(f"{r} ({n})" for r, n in sorted(reasons.items())),
@@ -194,13 +196,16 @@ def judge_rack(outs_by_node: dict[str, dict]) -> list[dict]:
     F = []
     for kind, groups in sorted(sets.items()):
         if len(groups) > 1:
-            F.append(finding(f"{len(outs_by_node)} trays", "compute", "nic_firmware_rack", "rdma", WARNING,
+            mixed = sorted(n for v, ns in groups.items() if len(v) > 1 for n in ns)
+            F.append(dict(finding(f"{len(outs_by_node)} trays", "compute", "nic_firmware_rack", "rdma", WARNING,
                              f"{kind} NIC firmware differs between trays: "
                              + "; ".join(f"{' + '.join(v)} on {len(n)}" for v, n in sorted(groups.items())),
-                             "the trays were not all updated to one NIC firmware",
+                             "the trays were not all updated to one NIC firmware"
+                             + (f"; {len(mixed)} of them also mix versions on their own NICs (a part of each tray "
+                                "updated)" if mixed else ""),
                              "the NIC owner picks one version for the rack (CHANGES THE TRAYS)",
                              [f"{' + '.join(v)}: {', '.join(sorted(n))}" for v, n in sorted(groups.items())],
-                             "nicctl show port -j"))
+                             "nicctl show port -j"), absorbs="nic_firmware"))   # the per-tray mix: this one says it
     return F
 
 

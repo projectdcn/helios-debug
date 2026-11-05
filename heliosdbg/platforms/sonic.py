@@ -7,7 +7,7 @@ import json
 import re
 import time
 
-from ..checks import CRITICAL, LIMITS, WARNING, Platform, _cmd, _disk, _memory, _num, _out, _run, finding, missing  # noqa: F401
+from ..checks import CRITICAL, LIMITS, WARNING, Platform, _cmd, _disk, _memory, _num, _out, _run, clip, finding, missing  # noqa: F401
 from ..checks import _NS, _WORD  # noqa: F401 - the allow-list patterns
 
 _DBKEY = r"'[A-Z][A-Z0-9_]*\|[A-Za-z0-9_.:*/-]*'"     # a quoted 'TABLE|key' (the '|' is the key's, not a pipe)
@@ -136,25 +136,59 @@ def _containers(node, outs, F, uptime_s):
                              " - the services in it (and what depends on them) are down"),
                          f"read 'docker logs --tail 100 {name}' and the syslog lines of {name}; starting it again CHANGES "
                          "THE SWITCH - for its owner to decide", [f"{name}: {status}"], _cmd(outs, "containers")))
-    r = _out(outs, "restarts")
-    if r is None:
-        return
     lim = LIMITS["restart_warn"]
     now = time.time()
-    for ln in r.splitlines():
+    hits = [(n, c, s, ln) for n, c, s, ln in _started(outs)
+            if c >= lim or (_young(s, uptime_s, now) and (CRITICAL_CONTAINERS.match(n) or n.startswith("afm")))]
+    # the containers started within a minute of each other are one event (g02-g17 5 Nov: swss0, syncd0, bgp0, teamd0,
+    # radv and snmp of asic0 at once, on one switch after another - six warnings per switch for one restart)
+    hits.sort(key=lambda h: h[2] or 0)
+    events: list[list] = []
+    for h in hits:
+        if events and h[2] and events[-1][-1][2] and h[2] - events[-1][-1][2] <= 60 and h[1] < lim:
+            events[-1].append(h)
+        else:
+            events.append([h])
+    for ev in events:
+        names = sorted(n for n, _c, _s, _l in ev)          # one order on every switch: the rack-wide grouping matches
+        count, started = max(c for _n, c, _s, _l in ev), ev[0][2]
+        when = f"started {_utc(started)} UTC ({_ago(now - started)} ago)" if started else "start time unknown"
+        afm = all(n.startswith("afm") for n in names)
+        how = (f"restarted {count} times since it was created - it keeps crashing" if count >= lim else
+               "restart count 0: stopped and started (a manual restart, a service restart or a config reload), not "
+               "crash-looping")
+        if len(ev) == 1:
+            what = f"container {names[0]} started after the switch booted"
+            cause = f"{names[0]} was started again after the switch booted - {how}"
+        else:
+            asics = {m.group(1) for m in (re.search(r"(\d+)$", n) for n in names) if m}
+            whose = f"asic{asics.pop()}'s services" if len(asics) == 1 else "switch services"
+            what = f"{whose} started again together: {', '.join(names)}"
+            cause = (f"{len(names)} containers started within a minute of each other after the switch booted - one "
+                     f"restart of {whose}, not {len(names)} crashes; {how}")
+        F.append(dict(finding(node, "switch", "restarts", "afm" if afm else "sonic", WARNING, what, cause,
+                              "ask who restarted them and why; read 'docker logs --tail 100 <container>' and the syslog "
+                              "around the start time", [when] + [l.strip() for _n, _c, _s, l in ev][:8],
+                              _cmd(outs, "restarts")), when=when, started=started))
+
+
+def _started(outs) -> list[tuple[str, int, float | None, str]]:
+    """[(container, restart count, start epoch, line)] of the 'docker inspect' restarts listing."""
+    out = []
+    for ln in (_out(outs, "restarts") or "").splitlines():
         toks = ln.split()
-        if len(toks) != 3 or not toks[1].isdigit():
-            continue
-        name, count = toks[0].lstrip("/"), int(toks[1])
-        started = _iso_epoch(toks[2])
-        young = started is not None and uptime_s is not None and uptime_s > 3600 and now - started < min(uptime_s - 600, 86400)
-        if count >= lim or (young and (CRITICAL_CONTAINERS.match(name) or name.startswith("afm"))):
-            ago = f", started {_ago(now - started)} ago" if started else ""
-            F.append(finding(node, "switch", "restarts", "afm" if name.startswith("afm") else "sonic", WARNING,
-                             f"container {name} restarted ({count} restart(s){ago})",
-                             f"{name} restarted after the switch booted - a crash or a manual restart",
-                             f"read 'docker logs --tail 100 {name}' and the syslog around its start time", [ln.strip()],
-                             _cmd(outs, "restarts")))
+        if len(toks) == 3 and toks[1].isdigit():
+            out.append((toks[0].lstrip("/"), int(toks[1]), _iso_epoch(toks[2]), ln))
+    return out
+
+
+def _young(started, uptime_s, now) -> bool:
+    """Started after the switch booted (not with it) - within the last day."""
+    return started is not None and uptime_s is not None and uptime_s > 3600 and now - started < min(uptime_s - 600, 86400)
+
+
+def _utc(epoch: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(epoch))
 
 
 def _iso_epoch(s: str) -> float | None:
@@ -457,9 +491,9 @@ def _syslog(node, outs, F):
     top = sorted(groups.items(), key=lambda kv: -len(kv[1]))
     serious = [(k, ls) for k, ls in top if SERIOUS_LOG.search(ls[-1])]
     area = next((a for rx, a, _w in SYSLOG_SIGNS for (_d, _m), ls in top[:3] if rx.search(ls[-1])), "sonic")
-    what = "; ".join(f"{len(ls)}x {d + ': ' if d else ''}{m[:70]}" for (d, m), ls in top[:3])
+    what = "; ".join(f"{len(ls)}x {d + ': ' if d else ''}{clip(m, 70)}" for (d, m), ls in top[:3])
     F.append(finding(node, "switch", "syslog", area, CRITICAL if serious else WARNING,
-                     f"{len(lines)} syslog error line(s), {len(groups)} distinct message(s): {what}"[:300],
+                     clip(f"{len(lines)} syslog error line(s), {len(groups)} distinct message(s): {what}", 300),
                      ("serious errors among them: " + "; ".join(f"{d}: {m[:80]}" for (d, m), _ls in serious[:2])) if serious else
                      "the switch logs these errors repeatedly; one message repeated is usually one cause (a daemon "
                      "polling something that fails) - check whether it matters for what is broken",
@@ -523,22 +557,51 @@ def cpu_rx_line(s: dict, ns: str = "") -> str:
             + f"; {s['tx']} have sent")
 
 
-def _cpu_rx(node, outs, F):
-    for key in sorted(k for k in outs if k == "cpu_rx" or k.startswith("cpu_rx:")):
-        s = cpu_rx(_out(outs, key) or "")
+def _cpu_rx(node, outs, F, uptime_s=None):
+    keys = sorted(k for k in outs if k == "cpu_rx" or k.startswith("cpu_rx:"))
+    got = {k.split(":", 1)[1] if ":" in k else "": cpu_rx(_out(outs, k) or "") for k in keys}
+    now = time.time()
+    young = {n: s for n, _c, s, _l in _started(outs) if _young(s, uptime_s, now)}
+    for key in keys:
         ns = key.split(":", 1)[1] if ":" in key else ""
+        s = got[ns]
         if not s or s["up"] < 8 or s["rx"]:
             continue
-        F.append(finding(node, "switch", "cpu_rx", "switch", CRITICAL,
-                         f"{ns or 'switch'}: none of the {s['up']} ports with link has received a packet on the switch CPU",
-                         "the switch chip passes nothing up to the CPU (its CPU packet path: SONiC syncd / the kernel "
-                         "network driver) - whatever listens on the ports from the CPU (IFCP discovery, LLDP) hears nothing, "
-                         "so IFCP sessions stay down on every link of this chip although the links are up; on a working "
-                         "switch every port with link receives",
-                         "compare with another switch ('sudo ip -n asicN -s -o link show'); read 'docker ps' (syncd) and "
-                         "'show logging | grep -i syncd'; restarting the switch services or rebooting the switch changes "
-                         "the switch - only with the operator's go-ahead; switch owner / AMD if it stays",
-                         [cpu_rx_line(s, ns)], outs[key].get("cmd", "")))
+        cause = ("the switch chip passes nothing up to the CPU (its CPU packet path: SONiC syncd / the kernel network "
+                 "driver) - whatever listens on the ports from the CPU (IFCP discovery, LLDP) hears nothing, so IFCP "
+                 "sessions stay down on every link of this chip although the links are up; on a working switch every "
+                 "port with link receives")
+        nxt = ("compare with another switch ('sudo ip -n asicN -s -o link show'); read 'docker ps' (syncd) and 'show "
+               "logging | grep -i syncd'; restarting the switch services or rebooting the switch changes the switch - only "
+               "with the operator's go-ahead; switch owner / AMD if it stays")
+        ev = [cpu_rx_line(s, ns)]
+        # what the chip's own services did: a restart of them resets the counters - and is the first thing to ask about
+        # (g02-g17 5 Nov: asic0's swss0 / syncd0 restarted on every switch, asic0 then received nothing, asic1 all)
+        n = ns[4:] if ns.startswith("asic") else ""
+        svc = sorted(c for c in young if c in (f"syncd{n}", f"swss{n}"))
+        if svc:
+            ago = _ago(now - min(young[c] for c in svc))
+            cause = (f"{ns}'s services ({', '.join(svc)}) were started again {ago} before this check and the chip has "
+                     f"passed nothing to the CPU since: the counters start at 0 with them, but every port with link "
+                     f"should have received LLDP / IFCP frames within a minute - the CPU path did not come back after "
+                     f"that restart. The chip passes nothing up to the CPU (its CPU packet path: SONiC syncd / the "
+                     f"kernel network driver), so IFCP discovery and LLDP hear nothing and IFCP stays down on every link "
+                     f"of this chip although the links are up")
+            nxt = (f"ask who restarted {ns}'s services and why (an AFM / test procedure?); read 'docker logs --tail 100 "
+                   f"syncd{n}' and the syslog since then; " + nxt)
+            ev.append(f"{', '.join(svc)} started {_utc(min(young[c] for c in svc))} UTC ({ago} before this check)")
+        fine = [o for o, t in got.items() if o != ns and t and t["up"] >= 8 and t["rx"] == t["up"]]
+        if fine:
+            ev.append("the same switch's " + ", ".join(f"{o} receives on all {got[o]['up']} of its ports with link"
+                                                      for o in fine)
+                      + (" (its services were not restarted)" if svc and not any(
+                          c in young for o in fine for c in (f"syncd{o[4:]}", f"swss{o[4:]}")) else ""))
+        f = finding(node, "switch", "cpu_rx", "switch", CRITICAL,
+                    f"{ns or 'switch'}: none of the {s['up']} ports with link has received a packet on the switch CPU",
+                    cause, nxt, ev, outs[key].get("cmd", ""))
+        if svc:                                  # the rack-wide grouping sees a restart run switch by switch
+            f |= {"started": min(young[c] for c in svc), "when": ev[1].split(" started ", 1)[1]}
+        F.append(f)
 
 
 def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
@@ -556,7 +619,7 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
     _tray(node, outs, F)
     _syslog(node, outs, F)
     _drift(node, outs, F)
-    _cpu_rx(node, outs, F)
+    _cpu_rx(node, outs, F, up)
     return F
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from ..checks import CRITICAL, WARNING, Platform, _cmd, _disk, _memory, _out, finding
+from ..checks import CRITICAL, INFO, LIMITS, WARNING, Platform, _cmd, _disk, _memory, _out, finding
 from ..checks import _NS, _WORD  # noqa: F401 - the allow-list patterns
 
 READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platform (heliosdbg/guide.py)
@@ -56,8 +56,14 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
                     break
         for what, (area, ls) in groups.items():
             sev = CRITICAL if what.startswith("uncorrected") or len(ls) >= 10 and not what.startswith("corrected") else WARNING
+            cause = f"the tray's kernel logged {what}"
+            if what.startswith("corrected") and len(ls) < LIMITS["mce_corrected_warn"]:
+                # g02-g17: 6-22 an hour on every tray, for days - the platform's normal; noted, a warning when it climbs
+                sev = INFO
+                cause += (f" - the hardware corrected them ('no action required'); below {LIMITS['mce_corrected_warn']} "
+                          "an hour this is noted, not a problem: a rate that climbs, or one uncorrected error, is")
             F.append(finding(node, "compute", "kernel", area, sev,
-                             f"{len(ls)} kernel error line(s) in the last hour: {what}", f"the tray's kernel logged {what}",
+                             f"{len(ls)} kernel error line(s) in the last hour: {what}", cause,
                              "read 'sudo journalctl -k -p err --since -2h' around these lines; GPU / PCIe errors -> "
                              "'sudo amd-smi ras'", ls[-5:], _cmd(outs, "kernel")))
     t = _out(outs, "failed")

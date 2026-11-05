@@ -202,7 +202,7 @@ def test_real_formats_seen_on_g02_g17():
                   "link ionic_1/1 state DOWN physical_state DISABLED netdev enP3p68s0\n")
     fs = health.judge_compute("ct01", o)
     assert len(fs) == 1 and fs[0]["check"] == "kernel" and fs[0]["what"].startswith("3 kernel error line(s)")
-    assert fs[0]["severity"] == health.WARNING and fs[0]["area"] == "compute"
+    assert fs[0]["severity"] == health.INFO and fs[0]["area"] == "compute"     # 3 an hour: noted (5 Nov)
     assert len(health._gpu_list(gpus)) == 4
 
 
@@ -268,3 +268,74 @@ def test_unsafe_advice_after_a_read_is_still_flagged():
         assert ai.unsafe_text(t), t
     for t in ("grep reboot /var/log/syslog", "show reboot-cause history", "do not reboot the switch"):
         assert not ai.unsafe_text(t), t
+
+
+def _ip_rows(n: int, rx: int) -> str:
+    return "\n".join(f"{i + 2}: Ethernet{i}: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9100 qdisc mq state UP mode DEFAULT\\    "
+                     f"link/ether 12:34:56:78:01:00 brd ff:ff:ff:ff:ff:ff\\    RX:  bytes packets errors dropped  missed   mcast"
+                     f"           \\    {rx * 64} {rx} 0 0 0 0 \\    TX:  bytes packets errors dropped carrier collsns"
+                     f"           \\    6400 100 0 0 0 0 " for i in range(n))
+
+
+def _restarted(o: dict, at: float, names=("bgp0", "swss0", "syncd0", "teamd0")) -> dict:
+    old = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 3 * 86400))
+    new = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(at))
+    o["restarts"] = r("\n".join([f"/{c} 0 {new}.11Z" for c in names] +
+                                [f"/{c} 0 {old}.11Z" for c in ("database", "pmon", "swss1", "syncd1", "afm-agent")]))
+    return o
+
+
+def test_services_restarted_together_are_one_finding_not_one_per_container():
+    """g02-g17 5 Nov: swss0, syncd0, bgp0, teamd0, radv and snmp of asic0 started at once - six warnings per switch for one
+    restart, each saying 'restarted (0 restart(s))'."""
+    o = _restarted(switch_ok(), time.time() - 1800)
+    f = one(health.judge_switch("st1", o), "restarts")
+    assert f["what"] == "asic0's services started again together: bgp0, swss0, syncd0, teamd0"
+    assert "not crash-looping" in f["cause"] and "0 restart(s)" not in f["what"] and f["started"]
+
+
+def test_restart_run_switch_by_switch_reads_as_a_procedure():
+    now = time.time()
+    fs = []
+    for i in range(6):
+        fs += health.judge_switch(f"st{i + 1}", _restarted(switch_ok(), now - 3000 + i * 300))
+    g = one(health.rack_wide(fs, {"switch": 6, "compute": 18}), "restarts")
+    assert g["node"] == "6 of 6 switches" and "one switch after another, st1 at" in g["cause"]
+    assert "about every 5 min" in g["cause"] and " UTC (" in g["evidence"][0]
+
+
+def test_dead_cpu_receive_names_the_restart_of_its_chip_and_the_chip_that_works():
+    o = _restarted(switch_ok(), time.time() - 2400)
+    o["cpu_rx:asic0"], o["cpu_rx:asic1"] = r(_ip_rows(20, 0)), r(_ip_rows(20, 50))
+    f = one(health.judge_switch("st1", o), "cpu_rx")
+    assert f["what"].startswith("asic0: none of the 20 ports") and "swss0, syncd0) were started again 40 min" in f["cause"]
+    assert "asic1 receives on all 20" in " ".join(f["evidence"]) and "ask who restarted asic0" in f["next"]
+
+
+def test_no_gpu_at_all_shows_the_amd_smi_error_from_stderr():
+    o = compute_ok()
+    o["gpus"] = r("AMDSMI Tool: 27.1.0 | ROCm version: 10.2.0\n", rc=255,
+                  err="ERROR:root:Unable to detect any GPU devices, check amdgpu version and module status\n")
+    f = one(health.judge_compute("ct06", o), "gpus")
+    assert f["what"] == "amd-smi cannot read the GPUs on this tray" and "Unable to detect any GPU" in f["evidence"][0]
+    assert "driver" in f["cause"]
+
+
+def test_clip_never_cuts_mid_word():
+    s = "84x SfpGeneric: Port #: bus resolve failed for '$ref:cbfpga_optic': FPGA I2C adapter(s) missing"
+    assert checks.clip(s, 80).endswith(" ...") and "adapter(s" not in checks.clip(s, 80) and checks.clip("ab", 80) == "ab"
+
+
+def test_many_corrected_machine_checks_are_a_warning_few_are_noted():
+    o = compute_ok()
+    o["kernel"] = r("Nov 01 23:40:38 ct01 kernel: [Hardware Error]: Corrected error, no action required.\n" * 70)
+    assert one(health.judge_compute("ct01", o), "kernel")["severity"] == health.WARNING
+    o["kernel"] = r("Nov 01 23:40:38 ct01 kernel: [Hardware Error]: Corrected error, no action required.\n" * 12)
+    f = one(health.judge_compute("ct01", o), "kernel")
+    assert f["severity"] == health.INFO and health.summary([f]) == {"critical": 0, "warning": 0, "info": 1, "by_area": {}}
+
+
+def test_info_findings_are_not_sent_as_incidents():
+    from heliosdbg import incidents
+    fs = [{"node": "ct01", "check": "kernel", "severity": "info"}, {"node": "ct02", "check": "gpus", "severity": "critical"}]
+    assert [f["node"] for f in incidents.pick({"findings": fs})[0]] == ["ct02"]

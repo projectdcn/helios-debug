@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-CRITICAL, WARNING = "critical", "warning"
+CRITICAL, WARNING, INFO = "critical", "warning", "info"   # info: noted, not a problem (no incident, no Live alarm)
 _NS = r"(?:\s+-n\s+asic\d)?"                     # allow-list pattern parts (platforms' READ_ONLY, guide.py)
 _WORD = r"[A-Za-z0-9_.:/\[\]*'\"-]+"
 OWNERS = {"sonic": "network", "switch": "network", "power": "hardware", "thermal": "hardware", "bmc": "hardware",
@@ -18,7 +18,8 @@ OWNERS = {"sonic": "network", "switch": "network", "power": "hardware", "thermal
 
 # thresholds (the inventory's health: block overrides them)
 LIMITS = {"disk_warn": 85, "disk_crit": 95, "mem_avail_warn": 10, "mem_avail_crit": 5, "crm_warn": 85, "crm_crit": 98,
-          "gpu_hot": 100, "cert_days": 30, "restart_warn": 1, "syslog_burst": 20}
+          "gpu_hot": 100, "cert_days": 30, "restart_warn": 1, "syslog_burst": 20,
+          "mce_corrected_warn": 60}
 
 
 @dataclass
@@ -41,6 +42,16 @@ def finding(node: str, role: str, check: str, area: str, severity: str, what: st
     return {"node": node, "role": role, "check": check, "area": area, "severity": severity, "what": what,
             "cause": cause, "owner": OWNERS.get(area, "lab team"), "next": nxt,
             "evidence": [str(x)[:300] for x in evidence[:8]], "command": command}
+
+
+def clip(s: str, n: int) -> str:
+    """s cut to at most n characters at a word boundary, with ' ...' when cut - never mid-word ('FPGA I2C adapter(s')."""
+    s = str(s or "")
+    if len(s) <= n:
+        return s
+    cut = s[:n - 4]
+    sp = max(cut.rfind(" "), cut.rfind(";"))
+    return (cut[:sp] if sp > n // 2 else cut).rstrip(" ;,:-") + " ..."
 
 
 def _num(v) -> float | None:
@@ -188,6 +199,8 @@ def rack_wide(findings: list[dict], nodes_by_role: dict[str, int], min_nodes: in
     four) is one finding 'on N of M ...' - one cause to look for, not N lines. Its evidence keeps one line per node."""
     def key(f):
         return (f["role"], f["check"], f["area"], f["severity"], re.sub(r"\d+", "#", f["what"]))
+    gone = {f["absorbs"] for f in findings if f.get("absorbs")}   # a rack-level finding that says the per-node one too
+    findings = [f for f in findings if f["check"] not in gone]
     groups: dict[tuple, list[dict]] = {}
     for f in findings:
         groups.setdefault(key(f), []).append(f)
@@ -198,11 +211,22 @@ def rack_wide(findings: list[dict], nodes_by_role: dict[str, int], min_nodes: in
         if len(names) >= min_nodes and total and len(names) >= share * total:
             f0 = fs[0]
             kind = "trays" if role == "compute" else "switches" if role == "switch" else "nodes"
+            common = (" - the same on many nodes: look for one common cause (a platform / firmware behaviour, a "
+                      "configuration, cabling not done) before suspecting each node")
+            at = sorted((f["started"], f["node"]) for f in fs if f.get("started"))
+            if len(at) >= 3 and len({n for _t, n in at}) == len(at) and at[-1][0] - at[0][0] >= 180:
+                # one node after another, minutes apart: someone's procedure (g02-g17 5 Nov: asic0's services on st1 to
+                # st6 at 5-minute steps), not one cause hitting every node at once
+                step = (at[-1][0] - at[0][0]) / (len(at) - 1)
+                common = (f" - one {'switch' if kind == 'switches' else kind[:-1]} after another, {at[0][1]} at "
+                          f"{time.strftime('%H:%M', time.gmtime(at[0][0]))} UTC to {at[-1][1]} at "
+                          f"{time.strftime('%H:%M', time.gmtime(at[-1][0]))} (about every {max(1, round(step / 60))} "
+                          "min): it looks like a planned procedure run node by node, not crashes - ask who ran it")
             out.append(dict(f0, node=f"{len(names)} of {total} {kind}", nodes=names,
                             what=f"on {len(names)} of {total} {kind} ({', '.join(names)}): " + re.sub(r"^\d+ ", "", f0["what"]),
-                            cause=f0["cause"] + " - the same on many nodes: look for one common cause (a platform / firmware "
-                                  "behaviour, a configuration, cabling not done) before suspecting each node",
-                            evidence=[f"{f['node']}: {f['what'][:120]}" for f in sorted(fs, key=lambda x: x["node"])][:20]))
+                            cause=f0["cause"] + common,
+                            evidence=[f"{f['node']}: {clip(f['what'], 120)}" + (f" - {f['when']}" if f.get("when") else "")
+                                      for f in sorted(fs, key=lambda x: x["node"])][:20]))
         else:
             out += fs
     return out
@@ -211,18 +235,21 @@ def rack_wide(findings: list[dict], nodes_by_role: dict[str, int], min_nodes: in
 def summary(findings: list[dict]) -> dict:
     by_area: dict[str, int] = {}
     for f in findings:
-        by_area[f["area"]] = by_area.get(f["area"], 0) + 1
+        if f["severity"] != INFO:
+            by_area[f["area"]] = by_area.get(f["area"], 0) + 1
     return {"critical": sum(f["severity"] == CRITICAL for f in findings),
-            "warning": sum(f["severity"] == WARNING for f in findings), "by_area": by_area}
+            "warning": sum(f["severity"] == WARNING for f in findings),
+            "info": sum(f["severity"] == INFO for f in findings), "by_area": by_area}
 
 
 def report_text(res: dict) -> str:
     """report.txt: what the AI and a person read first - every finding with its evidence, by severity."""
     s = res["summary"]
     lines = [f"Node health of rack {res['rack']}  {res['time']} UTC", "",
-             f"{s['critical']} critical, {s['warning']} warning finding(s) on {len(res['nodes'])} node(s) checked"
+             f"{s['critical']} critical, {s['warning']} warning finding(s)" + (f", {s['info']} noted" if s.get("info") else "")
+             + f" on {len(res['nodes'])} node(s) checked"
              + (f"; nodes not reached: {', '.join(res['unreachable'])}" if res.get("unreachable") else ""), ""]
-    for sev in (CRITICAL, WARNING):
+    for sev in (CRITICAL, WARNING, INFO):
         fs = [f for f in res["findings"] if f["severity"] == sev]
         if not fs:
             continue

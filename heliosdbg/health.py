@@ -16,7 +16,7 @@ only, so they are tested on recorded outputs without a rack.
 from __future__ import annotations
 
 from . import checks
-from .checks import (CRITICAL, LIMITS, MISSING_RX, OWNERS, TRANSIENT, WARNING, Platform, _cmd, _num,  # noqa: F401
+from .checks import (CRITICAL, INFO, LIMITS, MISSING_RX, OWNERS, TRANSIENT, WARNING, Platform, _cmd, _num,  # noqa: F401
                      _out, _run, finding, missing, not_run, rack_wide, report_text, summary)  # noqa: F401
 from .platforms import DEFAULTS, PLATFORMS, for_node  # noqa: F401
 from .platforms.afm import judge_afm  # noqa: F401
