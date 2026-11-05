@@ -758,3 +758,10 @@ def test_live_saved_check_without_findings_gets_them():
     g = server.live_causes({"live": {"from_check": "x"}, "links": ls})
     assert [(x["kind"], x["switch"], x["count"]) for x in g] == [("switch_ifcp", "st4", 12)]
     assert server.live_causes({"links": ls}) == []                  # a normal check keeps what it wrote
+
+
+def test_a_resolution_can_be_recorded_on_a_check_saved_from_live(tmp_path):
+    from heliosdbg import resolutions
+    r = resolutions.record(tmp_path, {"path": "link-check/g02-g17/scan-20261104-225936-live", "category": "switch",
+                                      "cause": "st4 passed nothing up to its CPU", "fix": "cleared by itself"}, None, "the rack")
+    assert r["rack"] == "g02-g17" and r["path"].endswith("-live")

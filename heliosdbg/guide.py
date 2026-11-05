@@ -228,8 +228,8 @@ def step_facts(steps: list[dict]) -> list[str]:
                      "configuration before touching the cable.")
     elif cpu_dead:
         facts.append("Together: the switch CPU receives nothing from any port while the links are up - the AFM agent "
-                     "is not the first suspect, the switch's packet path to its CPU is (it can clear by itself: st4 4 Nov "
-                     "after ~5 h; restarting switch services or rebooting changes the switch: only with a go-ahead).")
+                     "is not the first suspect, the switch's packet path to its CPU is (it can clear by itself - check again; "
+                     "restarting switch services or rebooting changes the switch: only with a go-ahead).")
     elif gpu_down and sw_down:
         facts.append("Together: one link has no signal at either end - the cable, a connector or a transceiver (site / "
                      "cabling: reseat or swap that one cable). Restarting or powering a whole tray is out of proportion for it.")

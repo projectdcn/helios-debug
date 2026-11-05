@@ -135,7 +135,7 @@ SWITCH_IFCP_NEXT = ("Check the switch, not a GPU: on {sw} 'sudo ip -n asicN -s -
                     "(an ifcp.log that stopped being written = a stuck agent) and 'sudo tail -n 100 "
                     "/opt/amd/afm/agent/logs/ifcp-err.log' (discover-send errors such as 'resource temporarily unavailable').",
                     "When the agent runs but the CPU receives nothing, the agent is not the first suspect: the switch's "
-                    "packet path to its CPU is (on st4, 4 Nov, it cleared by itself after ~5 h). Restarting the agent, "
+                    "packet path to its CPU is (such a fault can clear by itself - check again first). Restarting the agent, "
                     "the switch services or rebooting changes the switch: only with the operator's go-ahead; if it "
                     "stays, the switch owner / AMD with the counters and the logs.")
 

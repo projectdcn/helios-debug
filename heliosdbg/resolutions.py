@@ -45,7 +45,7 @@ def record(results_dir: Path, rec: dict, ev=None, subject: str = "") -> dict:
     if cat not in CATEGORIES:
         raise ResolutionError("category: " + ", ".join(CATEGORIES))
     path = str(rec.get("path") or "").strip("/")
-    if path and not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}", path):
+    if path and not re.fullmatch(r"link-check/[A-Za-z0-9_.-]+/(scan|link)-[0-9]{8}-[0-9]{6}(?:-live)?", path):
         raise ResolutionError("path: link-check/<rack>/scan-... or link-...")
     steps = [{"node": _clean(s.get("node"), 80), "command": _clean(s.get("command"), 400),
               "output": str(s.get("output") or "")[:3000]} for s in (rec.get("steps") or []) if isinstance(s, dict)][:12]
