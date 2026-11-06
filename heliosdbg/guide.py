@@ -456,6 +456,14 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
                         f"exactly in one of these forms (or another plain show / read command without extra flags): "
                         f"{'; '.join(EXAMPLES.get(role, EXAMPLES['switch']))}. Answer with the JSON object only."}]
         out = _propose_once(ai, msgs, subject, steps, nodes, env, stay) | {"retried": True}
+    if out.get("done") and out.get("contradiction"):     # once more, told so: its own MTU reading is not low
+        from .ai import FABRIC_MTU
+        msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
+                       {"role": "user", "content": f"Your conclusion says \"{out['contradiction']}\" - that MTU is not below "
+                        f"the fabric's {FABRIC_MTU}, so the MTU is not the cause. Conclude again from what the outputs show, "
+                        f"or propose another step. Answer with the JSON object only."}]
+        again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
+        out = again | {"retried": True, "contradiction_before": out["contradiction"]}
     out.pop("_text", None)
     return out
 
@@ -473,11 +481,11 @@ def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=No
         raise NotJSON(text) from None
     st["model"] = model
     if st.get("done"):          # remembered: a 👍 / 👎 on the conclusion teaches the guided mode (helios-slm)
-        from .ai import Evidence, invented, unsafe_text
+        from .ai import Evidence, invented, mtu_contradiction, unsafe_text
         concl, nxt = str(st.get("conclusion") or ""), str(st.get("next") or "")
         return {"done": True, "conclusion": concl, "next": nxt, "model": model, "facts": step_facts(steps),
-                "unsafe": unsafe_text(concl + "\n" + nxt),
-                "not_in_evidence": invented(concl, Evidence(), _seen(msgs)),
+                "unsafe": unsafe_text(concl + "\n" + nxt), "_text": text,
+                "not_in_evidence": invented(concl, Evidence(), _seen(msgs)), "contradiction": mtu_contradiction(concl),
                 "answer_id": ai.remember(msgs, text, model, subject + " (step by step)")}
     node = str(st.get("node") or "").strip()
     out = {"done": False, "node": node, "command": str(st.get("command") or "").strip(), "why": str(st.get("why") or ""),

@@ -774,7 +774,9 @@ function findingsHtml(d){
 /* "Ask the AI" on any problem the page shows (findings, drill-downs, topology, cabling, VLANs, GPU state): one handler
    for the page, the question carries what was seen; the chat reads the same check (path) and the link if there is one */
 /* readings an answer states that no evidence item / step output shows - code-checked, not the model */
-function notSeen(a){var n=(a&&a.not_in_evidence)||[];return n.length?'<div class="warn">Not in the evidence: it states '+esc(n.join("; "))+" - no item or command output shows that reading. Treat that part as a guess.</div>":""}
+function notSeen(a){return mtuWarn(a)+notSeen0(a)}
+function mtuWarn(a){return a&&a.contradiction?'<div class="warn">It contradicts its own reading: "'+esc(a.contradiction)+'" - that MTU is not below the fabric\'s 9100, so the MTU is not the cause. Treat that conclusion as wrong.</div>':""}
+function notSeen0(a){var n=(a&&a.not_in_evidence)||[];return n.length?'<div class="warn">Not in the evidence: it states '+esc(n.join("; "))+" - no item or command output shows that reading. Treat that part as a guess.</div>":""}
 function askBtn(q,link,path,label){return '<button class="sec ask-ai" data-ask="'+esc(q)+'" data-asklink="'+esc(link||"")+'" data-askpath="'+esc(path||(mapData&&mapData.path)||"")+'">'+esc(label||"Ask the AI")+"</button>"}
 document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-ask]");if(!b)return;e.preventDefault();e.stopPropagation();
   chat.link=b.dataset.asklink||null;chat.keepLink=!!chat.link;chat.path=b.dataset.askpath||null;chatOpen();chatSend(b.dataset.ask)},true);

@@ -678,6 +678,23 @@ def invented(text: str, ev: Evidence, extra: str = "") -> list[str]:
     return list(dict.fromkeys(out))[:4]
 
 
+FABRIC_MTU = 9100                   # the fabric's switch port MTU (linkdiag: 'show interfaces status')
+_MTU_LOW = re.compile(r"\bMTU(?:\s+of)?\s+(\d{3,5})\b([^.;]{0,80}?)\b(?:below|lower than|less than|under|smaller than)\b"
+                      r"([^.;]{0,30}?)(?:\b(\d{3,5})\b|(?=[.,;]|$))", re.I)
+
+
+def mtu_contradiction(text: str) -> str | None:
+    """An MTU called low that is not: 'reads MTU 9100 [S1], below the fabric's 9100' (helios-slm v28-v33: stuck IFCP
+    links blamed on a low MTU the reading itself does not show). The phrase, or None."""
+    for m in _MTU_LOW.finditer(text or ""):
+        n, ref = int(m.group(1)), int(m.group(4) or FABRIC_MTU)
+        if "fabric" not in (m.group(3) or "").lower() and not m.group(4):
+            continue                                # 'below' something that is not the fabric's MTU
+        if n >= ref:
+            return m.group(0).strip()[:160]
+    return None
+
+
 def review(text: str, ev: Evidence, extra: str = "") -> dict:
     """The checks on an answer: a step that changes the rack, a command on the wrong kind of node, citations, readings
     that no evidence shows."""
@@ -685,7 +702,7 @@ def review(text: str, ev: Evidence, extra: str = "") -> dict:
     cited = sorted(set(re.findall(r"\b([ED]\d+)\b", text)), key=lambda x: (x[0], int(x[1:])))
     return {"unsafe": unsafe_text(text), "wrong_device": wrong_device(text),
             "cited": [c for c in cited if c in refs], "unknown_citations": [c for c in cited if c not in refs],
-            "not_in_evidence": invented(text, ev, extra)}
+            "not_in_evidence": invented(text, ev, extra), "contradiction": mtu_contradiction(text)}
 
 
 # the exact messages behind the newest answers, by answer id: a 👍 / 👎 on an answer stores the prompt it came from

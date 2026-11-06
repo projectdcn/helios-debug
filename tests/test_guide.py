@@ -520,3 +520,37 @@ def test_ifcp_error_log_age_is_read_by_code():
     out = "\n".join(line % (old, n) for n in (475, 476))
     f = guide.step_facts([{"node": "st4", "command": "tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log", "rc": 0, "output": out}])
     assert "40 min before" in f[0] and "2 port(s)" in f[0] and "cleared" in f[0]
+
+
+def test_an_mtu_called_low_that_is_not_is_caught_and_asked_again():
+    """helios-slm v28-v33: stuck IFCP links concluded as 'reads MTU 9100 [S1], below the fabric's 9100'."""
+    bad = "st2 Ethernet465 reads MTU 9100 [S1], below the fabric's 9100, so it is a switch port setting, not the cable."
+    assert ai.mtu_contradiction(bad).startswith("MTU 9100")
+    assert ai.mtu_contradiction("st6 Ethernet29 has an MTU of 9100, below the fabric's MTU, so IFCP cannot come up")
+    for ok in ("st2 Ethernet465 reads MTU 1500 [S1], below the fabric's 9100: a port setting.",
+               "st4 Ethernet153 reads MTU 9100 [S2], the normal value, so it is not a port setting.",
+               "MTU 9100 is below nothing; the link counters below show errors.",
+               "no IFCP session (ll_up no) while the MTU is 9100"):
+        assert ai.mtu_contradiction(ok) is None, ok
+    assert ai.review(bad, ai.Evidence())["contradiction"]
+
+    class AI:
+        def __init__(self, texts):
+            self.texts, self.seen = list(texts), []
+
+        def build_messages(self, ev, subject):
+            return [{"role": "system", "content": ""}, {"role": "user", "content": "x\n\nQuestion: q"}]
+
+        def chat(self, msgs, env=None, max_tokens=500):
+            self.seen.append(msgs)
+            return self.texts.pop(0), "stand-in"
+
+        def remember(self, msgs, text, model, subject):
+            return "id"
+    good = "st2 Ethernet465: physical link up, no IFCP session (ll_up no) [S1], MTU 9100 normal - the GPU port's IFCP."
+    ai_ = AI(['{"done": true, "conclusion": "%s", "next": "n"}' % bad, '{"done": true, "conclusion": "%s", "next": "n"}' % good])
+    s1 = {"node": "st2", "command": "show interfaces status -n asic1", "rc": 0, "output": "Ethernet465 ... 9100 ... up up"}
+    out = guide.propose(ai_, None, "s", [s1], {"st2": "switch"})
+    assert out["done"] and out["conclusion"] == good and out["contradiction"] is None
+    assert out["retried"] and out["contradiction_before"].startswith("MTU 9100") and "_text" not in out
+    assert "not below the fabric's 9100" in ai_.seen[1][-1]["content"]
