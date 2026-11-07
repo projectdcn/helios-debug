@@ -181,3 +181,11 @@ def test_a_named_node_says_whether_it_answered(rack):
     assert "st2 did NOT answer over SSH" in sent[-1][-1]["content"]
     ask(st, "what should I check first on ct02")
     assert "Health finding on ct02 (critical): 0 of 4 GPUs visible to amd-smi" in sent[-1][-1]["content"]
+
+
+def test_version_says_whether_the_ui_is_busy(tmp_path):
+    st = server.State(tmp_path, tmp_path)
+    v = server.version_info(st)
+    assert v["version"] and v["idle"] and v["busy"] == {"jobs": 0, "live": False, "terminals": 0}
+    st.jobs["x"] = {"status": "running"}
+    assert not server.version_info(st)["idle"]

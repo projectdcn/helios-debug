@@ -124,7 +124,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
 </head>
 <body>
 <header>
-  <div><h1>Helios debug</h1><div class="mut" id="where">GPU links, SONiC switch trays, compute trays / GPUs and AFM of a Helios rack</div></div>
+  <div><h1>Helios debug <span class="mut" id="hd-ver" style="font-size:12px;font-weight:400"></span></h1><div class="mut" id="where">GPU links, SONiC switch trays, compute trays / GPUs and AFM of a Helios rack</div></div>
   <div class="hdr-right">
     <div style="min-width:240px"><label for="inv">Rack</label><select id="inv"></select></div>
     <button class="sec" id="chat-open" title="ask the AI anything about this rack">Chat</button>
@@ -1465,6 +1465,8 @@ function dataAge(g){
     (g.link_check_h!=null&&g.health_h!=null?" and ":"")+(g.health_h!=null?"the health check of "+esc(g.health_utc)+" UTC ("+ageTxt(g.health_h)+" old)":"")+
     (g.stale?' - may be out of date. <button class="sec" data-go-health="1">Run Health now</button>':"")+"</div>";
 }
+fetch("/api/version").then(function(r){return r.json()}).then(function(v){$("hd-ver").textContent=v.version||"";
+  $("hd-ver").title="code "+(v.commit||"?")+(v.built?", built "+v.built:"")}).catch(function(){});
 document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-go-health]");if(!b)return;
   var t=document.querySelector('[data-t="health"]');if(t){t.click();var r=document.querySelector('[data-run="health"]');if(r)r.scrollIntoView({block:"center",behavior:"smooth"})}});
 function chatSend(q){

@@ -859,6 +859,39 @@ def ai_chat(state: State, req: dict) -> dict:
     return out
 
 
+_VERSION: dict = {}
+
+
+def code_version() -> dict:
+    """{version, commit, built}: the bundle's BUILD_INFO.json (an installed copy), else the git checkout's commit (with
+    '+changes' when files differ from it) - shown in the header, read by tools/deploy.py after an upgrade."""
+    if not _VERSION:
+        try:
+            _VERSION.update(json.loads((ROOT / "BUILD_INFO.json").read_text()))
+        except (OSError, ValueError):
+            try:
+                git = ["git", "-C", str(ROOT)]
+                c = subprocess.run(git + ["rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
+                dirty = subprocess.run(git + ["status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True,
+                                       timeout=5).stdout.strip()
+                _VERSION.update({"version": (c or "unknown") + ("+changes" if dirty else ""), "commit": c})
+            except (OSError, subprocess.SubprocessError):
+                _VERSION["version"] = "unknown"
+    return dict(_VERSION)
+
+
+def version_info(state: State) -> dict:
+    """The code version and whether the UI is busy (a running job, Live, an open terminal) - an upgrade waits for idle."""
+    with state.lock:
+        jobs = sum(1 for j in state.jobs.values() if j.get("status") == "running")
+        live = state.live is not None
+    try:
+        terms = sum(1 for t in state.terms.list() if not t.get("closed"))
+    except Exception:  # noqa: BLE001
+        terms = 0
+    return code_version() | {"busy": {"jobs": jobs, "live": live, "terminals": terms}, "idle": not (jobs or live or terms)}
+
+
 CHAT_LOG = "chat.jsonl"
 CHAT_LOG_MAX = 20 * 1024 * 1024                         # then chat.jsonl.1 (one old file kept)
 
@@ -1709,6 +1742,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "categories": resolutions.CATEGORIES})
             if u.path == "/api/term/list":
                 return self._json(200, {"terminals": st.terms.list()})
+            if u.path == "/api/version":
+                return self._json(200, version_info(st))
             if u.path.startswith("/static/vendor/"):          # the bundled terminal emulator (xterm.js), nothing else
                 name = u.path[len("/static/vendor/"):]
                 f = VENDOR.get(name)
