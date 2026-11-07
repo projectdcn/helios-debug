@@ -95,8 +95,8 @@ def preflight(t: dict, need_mb: int) -> list[str]:
             info = json.loads(v)
         except ValueError:
             info = None
-        if info is None:
-            print("   UI: not answering (not running, or a version without /api/version)")
+        if not isinstance(info, dict) or "version" not in info:
+            print("   UI: no version reported (not running, or older than /api/version - it cannot say whether it is busy)")
         else:
             print(f"   UI: {info.get('version')} - busy {info.get('busy')}")
             if not info.get("idle", True):
