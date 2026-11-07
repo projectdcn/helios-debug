@@ -816,17 +816,30 @@ def ai_chat(state: State, req: dict) -> dict:
         ev, subject = ai.chat_context(scan, q, link if link and any(
             f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load(), macs,
             _focus(req))
-        if not getattr(ev, "map_facts", None):              # a map lookup is exact on its own
+        from heliosdbg import reach
+        if reach.is_question(q) and not link:              # who answers: exact lines from the newest health / link check
+            hs = sorted((state.results_dir / "link-check" / rack).glob("health-*/health.json"), reverse=True)
+            try:
+                health = json.loads(hs[0].read_text()) if hs else None
+            except (OSError, ValueError):
+                health = None
+            ev.reach_facts = reach.facts([h.name for h in inv.all_switches], [h.name for h in inv.all_computes],
+                                         [h.name for h in inv.quarantined], health, hs[0].parent.name if hs else "",
+                                         scan, rel.rsplit("/", 1)[-1])
+            ev.map_facts, ev.docs, ev.howto = [], [], False   # not the plane map, not the guide's older known-issue table
+            for t in ev.reach_facts:
+                ev.add(t, "reach")
+        if not (getattr(ev, "map_facts", None) or getattr(ev, "reach_facts", None)):   # a lookup is exact on its own
             add_past_resolutions(state, ev, rack, link or "", q)
         hist = req.get("history") or []
         try:
             out = ai.ask(ev, subject, q, hist if isinstance(hist, list) else [])
         except ai.AIError as e:
-            if not (getattr(ev, "map_facts", None) or getattr(ev, "plan_facts", None)):
+            if not (getattr(ev, "map_facts", None) or getattr(ev, "plan_facts", None) or getattr(ev, "reach_facts", None)):
                 raise
             # a rack-map / test-plan lookup needs no model: the exact lines, and why there is no explanation
             out = {"answer": f"_(No explanation: {e})_", "model": "none", "evidence": ev.items, "docs": getattr(ev, "docs", None) or [],
-                   "map_facts": ev.map_facts, "plan_facts": ev.plan_facts, "unsafe": None, "wrong_device": [], "cited": [], "unknown_citations": [],
+                   "map_facts": ev.map_facts, "plan_facts": ev.plan_facts, "reach_facts": getattr(ev, "reach_facts", []), "unsafe": None, "wrong_device": [], "cited": [], "unknown_citations": [],
                    "seconds": 0, "subject": subject}
     except ai.AIError as e:
         raise BadRequest(str(e)) from None

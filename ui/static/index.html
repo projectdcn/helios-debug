@@ -1461,6 +1461,9 @@ function chatSend(q){
     ad.innerHTML=((a.map_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Rack map - exact, from the check'+
         (a.context&&a.context.path?" "+esc(a.context.path):"")+'</b>'+a.map_facts.map(function(t){return '<div style="margin-top:3px">'+(/^Summary:/.test(t)?"<b>"+esc(t)+"</b>":esc(t))+"</div>"}).join("")+"</div>"+
         '<div class="mut" style="font-size:12px;margin:4px 0">AI explanation - the lines above are exact; if they disagree, they are right:</div>':"")+
+      ((a.reach_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Who answers - exact, from the newest health and link checks</b>'+
+        a.reach_facts.map(function(t){return '<div style="margin-top:3px">'+(/NOT reached|^Summary:/.test(t)?"<b>"+esc(t)+"</b>":esc(t))+"</div>"}).join("")+"</div>"+
+        '<div class="mut" style="font-size:12px;margin:4px 0">AI explanation - the lines above are exact; if they disagree, they are right:</div>':"")+
       ((a.plan_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Test plan - exact, latest result</b>'+
         a.plan_facts.map(function(t){return '<div style="margin-top:3px">'+esc(t)+"</div>"}).join("")+"</div>":"")+
       aiMd(a.answer,refs)+docSources(a)+

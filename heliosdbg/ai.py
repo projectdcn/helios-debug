@@ -646,7 +646,12 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
         q += ("\n(From the test plan, exactly: " + " | ".join(ev.plan_facts) + ". Start the answer with that LATEST status "
               "word as it is - PARTIAL is not a failure: it passed where it could run. Anything after 'OLDER runs' is history "
               "that the latest run superseded; mention it only as history.)")
-    if getattr(ev, "howto", False):
+    if chat_mode and getattr(ev, "reach_facts", None):
+        q += ("\n(Who answered, exactly: " + " | ".join(ev.reach_facts) + ". Answer from these lines only, in 1-3 "
+              "sentences: the count the question asks for, the nodes NOT reached by name (or that every one answered) and "
+              "the time of the check. Switches are st*, compute trays ct*. The documentation's known-issue lists are older "
+              "- do not use them for this.)")
+    elif getattr(ev, "howto", False):
         q += HOWTO_ASK
     general = getattr(ev, "mode", "") == "general"          # cases.py: a test result, a tool report, pasted outputs
     gen_sys = SYSTEM_HEALTH if getattr(ev, "kind", "") == "health" else SYSTEM_GENERAL
@@ -728,5 +733,6 @@ def ask(ev: Evidence, subject: str, question: str = "", history: list | None = N
     return {"answer": text, "answer_id": remember(msgs, text, model, subject), "model": model, "evidence": ev.items,
             "docs": getattr(ev, "docs", None) or [],
             "map_facts": getattr(ev, "map_facts", None) or [], "plan_facts": getattr(ev, "plan_facts", None) or [],
+            "reach_facts": getattr(ev, "reach_facts", None) or [],
             **review(text, ev), "focus": getattr(ev, "focus", None) or [],
             "seconds": round(time.time() - t0, 1), "subject": subject}
