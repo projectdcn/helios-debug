@@ -53,12 +53,20 @@ def git(*a: str) -> str:
 
 
 def ssh_cmd(t: dict) -> list[str]:
-    return ["ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes"] + (["-p", str(t["port"])] if t.get("port") else []) + [t["ssh"]]
+    # one connection for every step (ControlMaster): a busy sshd (the jump host, 7 Nov: 'timed out during banner
+    # exchange' on every other login) is asked for one login, not ten
+    return ["ssh", "-o", "ConnectTimeout=30", "-o", "BatchMode=yes", "-o", "ControlMaster=auto",
+            "-o", "ControlPath=~/.ssh/cm-deploy-%r@%h:%p", "-o", "ControlPersist=120"] + (
+        ["-p", str(t["port"])] if t.get("port") else []) + [t["ssh"]]
 
 
 def remote(t: dict, script: str, data: bytes | None = None, check: bool = True) -> str:
-    r = subprocess.run(ssh_cmd(t) + ["bash -s" if data is None else script], input=script.encode() if data is None else data,
-                       capture_output=True, timeout=600)
+    for attempt in range(4):                       # rc 255 is ssh's own failure (no login), not the command's
+        r = subprocess.run(ssh_cmd(t) + ["bash -s" if data is None else script], input=script.encode() if data is None else data,
+                           capture_output=True, timeout=600)
+        if r.returncode != 255 or attempt == 3:
+            break
+        time.sleep(10 * (attempt + 1))
     out = r.stdout.decode(errors="replace")
     if check and r.returncode:
         raise DeployError(f"on {t['ssh']}: rc={r.returncode}: {r.stderr.decode(errors='replace').strip()[-400:]}")
