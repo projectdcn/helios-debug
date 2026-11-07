@@ -87,6 +87,7 @@ class State:
                 continue
             out.append({"file": f.name, "rack": inv.rack, "switches": [h.name for h in inv.switches],
                         "computes": [h.name for h in inv.computes],
+                        "quarantined": inv.quarantine_summary(),
                         "local": [h.name for h in inv.switches + inv.computes if is_local(h)],
                         "afm": bool((inv.afm or {}).get("url")),
                         "afm_password_env": ((inv.afm or {}).get("auth") or {}).get("password_env") or "HELIOS_AFM_PASSWORD"})
@@ -1250,6 +1251,76 @@ def inventory_text(state: State, name: str) -> dict:
     return {"file": f.name, "name": re.sub(r"(\.local)?\.yaml$", "", f.name), "yaml": f.read_text()}
 
 
+def _write_inventory(f: Path, text: str) -> Path | None:
+    """Write an inventory, keeping the previous file beside it as <file>.bak-<time>; the backup, if one was made."""
+    backup = None
+    if f.exists() and f.read_text() != text:          # an edit keeps the previous file beside it
+        backup = f.with_name(f"{f.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+        n = 1
+        while backup.exists():                        # two saves in one second: the first backup is kept
+            backup, n = f.with_name(f"{f.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}-{n}"), n + 1
+        backup.write_text(f.read_text())
+    part = f.with_name(f".{f.name}.saving")           # a full disk mid-write leaves the old file, not half a new one
+    part.write_text(text)
+    os.replace(part, f)
+    return backup
+
+
+_QFLOW = re.compile(r"""(,\s*quarantine:\s*(?:\{[^{}]*\}|'[^']*'|"[^"]*"|[^,}#]*?)(?=\s*[,}]))"""
+                    r"""|(quarantine:\s*(?:\{[^{}]*\}|'[^']*'|"[^"]*"|[^,}#]*?)\s*,\s*)""")
+
+
+def _drop_quarantine(text: str, node: str) -> str | None:
+    """The inventory text with ``node``'s quarantine taken out, comments and layout kept - or None when its entry is
+    not written in a way this can edit (then: Add / edit a rack)."""
+    lines = text.splitlines(keepends=True)
+    name_rx = re.compile(r"""(^\s*-\s*\{?\s*|[{,]\s*)name:\s*['"]?""" + re.escape(node) + r"""['"]?\s*[,}\n#]""")
+    for i, ln in enumerate(lines):
+        if not name_rx.search(ln if ln.endswith("\n") else ln + "\n"):
+            continue
+        if "{" in ln and "}" in ln and "quarantine:" in ln:          # - {name: ct05, ..., quarantine: {...}}
+            new, n = _QFLOW.subn("", ln, count=1)
+            return "".join(lines[:i] + [new] + lines[i + 1:]) if n else None
+        if "{" in ln:
+            return None
+        ind = len(ln) - len(ln.lstrip(" -"))                         # - name: ct05 / quarantine: ... below it
+        j = i + 1
+        while j < len(lines) and (not lines[j].strip() or len(lines[j]) - len(lines[j].lstrip(" ")) >= ind
+                                  and not lines[j].lstrip().startswith("-")):
+            if re.match(r"\s*quarantine:", lines[j]) and len(lines[j]) - len(lines[j].lstrip(" ")) == ind:
+                k = j + 1                                              # and its own lines, indented deeper
+                while k < len(lines) and lines[k].strip() and len(lines[k]) - len(lines[k].lstrip(" ")) > ind:
+                    k += 1
+                return "".join(lines[:j] + lines[k:])
+            j += 1
+        return None
+    return None
+
+
+def lift_quarantine(state: State, req: dict) -> dict:
+    """One click on the rack map: take a node's quarantine out of the rack's inventory (the previous file kept as
+    <file>.bak-<time>). Only that key may change - anything else and nothing is written."""
+    import yaml
+    name, node = str(req.get("inventory") or ""), str(req.get("node") or "").strip()
+    f, inv = state.inventory(name)
+    q = inv.quarantine_summary()
+    if node not in q:
+        raise BadRequest(f"{node or 'that node'} is not quarantined in {f.name}")
+    text = f.read_text()
+    new = _drop_quarantine(text, node)
+    before, after = yaml.safe_load(text), (yaml.safe_load(new) if new is not None else None)
+    want = json.loads(json.dumps(before))
+    for sec in ("switches", "computes"):
+        for h in want.get(sec) or []:
+            if isinstance(h, dict) and str(h.get("name")) == node:
+                h.pop("quarantine", None)
+    if after != want:
+        raise BadRequest(f"{node}'s entry in {f.name} is written in a way this button cannot edit safely - remove its "
+                         "'quarantine:' in Add / edit a rack (Edit the rack chosen at the top)")
+    backup = _write_inventory(f, new)
+    return {"file": f.name, "node": node, "was": q[node], "backup": backup.name if backup else None}
+
+
 def save_inventory(state: State, req: dict) -> dict:
     name = str(req.get("name") or "").strip()
     if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", name):
@@ -1271,15 +1342,7 @@ def save_inventory(state: State, req: dict) -> dict:
         raise BadRequest(f"not a valid inventory: {type(e).__name__}: {str(e)[:200]}") from None
     finally:
         tmp.unlink(missing_ok=True)
-    if f.exists() and f.read_text() != text:          # an edit keeps the previous file beside it
-        backup = f.with_name(f"{f.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
-        n = 1
-        while backup.exists():                        # two saves in one second: the first backup is kept
-            backup, n = f.with_name(f"{f.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}-{n}"), n + 1
-        backup.write_text(f.read_text())
-    part = f.with_name(f".{f.name}.saving")           # a full disk mid-write leaves the old file, not half a new one
-    part.write_text(text)
-    os.replace(part, f)
+    backup = _write_inventory(f, text)
     return {"file": f.name, "backup": backup.name if backup else None, "rack": inv.rack, "switches": len(inv.switches), "computes": len(inv.computes),
             "fill_me": sum(ln.count("FILL-ME") for ln in text.splitlines() if not ln.lstrip().startswith("#"))}
 
@@ -1908,6 +1971,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, discover_rack(dict(req, afm_password=pw)))
             if u.path == "/api/inventory/save":
                 return self._json(200, save_inventory(self.state, req))
+            if u.path == "/api/inventory/lift_quarantine":
+                return self._json(200, lift_quarantine(self.state, req))
             if u.path == "/api/cases/judge":          # the health rules on pasted outputs - no AI needed
                 from heliosdbg import ai, cases, pasted
                 try:
