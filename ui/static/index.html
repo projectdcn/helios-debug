@@ -1448,6 +1448,17 @@ function docSources(a){
     var x=by[t],secs=x.secs.filter(Boolean).filter(function(s,i,l){return l.indexOf(s)===i});
     return (/^https?:/.test(x.url)?'<a href="'+esc(x.url)+'" target="_blank" rel="noopener">'+esc(t)+"</a>":esc(t))+(secs.length?" ("+esc(secs.join(", "))+")":"")}).join(" · ")+"</div>";
 }
+/* how old the checks behind an answer are: every answer says it; past STALE_H a button to the Node health tab */
+function ageTxt(h){return h==null?"?":h<1?Math.round(h*60)+" min":h<48?h+" h":(h/24).toFixed(1)+" days"}
+function dataAge(g){
+  if(!g||(g.link_check_h==null&&g.health_h==null))return "";
+  return '<div class="'+(g.stale?"warn":"mut")+'" style="font-size:12px;margin-top:4px">Based on '+
+    (g.link_check_h!=null?"the link check of "+esc(g.link_check_utc)+" UTC ("+ageTxt(g.link_check_h)+" old)":"")+
+    (g.link_check_h!=null&&g.health_h!=null?" and ":"")+(g.health_h!=null?"the health check of "+esc(g.health_utc)+" UTC ("+ageTxt(g.health_h)+" old)":"")+
+    (g.stale?' - may be out of date. <button class="sec" data-go-health="1">Run Health now</button>':"")+"</div>";
+}
+document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-go-health]");if(!b)return;
+  var t=document.querySelector('[data-t="health"]');if(t){t.click();var r=document.querySelector('[data-run="health"]');if(r)r.scrollIntoView({block:"center",behavior:"smooth"})}});
 function chatSend(q){
   q=(q||"").trim();var i=inv();if(!q||!i)return;
   var log=$("chat-log");if(!chat.hist.length)log.innerHTML="";
@@ -1461,12 +1472,13 @@ function chatSend(q){
     ad.innerHTML=((a.map_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Rack map - exact, from the check'+
         (a.context&&a.context.path?" "+esc(a.context.path):"")+'</b>'+a.map_facts.map(function(t){return '<div style="margin-top:3px">'+(/^Summary:/.test(t)?"<b>"+esc(t)+"</b>":esc(t))+"</div>"}).join("")+"</div>"+
         '<div class="mut" style="font-size:12px;margin:4px 0">AI explanation - the lines above are exact; if they disagree, they are right:</div>':"")+
-      ((a.reach_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Who answers - exact, from the newest health and link checks</b>'+
-        a.reach_facts.map(function(t){return '<div style="margin-top:3px">'+(/NOT reached|^Summary:/.test(t)?"<b>"+esc(t)+"</b>":esc(t))+"</div>"}).join("")+"</div>"+
+      ((a.check_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Exact, from the newest health and link checks</b>'+
+        a.check_facts.map(function(t){return '<div style="margin-top:3px">'+(/NOT reached|^Summary:|^Link check|^Health check .*findings|^Newest/.test(t)?"<b>"+esc(t)+"</b>":esc(t))+"</div>"}).join("")+"</div>"+
         '<div class="mut" style="font-size:12px;margin:4px 0">AI explanation - the lines above are exact; if they disagree, they are right:</div>':"")+
       ((a.plan_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Test plan - exact, latest result</b>'+
         a.plan_facts.map(function(t){return '<div style="margin-top:3px">'+esc(t)+"</div>"}).join("")+"</div>":"")+
-      aiMd(a.answer,refs)+docSources(a)+
+      aiMd(a.answer,refs)+((a.off_facts||[]).length?'<div class="warn" style="font-size:12px">The explanation disagrees with the exact lines above ('+
+        esc(a.off_facts.join("; "))+') - trust the exact lines.</div>':"")+docSources(a)+dataAge(a.context&&a.context.ages)+
       (a.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(a.unsafe)+'") - only with a go-ahead.</div>':"")+
       ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
       (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+".</div>":"")+

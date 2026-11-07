@@ -816,35 +816,75 @@ def ai_chat(state: State, req: dict) -> dict:
         ev, subject = ai.chat_context(scan, q, link if link and any(
             f"{x.get('switch')} {x.get('sw_port')}" == link for x in scan.get("links") or []) else "", live, docsearch.load(), macs,
             _focus(req))
-        from heliosdbg import reach
-        if reach.is_question(q) and not link:              # who answers: exact lines from the newest health / link check
-            hs = sorted((state.results_dir / "link-check" / rack).glob("health-*/health.json"), reverse=True)
-            try:
-                health = json.loads(hs[0].read_text()) if hs else None
-            except (OSError, ValueError):
-                health = None
-            ev.reach_facts = reach.facts([h.name for h in inv.all_switches], [h.name for h in inv.all_computes],
-                                         [h.name for h in inv.quarantined], health, hs[0].parent.name if hs else "",
-                                         scan, rel.rsplit("/", 1)[-1])
+        from heliosdbg import rackfacts
+        hs = sorted((state.results_dir / "link-check" / rack).glob("health-*/health.json"), reverse=True)
+        try:
+            health = json.loads(hs[0].read_text()) if hs else None
+        except (OSError, ValueError):
+            health = None
+        ages = rackfacts.ages(scan, health)
+        ks = rackfacts.kinds(q) if not link else []
+        if getattr(ev, "map_facts", None):        # 'which switch port is c1 connected to': the rack map answers it exactly
+            ks = [k for k in ks if k not in ("links", "gpus")]
+        if ks:                    # who answers, how many links / GPUs, quarantine, findings, when: exact lines, not the model's
+            ev.check_facts = rackfacts.facts(
+                ks, q, [h.name for h in inv.all_switches], [h.name for h in inv.all_computes],
+                [(h.name, (h.quarantine or {}).get("reason", "")) for h in inv.quarantined], health,
+                hs[0].parent.name if hs else "", scan, rel.rsplit("/", 1)[-1])
             ev.map_facts, ev.docs, ev.howto = [], [], False   # not the plane map, not the guide's older known-issue table
-            for t in ev.reach_facts:
-                ev.add(t, "reach")
-        if not (getattr(ev, "map_facts", None) or getattr(ev, "reach_facts", None)):   # a lookup is exact on its own
+            for t in ev.check_facts:
+                ev.add(t, "check")
+        else:
+            for t in rackfacts.answered_lines(q, health):   # the node asked about answered (or not) - not a doc's guess
+                ev.add(t, "health")
+        if not (getattr(ev, "map_facts", None) or getattr(ev, "check_facts", None)):   # a lookup is exact on its own
             add_past_resolutions(state, ev, rack, link or "", q)
         hist = req.get("history") or []
         try:
             out = ai.ask(ev, subject, q, hist if isinstance(hist, list) else [])
         except ai.AIError as e:
-            if not (getattr(ev, "map_facts", None) or getattr(ev, "plan_facts", None) or getattr(ev, "reach_facts", None)):
+            if not (getattr(ev, "map_facts", None) or getattr(ev, "plan_facts", None) or getattr(ev, "check_facts", None)):
                 raise
             # a rack-map / test-plan lookup needs no model: the exact lines, and why there is no explanation
             out = {"answer": f"_(No explanation: {e})_", "model": "none", "evidence": ev.items, "docs": getattr(ev, "docs", None) or [],
-                   "map_facts": ev.map_facts, "plan_facts": ev.plan_facts, "reach_facts": getattr(ev, "reach_facts", []), "unsafe": None, "wrong_device": [], "cited": [], "unknown_citations": [],
+                   "map_facts": ev.map_facts, "plan_facts": ev.plan_facts, "check_facts": getattr(ev, "check_facts", []), "unsafe": None, "wrong_device": [], "cited": [], "unknown_citations": [],
                    "seconds": 0, "subject": subject}
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
-    return out | {"context": {"rack": rack, "path": rel, "time_utc": scan.get("time_utc"), "link": link or None,
-                              "live_changes": len(live), "focus": getattr(ev, "focus", None) or []}}
+    out["off_facts"] = rackfacts.review(out.get("answer") or "", getattr(ev, "check_facts", None) or [])
+    out = out | {"context": {"rack": rack, "path": rel, "time_utc": scan.get("time_utc"), "link": link or None,
+                             "live_changes": len(live), "focus": getattr(ev, "focus", None) or [], "ages": ages,
+                             "health": hs[0].parent.name if hs else None, "kinds": ks}}
+    log_chat(state, q, out)
+    return out
+
+
+CHAT_LOG = "chat.jsonl"
+CHAT_LOG_MAX = 20 * 1024 * 1024                         # then chat.jsonl.1 (one old file kept)
+
+
+def log_chat(state: State, q: str, out: dict) -> None:
+    """Every chat question and its answer in <results>/ai/chat.jsonl: what was asked, the checks it was answered from,
+    the exact lines, the answer and the model - so a wrong answer is found without a thumbs-down, and the questions
+    can be asked again after a model or code change (tools/chat_replay.py). Never fails the answer."""
+    if getattr(state, "no_chat_log", False):          # tools/chat_replay.py asks again: not new questions
+        return
+    ctx = out.get("context") or {}
+    rec = {"time_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "question": q, "rack": ctx.get("rack"),
+           "path": ctx.get("path"), "health": ctx.get("health"), "link": ctx.get("link"), "kinds": ctx.get("kinds") or [],
+           "focus": ctx.get("focus") or [], "check_facts": out.get("check_facts") or [], "map_facts": out.get("map_facts") or [],
+           "answer": out.get("answer"), "answer_id": out.get("answer_id"), "model": out.get("model"),
+           "off_facts": out.get("off_facts") or [], "unsafe": out.get("unsafe"), "seconds": out.get("seconds")}
+    try:
+        d = state.results_dir / "ai"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / CHAT_LOG
+        if f.is_file() and f.stat().st_size > CHAT_LOG_MAX:
+            f.replace(d / (CHAT_LOG + ".1"))
+        with state.lock, f.open("a") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+    except OSError:
+        pass
 
 
 CONFIG_KEEP = 30                                       # saved reads kept per node (the oldest go)

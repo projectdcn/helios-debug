@@ -1,0 +1,32 @@
+# the chat's starter questions for tools/chat_replay.py - asked again after a model or code change
+# (the first three are the ones answered wrong on 6 Nov)
+how many switches are reachable
+which switch tray is not reachable ?
+which compute tray is not reachable ?
+is ct06 reachable
+how many compute trays can I ssh to
+how many links are down
+how many links are degraded on st4
+which links on st6 asic0 have no IFCP session?
+how many links are ok
+are there any down links on st5
+which GPUs are not active
+how many GPUs are in PROVIDER
+which GPUs on ct01 are not active
+which trays are quarantined
+is any switch quarantined
+what did the health check find
+any critical findings?
+what warnings does ct06 have
+what firmware differs between trays
+which switches are not synchronised to NTP
+any container restarts on st2
+when was the last check
+how old is the health check
+what is wrong with this rack, and in what order should it be fixed?
+why is st4 degraded
+why are the links of st5 degraded
+how do I read the IFCP state of a GPU port?
+what does 'forwarding entries without a switch port' mean?
+which switch port is ct01 GPU 0 connected to?
+what should I check first on ct06

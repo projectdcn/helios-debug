@@ -317,7 +317,17 @@ def _switch_problems(ev: Evidence, scan: dict, names: dict, only: str | None = N
                          for f in fs[:4]) + "; this switch's links could not be checked", "check")
     for x in scan.get("not_checked") or []:
         if (not only or x.get("node") == only) and "without a switch port" not in str(x.get("error")):
-            ev.add(f"{x.get('role') or 'node'} {x.get('node')} could not be read: {str(x.get('error'))[:200]}", "check")
+            ev.add(f"{x.get('role') or 'node'} {x.get('node')} {_unread(x, 200)}", "check")
+
+
+def _unread(x: dict, n: int) -> str:
+    """Why a node of a check was not read - an access failure, or a command that failed on a node that answered (6 Nov:
+    ct06's afmctl rc=112 was explained as 'ct06 is unreachable')."""
+    from . import reach
+    err = str(x.get("error") or "")
+    if reach.classify(err):
+        return f"could not be reached: {reach.describe(err)[:n]}"
+    return f"answered over SSH, but a command failed on it (not a reachability problem): {err.strip()[:n]}"
 
 
 def link_context(scan: dict, key: str) -> tuple[Evidence, str]:
@@ -451,7 +461,7 @@ def check_context(scan: dict, focus: set | None = None, topic: "re.Pattern | Non
     # 4. nodes not read for other reasons
     other = [x for x in scan.get("not_checked") or [] if "without a switch port" not in str(x.get("error"))]
     if other:
-        problem("nodes that could not be read", [f"{x.get('role') or 'node'} {x.get('node')}: {str(x.get('error'))[:160]}" for x in other[:6]],
+        problem("nodes that could not be read", [f"{x.get('role') or 'node'} {x.get('node')} {_unread(x, 160)}" for x in other[:6]],
                 [x.get("node") for x in other])
     vf = scan.get("vlan_findings") or []
     if vf:
@@ -646,11 +656,12 @@ def build_messages(ev: Evidence, subject: str, question: str = "", history: list
         q += ("\n(From the test plan, exactly: " + " | ".join(ev.plan_facts) + ". Start the answer with that LATEST status "
               "word as it is - PARTIAL is not a failure: it passed where it could run. Anything after 'OLDER runs' is history "
               "that the latest run superseded; mention it only as history.)")
-    if chat_mode and getattr(ev, "reach_facts", None):
-        q += ("\n(Who answered, exactly: " + " | ".join(ev.reach_facts) + ". Answer from these lines only, in 1-3 "
-              "sentences: the count the question asks for, the nodes NOT reached by name (or that every one answered) and "
-              "the time of the check. Switches are st*, compute trays ct*. The documentation's known-issue lists are older "
-              "- do not use them for this.)")
+    if chat_mode and getattr(ev, "check_facts", None):
+        q += ("\n(From the newest checks, exactly: " + " | ".join(ev.check_facts) + ". Answer from these lines only, in "
+              "1-3 sentences of your own: give the number or the node names asked about and the time of that check. A node "
+              "on a 'Reachable ... read failed' line answered - never call it unreachable. Switches are st*, compute trays "
+              "ct*. No number or node that these lines do not have. The documentation's known-issue lists are older - do "
+              "not use them for this.)")
     elif getattr(ev, "howto", False):
         q += HOWTO_ASK
     general = getattr(ev, "mode", "") == "general"          # cases.py: a test result, a tool report, pasted outputs
@@ -733,6 +744,6 @@ def ask(ev: Evidence, subject: str, question: str = "", history: list | None = N
     return {"answer": text, "answer_id": remember(msgs, text, model, subject), "model": model, "evidence": ev.items,
             "docs": getattr(ev, "docs", None) or [],
             "map_facts": getattr(ev, "map_facts", None) or [], "plan_facts": getattr(ev, "plan_facts", None) or [],
-            "reach_facts": getattr(ev, "reach_facts", None) or [],
+            "check_facts": getattr(ev, "check_facts", None) or [],
             **review(text, ev), "focus": getattr(ev, "focus", None) or [],
             "seconds": round(time.time() - t0, 1), "subject": subject}
