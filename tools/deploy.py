@@ -73,6 +73,13 @@ def remote(t: dict, script: str, data: bytes | None = None, check: bool = True) 
     return out
 
 
+def home_path(p) -> str:
+    """A path for the remote shell, quoted - a leading ~/ as "$HOME"/ (quoted, ~ is not expanded: install.sh got a
+    literal ~/helios/venv/bin/python, 7 Nov)."""
+    p = str(p)
+    return '"$HOME"/' + shlex.quote(p[2:]) if p.startswith("~/") else shlex.quote(p)
+
+
 def free_mb(t: dict, path: str) -> int:
     out = remote(t, f"df -Pm {path} 2>/dev/null | tail -1")
     return int(out.split()[3])
@@ -124,7 +131,7 @@ def deploy_ui(t: dict, ref: str, dry: bool) -> None:
         print(f"   dry run: would install {tgz.name} to {t['prefix']}")
         return
     name = tgz.name[:-len(".tar.gz")]
-    env = " ".join(f"{k}={shlex.quote(str(t[c]))}" for k, c in (("PYTHON", "python"), ("KEY", "key")) if t.get(c))
+    env = " ".join(f"{k}={home_path(t[c])}" for k, c in (("PYTHON", "python"), ("KEY", "key")) if t.get(c))
     tmp = f"/tmp/{name}-{int(time.time())}"
     remote(t, f"mkdir -p {tmp} && tar -xzf - -C {tmp}", data=tgz.read_bytes())
     print(remote(t, f"PREFIX={t['prefix']} {env} {tmp}/{name}/install.sh; rc=$?; rm -rf {tmp}; exit $rc").strip()[-1200:])
