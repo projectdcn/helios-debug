@@ -346,7 +346,7 @@ def test_tray_that_answers_but_afmctl_fails_is_not_unreachable():
     tr = _tray(error="CommandError: [ct03] afmctl: error: cannot connect to agent (rc=1: afmctl show device --json)", slot=2)
     tr["gpus"] = []
     ln = _one(_switch(oper="up", fdb=False), tr)[0]
-    assert ln.kind == "tray_unreachable" and "answered, but its GPU ports could not be read" in ln.cause
+    assert ln.kind == "tray_not_read" and "answered, but its GPU ports could not be read" in ln.cause
 
 
 def _d(sw, tray, state, kind="", port="Ethernet1"):

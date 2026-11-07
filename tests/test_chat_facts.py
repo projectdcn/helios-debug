@@ -189,3 +189,16 @@ def test_version_says_whether_the_ui_is_busy(tmp_path):
     assert v["version"] and v["idle"] and v["busy"] == {"jobs": 0, "live": False, "terminals": 0}
     st.jobs["x"] = {"status": "running"}
     assert not server.version_info(st)["idle"]
+
+
+def test_gpus_of_unread_trays_are_unknown_not_fine():
+    scan = {"time_utc": "20261107-172431", "links": [_link("st1", "Ethernet1", "ct01", "0001:01:00.1", "ok")], "gpus": [],
+            "not_checked": [{"node": "ct02", "error": "rc=2: afmctl"}, {"node": "ct10", "error": "no route to host"}]}
+    out = rackfacts.gpu_lines(scan, SCAN, "which GPUs are not active")
+    assert "every GPU seen is fine" in out[0]
+    assert out[1] == "GPUs NOT read on 2 trays (the check could not read them - unknown, not fine): ct02, ct10"
+
+
+def test_down_links_of_a_switch_do_not_call_the_switch_unreachable():
+    assert not rackfacts._UNREACH.search("Yes, there are down links on st5: 240 of its 432 GPU links are down")
+    assert rackfacts._UNREACH.search("ct02 is not reachable (its reads failed)")

@@ -489,7 +489,7 @@ def write_html(path: Path, rack_name: str, when: str, res: dict, groups: list[di
                       f"<td>{esc(g['owner'])}</td></tr>" for g in groups)
     per_asic = {}
     for ln in links:
-        if ln.state != "ok" and ln.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing", *GPU_LEVEL):
+        if ln.state != "ok" and ln.kind not in ("tray_quarantined", "tray_unreachable", "tray_not_read", "tray_missing", *GPU_LEVEL):
             k = f"{ln.switch} {ln.asic}".strip()
             per_asic[k] = per_asic.get(k, 0) + 1
     asic_rows = "".join(f"<tr><td>{esc(k)}</td><td>{n}</td></tr>" for k, n in sorted(per_asic.items(), key=lambda x: -x[1]))
@@ -691,7 +691,7 @@ def scan_cmd(a) -> int:
         lines.append(f"{'':15}next: {g['links'][0].action}")
     per_asic = {}
     for ln in links:
-        if ln.state != "ok" and ln.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing", *GPU_LEVEL):
+        if ln.state != "ok" and ln.kind not in ("tray_quarantined", "tray_unreachable", "tray_not_read", "tray_missing", *GPU_LEVEL):
             k = f"{ln.switch} {ln.asic}".strip()
             per_asic[k] = per_asic.get(k, 0) + 1
     sus = linkdiag.suspects(links)

@@ -37,7 +37,7 @@ OPER_RX = re.compile(r"Port (Ethernet\d+) oper state set from (\w+) to (\w+)")
 ADMIN_RX = re.compile(r"portmgrd.*Configure (Ethernet\d+) admin status to (\w+)")
 IFOE_RX = re.compile(r"ifoe ([0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)")
 PHYSICAL = ("phys_never_up", "phys_went_down", "phys_no_optic", "one_sided", "sw_admin_down", "gpu_admin",
-            "tray_unreachable")
+            "tray_unreachable", "tray_not_read")
 
 
 def _now() -> str:

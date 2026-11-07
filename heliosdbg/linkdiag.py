@@ -27,6 +27,7 @@ GPU_LEVEL = ("gpu_not_active", "gpu_not_programmed")
 # root-cause kinds: grouping key and the one-line summary of a group
 KINDS = {
     "tray_unreachable": "compute tray not reachable",
+    "tray_not_read": "compute tray answered, but its GPU ports could not be read",
     "tray_quarantined": "compute tray quarantined in the inventory",
     "tray_missing": "no compute tray in the inventory for this slot",
     "fdb_empty": "switch forwarding table empty when read - GPU ports could not be identified",
@@ -490,7 +491,8 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
             return set_("down", "tray_unreachable", f"compute tray {ln.tray}: {acc['what']}", OPERATOR,
                         acc["next"][:1].upper() + acc["next"][1:] + ". The links themselves are not judged.")
         if acc is None or acc["kind"] == "cmd_timeout":  # it answered SSH; afmctl failed or hung (audit 4 Nov: these
-            return set_("down", "tray_unreachable",            # read 'not reachable over SSH')
+            return set_("down", "tray_not_read",               # read 'not reachable over SSH'; g02-g17 7 Nov: 7 trays
+                                                               # whose afmctl failed were counted as not reachable
                         f"compute tray {ln.tray} answered, but its GPU ports could not be read ("
                         + (acc["what"] if acc else str(t["error"])[:160]) + ")", OPERATOR,
                         f"Run 'sudo afmctl show device --json' on {ln.tray} and read the error (the AFM node agent, afmctl "
@@ -955,7 +957,7 @@ def group_causes(links: list) -> list[dict]:
             continue
         kind = _get(ln, "kind")
         q = getattr(ln, "_quarantined", None) if not isinstance(ln, dict) else None
-        tray = _get(ln, "tray") if kind == "tray_unreachable" else (q[0] if kind == "tray_quarantined" and q else "")
+        tray = _get(ln, "tray") if kind in ("tray_unreachable", "tray_not_read") else (q[0] if kind == "tray_quarantined" and q else "")
         key = (_get(ln, "state"), kind, _get(ln, "owner"), tray)
         groups.setdefault(key, []).append(ln)
     for (state, kind, owner, tray), v in groups.items():
@@ -1175,8 +1177,8 @@ def suspects(links: list[Link], min_links: int = 2) -> list[str]:
     - several on one GPU: that GPU / tray side (or, all on one ASIC, either end)
     - the same GPU position (BDF) on several trays: something shared by that position (cable bundle / cartridge)
     - several on one switch ASIC: that ASIC, the more so on adjacent ports (one connector / cage)."""
-    bad = [x for x in links if x.state != "ok" and x.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing", *GPU_LEVEL)]
-    judged = [x for x in links if x.kind not in ("tray_quarantined", "tray_unreachable", "tray_missing", *GPU_LEVEL)]
+    bad = [x for x in links if x.state != "ok" and x.kind not in ("tray_quarantined", "tray_unreachable", "tray_not_read", "tray_missing", *GPU_LEVEL)]
+    judged = [x for x in links if x.kind not in ("tray_quarantined", "tray_unreachable", "tray_not_read", "tray_missing", *GPU_LEVEL)]
     kinds = {x.kind for x in bad}
     if len(bad) >= 8 and len(kinds) == 1 and len(bad) >= 0.9 * len(judged):
         return [f"rack-wide: {len(bad)} of {len(judged)} links have the same cause ({KINDS.get(next(iter(kinds)), next(iter(kinds)))})"

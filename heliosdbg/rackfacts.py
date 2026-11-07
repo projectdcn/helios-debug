@@ -124,8 +124,16 @@ def gpu_lines(scan: dict, scan_dir: str, q: str) -> list[str]:
     seen = {g for g in seen if not want or str(g[0]).lower() in want}
     bad = [g for g in scan.get("gpus") or [] if not want or str(g.get("tray")).lower() in want]
     trays = Counter(g.get("tray") for g in bad)
+    # trays the check could not read: their GPUs are unknown, not fine (g02-g17 7 Nov: '0 with a problem - every GPU is
+    # fine' with 10 of 18 trays unread, and the model filled the gap with a list of its own)
+    sws = {x.get("switch") for x in scan.get("links") or []}
+    unread = sorted({str(x.get("node")) for x in scan.get("not_checked") or [] if x.get("node") not in sws
+                     and (not want or str(x.get("node")).lower() in want)})
     out = [f"Link check {scan.get('time_utc')} UTC ({scan_dir}): {len(seen)} GPUs seen on "
-           f"{len({t for t, _ in seen})} trays; {len(bad)} with a problem" + (" - every GPU is fine" if not bad else "")]
+           f"{len({t for t, _ in seen})} trays; {len(bad)} with a problem" + (" - every GPU seen is fine" if not bad else "")]
+    if unread:
+        out.append(f"GPUs NOT read on {len(unread)} trays (the check could not read them - unknown, not fine): "
+                   + ", ".join(unread))
     for (s, k), n in Counter((g.get("state"), g.get("kind")) for g in bad).most_common():
         ph = Counter(g.get("phase") for g in bad if (g.get("state"), g.get("kind")) == (s, k))
         out.append(f"{n} {s} ({k}" + (f", config_phase {', '.join(p for p in ph if p)}" if any(ph) else "") + ")")
@@ -211,7 +219,8 @@ def facts(ks: list[str], q: str, switches: list[str], computes: list[str], quara
 
 
 _NUM = re.compile(r"(?<![\w.:-])(\d+)(?![\w.:-])")
-_UNREACH = re.compile(r"\b(st\d+|ct\d{2})\b[^.;\n]{0,40}?\b(?:is|are|was|were)\s+(?:not\s+reachable|unreachable|not\s+reached|"
+# the gap may not name links: "st5: 240 of its 432 GPU links are down" is about links, not st5 (replay 7 Nov)
+_UNREACH = re.compile(r"\b(st\d+|ct\d{2})\b(?:(?!links?\b)[^.;\n]){0,40}?\b(?:is|are|was|were)\s+(?:not\s+reachable|unreachable|not\s+reached|"
                       r"down|offline|off the network)", re.I)
 ECHO = ("the question asks for", "answer from these lines", "from the newest checks, exactly")
 
