@@ -1381,13 +1381,15 @@ function resolutionForm(el,ctx,extra){
   });
 }
 /* 👍 / 👎 on one AI answer; 👎 asks for the right answer - the prompt, the answer and the correction become training data */
+var FB_REASONS=[["wrong_node","wrong node / port"],["wrong_count","wrong number"],["stale","out of date"],["invented","invented something"],
+  ["generic","generic how-to"],["unsafe","changes the rack"],["not_asked","did not answer"]];      /* heliosdbg/feedback.py REASONS */
 function fbWire(el,a,ctx,hint){
   if(!el||!a||!a.answer_id){if(el)el.remove();return}
   el.innerHTML='<div class="row" style="margin:4px 0 0;align-items:center;gap:6px"><span class="mut" style="font-size:12px">Was this right?</span>'+
     '<button class="sec fb-up" title="right - the model learns to answer like this">👍</button><button class="sec fb-down" title="wrong - say what is right">👎</button><span class="fb-msg mut" style="font-size:12px"></span></div><div class="fb-form"></div>';
   var msg=el.querySelector(".fb-msg"),form=el.querySelector(".fb-form");
-  function send(rating,correction,comment){
-    return api("/api/ai/feedback",{answer_id:a.answer_id,rating:rating,correction:correction||"",comment:comment||"",by:lsGet("hd-res-by"),
+  function send(rating,correction,comment,reasons){
+    return api("/api/ai/feedback",{answer_id:a.answer_id,rating:rating,correction:correction||"",comment:comment||"",reasons:reasons||[],by:lsGet("hd-res-by"),
       rack:(ctx.path||"").split("/")[1]||ctx.rack||"",path:ctx.path||"",link:ctx.link||""}).then(function(r){
       el.querySelectorAll("button").forEach(function(b){b.disabled=true});form.innerHTML="";
       msg.textContent=(rating==="up"?"Thanks - saved as a good answer.":"Thanks - saved"+(correction?" with your correction.":".")) +" ("+r.ratings+" ratings on this machine)";
@@ -1395,10 +1397,16 @@ function fbWire(el,a,ctx,hint){
   }
   el.querySelector(".fb-up").addEventListener("click",function(){send("up")});
   el.querySelector(".fb-down").addEventListener("click",function(){
-    form.innerHTML='<textarea class="fb-c" maxlength="6000" placeholder="'+esc(hint||"What is the right answer? Write it as the AI should have (root cause, why, what to check, who fixes it). This is what it learns from.")+'" style="width:100%;height:90px;margin-top:4px"></textarea>'+
-      '<div class="row" style="margin:4px 0 0"><input class="fb-n" maxlength="1000" placeholder="what was wrong (optional): e.g. said failed, it was PARTIAL" style="flex:1;min-width:160px"><button class="go fb-s">Save</button></div>';
-    form.querySelector(".fb-s").addEventListener("click",function(){send("down",form.querySelector(".fb-c").value,form.querySelector(".fb-n").value)});
-    form.querySelector(".fb-c").focus();
+    /* one click says what was wrong; the right answer (what the model learns from) stays optional */
+    form.innerHTML='<div class="row fb-r" style="margin:4px 0 0;gap:4px;flex-wrap:wrap">'+FB_REASONS.map(function(r){
+        return '<button class="sec fb-rs" data-r="'+r[0]+'" aria-pressed="false" style="font-size:12px;padding:2px 8px">'+esc(r[1])+"</button>"}).join("")+"</div>"+
+      '<textarea class="fb-c" maxlength="6000" placeholder="'+esc(hint||"Optional - the right answer, written as the AI should have (root cause, why, what to check, who fixes it). This is what it learns from.")+'" style="width:100%;height:70px;margin-top:4px"></textarea>'+
+      '<div class="row" style="margin:4px 0 0"><input class="fb-n" maxlength="1000" placeholder="anything else (optional): e.g. said failed, it was PARTIAL" style="flex:1;min-width:160px"><button class="go fb-s">Save</button></div>';
+    form.querySelectorAll(".fb-rs").forEach(function(b){b.addEventListener("click",function(){var on=b.getAttribute("aria-pressed")!=="true";
+      b.setAttribute("aria-pressed",on?"true":"false");b.className=on?"go fb-rs":"sec fb-rs"})});
+    form.querySelector(".fb-s").addEventListener("click",function(){
+      var rs=[].map.call(form.querySelectorAll('.fb-rs[aria-pressed="true"]'),function(b){return b.dataset.r});
+      send("down",form.querySelector(".fb-c").value,form.querySelector(".fb-n").value,rs)});
   });
 }
 /* a ticket for one audience: facts from the check, summary / request drafted by the AI */

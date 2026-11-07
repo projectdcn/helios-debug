@@ -15,6 +15,10 @@ import time
 from pathlib import Path
 
 FILE = "feedback.jsonl"
+# what was wrong, in one click (a correction stays optional): the kinds of wrong answer seen so far
+REASONS = {"wrong_node": "named the wrong node / port", "wrong_count": "wrong number", "stale": "out of date",
+           "invented": "invented something the checks do not show", "generic": "a generic how-to, not about this rack",
+           "unsafe": "suggests a step that changes the rack", "not_asked": "did not answer the question"}
 
 
 class FeedbackError(ValueError):
@@ -34,6 +38,9 @@ def record(results_dir: Path, req: dict, recent: dict) -> dict:
     if not src:
         raise FeedbackError("that answer is no longer known to this UI (it was restarted) - ask again, then rate it")
     correction = str(req.get("correction") or "").strip()[:6000]
+    reasons = [r for r in req.get("reasons") or [] if r in REASONS] if isinstance(req.get("reasons"), list) else []
+    if rating == "down" and not (correction or reasons or str(req.get("comment") or "").strip()):
+        raise FeedbackError("say what was wrong: pick a reason or write the right answer")
     guided = any("guiding an investigation step by step" in str(m.get("content") or "") for m in src.get("messages") or []
                  if m.get("role") == "system")
     if guided and correction and not correction.lstrip().startswith("{"):   # a step-by-step conclusion is answered in JSON
@@ -47,6 +54,7 @@ def record(results_dir: Path, req: dict, recent: dict) -> dict:
         "rating": rating,
         "correction": correction,
         "comment": _clean(req.get("comment"), 1000),
+        "reasons": reasons,
         "by": _clean(req.get("by"), 80),
         "rack": _clean(req.get("rack"), 80),
         "path": _clean(req.get("path"), 200),
@@ -79,4 +87,5 @@ def load(results_dir: Path) -> list[dict]:
 def stats(results_dir: Path) -> dict:
     rs = load(results_dir)
     return {"ratings": len(rs), "up": sum(r["rating"] == "up" for r in rs), "down": sum(r["rating"] == "down" for r in rs),
-            "corrections": sum(bool(r.get("correction")) for r in rs)}
+            "corrections": sum(bool(r.get("correction")) for r in rs),
+            "reasons": {k: n for k in REASONS if (n := sum(k in (r.get("reasons") or []) for r in rs))}}
