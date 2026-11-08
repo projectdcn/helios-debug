@@ -58,3 +58,13 @@ def test_only_read_only_commands_are_quoted_in_the_next_steps():
         nxt = gpudriver.diagnose(out(name))["next"]
         for c in re.findall(r"'([^']+)'", nxt):
             assert check(c, "compute")[0] == c, c
+
+
+def test_the_right_kernel_but_amdgpu_not_loaded_says_how_the_rack_loads_it():
+    """ct02, 8 Nov: booted back into -38, GPUs still unbound - amdgpu is blacklisted at boot and loaded by hand."""
+    d = gpudriver.diagnose(out("running-38-not-loaded"))
+    assert d["severity"] == "down" and d["what"] == "the amdgpu driver is not loaded"
+    assert "modprobe.blacklist=amdgpu" in d["cause"] and "sudo modprobe amdgpu gpu_recovery=0" in d["next"]
+    assert "CHANGES THE TRAY" in d["next"]
+    for q in __import__("re").findall(r"'([^']+)'", d["next"]):     # quoted = read-only steps
+        check(q, "compute")

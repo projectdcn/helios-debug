@@ -4,6 +4,8 @@ when a tray answers SSH but afmctl fails, by the link check - so the map says wh
 g02-g17 7 Nov: an unattended upgrade (4 Nov) installed kernel 7.0.0-42 on 7 trays without building the DKMS modules
 (amdgpu, ifoe-drv, ionic) for it; each tray that rebooted came up with no GPU driver - GPUs on PCI, none bound,
 amd-smi 0 GPUs, afmctl 'No such file or directory' for every GPU. A reboot boots the same kernel again.
+8 Nov: booted back into -38 (ct02), the GPUs were still unbound - this rack blacklists amdgpu at boot
+(modprobe.blacklist=amdgpu) and loads it by hand after each boot: sudo modprobe amdgpu gpu_recovery=0.
 """
 from __future__ import annotations
 
@@ -15,7 +17,9 @@ COMMAND = ('echo "running $(uname -r)"; '
            'echo "bound $(ls -d /sys/bus/pci/drivers/amdgpu/0* 2>/dev/null | wc -l)"; '
            'echo "pci $(lspci -d 1002: 2>/dev/null | grep -ciE "display|processing")"; '
            'for k in /boot/vmlinuz-*; do echo "kernel ${k#/boot/vmlinuz-}"; done; '
-           'dkms status 2>/dev/null | sed "s/^/dkms /"')
+           'dkms status 2>/dev/null | sed "s/^/dkms /"; '
+           'echo "loaded $(test -d /sys/module/amdgpu && echo yes || echo no)"; '
+           'echo "blacklist $(grep -c modprobe.blacklist=amdgpu /proc/cmdline)"')
 WATCH = ("amdgpu", "ifoe-drv", "ionic")      # the GPU driver, the GPU fabric NIC driver, the RDMA NIC driver
 
 
@@ -27,7 +31,7 @@ def parse(text: str | None) -> dict | None:
     """{running, bound, pci, kernels, built: {module: {kernel, ...}}} or None when the output is not this command's."""
     if not text or "running " not in text:
         return None
-    d: dict = {"running": "", "bound": None, "pci": None, "kernels": [], "built": {}}
+    d: dict = {"running": "", "bound": None, "pci": None, "kernels": [], "built": {}, "loaded": None, "blacklisted": None}
     for ln in text.splitlines():
         ln = ln.strip()
         if ln.startswith("running "):
@@ -35,6 +39,10 @@ def parse(text: str | None) -> dict | None:
         elif ln.startswith(("bound ", "pci ")):
             k, v = ln.split(None, 1)
             d[k] = int(v) if v.strip().isdigit() else None
+        elif ln.startswith("loaded "):                  # older outputs have no such line: None, not judged
+            d["loaded"] = ln.split(None, 1)[1].strip() == "yes" if " " in ln else None
+        elif ln.startswith("blacklist "):
+            d["blacklisted"] = ln.split(None, 1)[1].strip() not in ("", "0") if " " in ln else None
         elif ln.startswith("kernel ") and "*" not in ln:
             d["kernels"].append(ln.split(None, 1)[1].strip())
         elif ln.startswith("dkms "):
@@ -74,6 +82,16 @@ def diagnose(text: str | None, expect: int = 4) -> dict | None:
                              "packages so an unattended upgrade cannot do it again") if good else
                             f"read 'dkms status'; build the AMD DKMS modules for {run} and reboot - CHANGES THE TRAY",
                     "evidence": ev}
+        if d["loaded"] is False:
+            return {"severity": "down",
+                    "what": "the amdgpu driver is not loaded",
+                    "cause": (f"the driver is built for the running kernel {run}, but the module is not loaded - "
+                              + ("this rack blacklists it at boot (modprobe.blacklist=amdgpu) and loads it by hand "
+                                 "after each boot" if d["blacklisted"] else "nothing loaded it")
+                              + f"; its {d['pci']} GPUs are on PCI with no driver"),
+                    "next": "check 'cat /proc/cmdline' (the blacklist); load it the rack's way: sudo modprobe amdgpu "
+                            "gpu_recovery=0 - CHANGES THE TRAY",
+                    "evidence": ev + [f"amdgpu module loaded: no; blacklisted at boot: {'yes' if d['blacklisted'] else 'no'}"]}
         return {"severity": "down",
                 "what": f"the amdgpu driver holds {d['bound']} of {d['pci']} GPUs on PCI",
                 "cause": f"the driver is built for the running kernel {run}, but did not take every GPU - it failed to "
