@@ -101,6 +101,8 @@ GUIDE_SYSTEM_ADD = (
     "ibv_devinfo, systemctl status <unit>; health: show system-health detail, crm show resources all, watchdogutil status, "
     "sudo docker exec <container> supervisorctl status, sudo docker logs --tail 100 <container>, show reboot-cause history, "
     "sudo journalctl -k -p err -n 200 --no-pager, sudo amd-smi metric --ecc --json, sudo amd-smi bad-pages -g N; "
+    "GPUs that afmctl / amd-smi cannot see: lspci -k -d 1002: (which driver holds them), uname -r (the running kernel), "
+    "dkms status (which kernels the AMD driver is built for), ls /boot, grep linux-image /var/log/dpkg.log*; "
     "the switch ASIC's own view of a link that is down, flaps or has errors: bcm-view -n asicN EthernetX; "
     "no IFCP session on a switch's links: sudo ip -n asicN -s -o link show (does the switch CPU receive from its ports), "
     "systemctl status afm-agent, sudo tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log, "
