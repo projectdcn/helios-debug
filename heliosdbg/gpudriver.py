@@ -78,7 +78,8 @@ def diagnose(text: str | None, expect: int = 4) -> dict | None:
                     # read-only commands in quotes (an answer lists those as next steps), the changes unquoted
                     "next": (f"compare 'uname -r' with 'dkms status'; then boot the kernel the driver was built for "
                              f"({good[-1]}: set it as the GRUB default, reboot) or build the DKMS modules for {run} "
-                             "(dkms autoinstall, needs its headers) and reboot - CHANGES THE TRAY; and hold the kernel "
+                             "(dkms autoinstall, needs its headers) and reboot, then load amdgpu as after any boot here "
+                             "(sudo modprobe amdgpu gpu_recovery=0) - CHANGES THE TRAY; and hold the kernel "
                              "packages so an unattended upgrade cannot do it again") if good else
                             f"read 'dkms status'; build the AMD DKMS modules for {run} and reboot - CHANGES THE TRAY",
                     "evidence": ev}
