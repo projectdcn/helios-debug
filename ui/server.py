@@ -153,11 +153,32 @@ def _int(d: dict, key: str, lo: int, hi: int, default: int) -> int:
     return v
 
 
+DISK_LOW_MB = 300                   # the UI says so (a shared /home: the g02-g17 jump host filled up four times, Oct-Nov)
+DISK_STOP_MB = 50                   # ... and starts no check: a check on a full disk dies half-written (18 Oct: at mkdir)
+
+
+def disk_info(state: State) -> dict:
+    """The free space where the checks write their results."""
+    p = state.results_dir
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        u = shutil.disk_usage(p)
+    except OSError:
+        return {}
+    free = u.free // 1_000_000
+    return {"free_mb": free, "total_mb": u.total // 1_000_000, "low": free < DISK_LOW_MB, "path": str(p)}
+
+
 def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
     """(argv after the tool, output folder, rack) for a run request; every value checked."""
     tool = req.get("tool")
     if tool not in TOOLS:
         raise BadRequest(f"tool must be one of {', '.join(TOOLS)}")
+    d = disk_info(state)
+    if d and d["free_mb"] < DISK_STOP_MB:
+        raise BadRequest(f"only {d['free_mb']} MB free on this machine ({d['path']}) - a check would stop half-written; "
+                         "free some space first")
     f, inv = state.inventory(req.get("inventory", ""))
     sws, cts = [h.name for h in inv.switches], [h.name for h in inv.computes]
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
@@ -890,7 +911,8 @@ def version_info(state: State) -> dict:
         terms = sum(1 for t in state.terms.list() if not t.get("closed"))
     except Exception:  # noqa: BLE001
         terms = 0
-    return code_version() | {"busy": {"jobs": jobs, "live": live, "terminals": terms}, "idle": not (jobs or live or terms)}
+    return code_version() | {"busy": {"jobs": jobs, "live": live, "terminals": terms}, "idle": not (jobs or live or terms),
+                             "disk": disk_info(state)}
 
 
 CHAT_LOG = "chat.jsonl"

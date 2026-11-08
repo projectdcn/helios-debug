@@ -95,6 +95,13 @@ def preflight(t: dict, need_mb: int) -> list[str]:
     print(f"   free space: {free} MB (needs {want} MB)")
     if free < want:
         stop.append(f"only {free} MB free where it installs - free some first (needs {want} MB)")
+        # what uses it (the jump host's shared /home, 7 Nov: a VS Code server per version, ~650 MB each) - listed, never deleted
+        big = remote(t, f"cd {parent} && du -xsm * .[!.]* 2>/dev/null | sort -n | tail -5; "
+                        "ls -d ~/.vscode-server/cli/servers/Stable-* 2>/dev/null | while read d; do "
+                        "pgrep -f \"$(basename $d)\" >/dev/null && u=running || u='not running'; "
+                        "echo \"vscode $(du -sm $d | cut -f1) $(basename $d) ($u)\"; done", check=False).strip()
+        if big:
+            print("   biggest there (MB):\n" + "\n".join("     " + x for x in big.splitlines()))
     if t["kind"] == "ui":
         port = int(t.get("ui_port", 8780))
         v = remote(t, f"curl -s -m 5 http://127.0.0.1:{port}/api/version || true")

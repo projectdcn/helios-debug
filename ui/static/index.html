@@ -134,6 +134,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
     <div class="row" style="margin:0"><button class="sec" id="glossary-open">Glossary</button><button class="sec" id="guide-open">Debug guide</button></div>
   </div>
 </header>
+<div id="disk-warn" class="err hide" role="alert" style="margin:8px 16px"></div>
 <main>
   <div id="inverr" class="card err hide"></div>
   <nav role="tablist">
@@ -1494,8 +1495,12 @@ function dataAge(g){
     (g.link_check_h!=null&&g.health_h!=null?" and ":"")+(g.health_h!=null?"the health check of "+esc(g.health_utc)+" UTC ("+ageTxt(g.health_h)+" old)":"")+
     (g.stale?' - may be out of date. <button class="sec" data-go-health="1">Run Health now</button>':"")+"</div>";
 }
-fetch("/api/version").then(function(r){return r.json()}).then(function(v){$("hd-ver").textContent=v.version||"";
-  $("hd-ver").title="code "+(v.commit||"?")+(v.built?", built "+v.built:"")}).catch(function(){});
+function diskWarn(d){var b=$("disk-warn");if(!d||!d.low){b.className="err hide";return}
+  b.className="err";b.textContent="Only "+d.free_mb+" MB free on the machine this UI runs on ("+d.path+")"+
+    (d.free_mb<50?" - checks will not start until some space is freed.":" - checks stop at 50 MB, and a full disk can leave files half-written. Free some space (on a shared jump host, ask whoever owns the biggest folders).")}
+function verPoll(){fetch("/api/version").then(function(r){return r.json()}).then(function(v){$("hd-ver").textContent=v.version||"";
+  $("hd-ver").title="code "+(v.commit||"?")+(v.built?", built "+v.built:"");diskWarn(v.disk)}).catch(function(){})}
+verPoll();setInterval(verPoll,300000);
 document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-go-health]");if(!b)return;
   var t=document.querySelector('[data-t="health"]');if(t){t.click();var r=document.querySelector('[data-run="health"]');if(r)r.scrollIntoView({block:"center",behavior:"smooth"})}});
 function chatSend(q){
