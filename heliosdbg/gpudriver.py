@@ -67,11 +67,12 @@ def diagnose(text: str | None, expect: int = 4) -> dict | None:
                               + (f" (also not built for it: {', '.join(m for m in missing_now if m != 'amdgpu')})"
                                  if len(missing_now) > 1 else "")
                               + "; a reboot boots the same kernel again"),
-                    "next": (f"boot the kernel the driver was built for ({good[-1]}: set it as the GRUB default, reboot) "
-                             f"or build the DKMS modules for {run} ('sudo dkms autoinstall -k {run}', needs its headers), "
-                             "then reboot - CHANGES THE TRAY; and hold the kernel packages so an unattended upgrade "
-                             "cannot do it again") if good else
-                            f"build the AMD DKMS modules for {run} and reboot - CHANGES THE TRAY",
+                    # read-only commands in quotes (an answer lists those as next steps), the changes unquoted
+                    "next": (f"compare 'uname -r' with 'dkms status'; then boot the kernel the driver was built for "
+                             f"({good[-1]}: set it as the GRUB default, reboot) or build the DKMS modules for {run} "
+                             "(dkms autoinstall, needs its headers) and reboot - CHANGES THE TRAY; and hold the kernel "
+                             "packages so an unattended upgrade cannot do it again") if good else
+                            f"read 'dkms status'; build the AMD DKMS modules for {run} and reboot - CHANGES THE TRAY",
                     "evidence": ev}
         return {"severity": "down",
                 "what": f"the amdgpu driver holds {d['bound']} of {d['pci']} GPUs on PCI",
@@ -86,7 +87,7 @@ def diagnose(text: str | None, expect: int = 4) -> dict | None:
                 "what": f"kernel {newest} is installed but has no AMD GPU driver",
                 "cause": f"the tray runs {run} (driver built), but the newer {newest} - likely the next boot - has no "
                          "amdgpu DKMS build: after a reboot the tray would come up without GPUs",
-                "next": f"hold the kernel at {run} (GRUB default, 'apt-mark hold' the kernel packages) or build the "
-                        f"DKMS modules for {newest} before the next reboot - CHANGES THE TRAY",
+                "next": f"read 'ls /boot' and 'dkms status'; before the next reboot keep {run} as the GRUB default and hold "
+                        f"the kernel packages (apt-mark hold), or build the DKMS modules for {newest} - CHANGES THE TRAY",
                 "evidence": ev}
     return None

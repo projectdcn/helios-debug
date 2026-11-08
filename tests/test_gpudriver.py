@@ -44,9 +44,17 @@ def test_the_link_check_names_the_driver():
     tr["gpus"], tr["driver"] = [], gpudriver.diagnose(out("booted-42-no-driver"))
     ln = _one(_switch(oper="up", fdb=False), tr)[0]
     assert ln.kind == "tray_not_read" and "has no GPU driver" in ln.cause and "7.0.0-42-generic" in ln.cause
-    assert ln.action.startswith("Boot the kernel the driver was built for")
+    assert ln.action.startswith("Compare 'uname -r' with 'dkms status'") and "7.0.0-38-generic" in ln.action
 
 
 def test_debug_a_node_may_read_kernel_and_driver_state():
     for c in ("uname -r", "dkms status", "lspci -k -d 1002:", "ls /boot", "grep linux-image /var/log/dpkg.log*"):
         assert check(c, "compute")[0] == c
+
+
+def test_only_read_only_commands_are_quoted_in_the_next_steps():
+    import re
+    for name in ("booted-42-no-driver", "running-38-next-42"):
+        nxt = gpudriver.diagnose(out(name))["next"]
+        for c in re.findall(r"'([^']+)'", nxt):
+            assert check(c, "compute")[0] == c, c
