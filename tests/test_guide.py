@@ -554,3 +554,25 @@ def test_an_mtu_called_low_that_is_not_is_caught_and_asked_again():
     assert out["done"] and out["conclusion"] == good and out["contradiction"] is None
     assert out["retried"] and out["contradiction_before"].startswith("MTU 9100") and "_text" not in out
     assert "not below the fabric's 9100" in ai_.seen[1][-1]["content"]
+
+
+def test_a_step_already_run_is_asked_again_once_with_which_step_it_was():
+    """v38 (8 Nov): candidates proposed the same afmctl show port again and Debug a node stopped on 'already run'."""
+    s1 = {"node": "st5", "command": "show platform fan", "rc": 0, "output": "Fan OK"}
+
+    class AI:
+        def __init__(self, texts):
+            self.texts, self.seen = list(texts), []
+
+        def build_messages(self, ev, subject):
+            return [{"role": "system", "content": ""}, {"role": "user", "content": "x\n\nQuestion: q"}]
+
+        def chat(self, msgs, env=None, max_tokens=500):
+            self.seen.append(msgs)
+            return self.texts.pop(0), "stand-in"
+    ai_ = AI(['{"done": false, "node": "st5", "command": "show platform fan", "why": "w"}',
+              '{"done": false, "node": "st5", "command": "show platform psustatus", "why": "w"}'])
+    out = guide.propose(ai_, None, "s", [s1], {"st5": "switch"})
+    assert out["allowed"] and out["command"] == "show platform psustatus" and out.get("retried")
+    told = ai_.seen[1][-1]["content"]
+    assert told.startswith("Refused: already run") and "step S1" in told and "DIFFERENT" in told

@@ -451,8 +451,13 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
                         "step, or {\"done\": true, \"conclusion\": ..., \"next\": ...}."}]
         out = _propose_once(ai, msgs, subject, steps, nodes, env, stay) | {"retried": True}
     for _ in range(retries):
-        if out.get("done") or out.get("allowed") or not out.get("refused") or out["refused"].startswith("already run"):
+        if out.get("done") or out.get("allowed") or not out.get("refused"):
             break
+        if out["refused"].startswith("already run"):   # once more, told which step it was (v38, 8 Nov: candidates asked
+            msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},   # for the same afmctl / status again)
+                           {"role": "user", "content": again_text(out, steps)}]
+            out = _propose_once(ai, msgs, subject, steps, nodes, env, stay) | {"retried": True}
+            continue
         role = nodes.get(out.get("node"), "switch")
         msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
                        {"role": "user", "content": f"Refused: {out['refused']}. Propose ONE command that exists on that node, "
@@ -469,6 +474,14 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
         out = again | {"retried": True, "contradiction_before": out["contradiction"]}
     out.pop("_text", None)
     return out
+
+
+def again_text(out: dict, steps: list[dict]) -> str:
+    """What the model is told when it proposes a step already run: which one, and to move on (helios-slm trains this turn)."""
+    i = next((n for n, s in enumerate(steps, 1) if s.get("node") == out.get("node") and s.get("command") == out.get("command")), 0)
+    return (f"Refused: already run - `{out.get('command')}` on {out.get('node')} is step S{i}, its output is above. Propose "
+            "a DIFFERENT step (another command, or the other end of the link / another node), or conclude from what the "
+            "outputs show. Answer with the JSON object only.")
 
 
 def _seen(msgs: list[dict]) -> str:
