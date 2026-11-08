@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 
-from . import reach
+from . import gpudriver, reach
 from .afmctl import Afmctl, parse_port_description
 from .parsers import parse_table
 from .rack import fan_out
@@ -249,6 +249,13 @@ def collect_tray(tray) -> dict:
                                 "config_phase": d.config_phase, "ports": sorted(ports, key=lambda x: x["port"])})
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        acc = reach.classify(e)
+        if acc is None or acc["kind"] == "cmd_timeout":     # it answered SSH: is there a GPU driver for its kernel?
+            try:
+                r = tray.t.run(gpudriver.COMMAND, timeout=30)
+                out["driver"] = gpudriver.diagnose(r.stdout, tray.gpus)
+            except Exception:  # noqa: BLE001 - the reason is a nicety; the afmctl error stays the record
+                pass
     return out
 
 
@@ -490,6 +497,10 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
         if acc and acc["kind"] in ("host_key", "sudo", "dns", "jump_session"):   # an access problem, not the tray
             return set_("down", "tray_unreachable", f"compute tray {ln.tray}: {acc['what']}", OPERATOR,
                         acc["next"][:1].upper() + acc["next"][1:] + ". The links themselves are not judged.")
+        drv = t.get("driver") if (acc is None or acc["kind"] == "cmd_timeout") else None
+        if drv and drv.get("severity") == "down":        # g02-g17 7 Nov: no AMD driver for the kernel it booted
+            return set_("down", "tray_not_read", f"compute tray {ln.tray} answered, but has no GPU driver: {drv['cause']}",
+                        OPERATOR, drv["next"][:1].upper() + drv["next"][1:] + ". The links themselves are not judged.")
         if acc is None or acc["kind"] == "cmd_timeout":  # it answered SSH; afmctl failed or hung (audit 4 Nov: these
             return set_("down", "tray_not_read",               # read 'not reachable over SSH'; g02-g17 7 Nov: 7 trays
                                                                # whose afmctl failed were counted as not reachable

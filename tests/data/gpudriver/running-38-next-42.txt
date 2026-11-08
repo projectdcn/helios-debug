@@ -1,0 +1,9 @@
+running 7.0.0-38-generic
+bound 4
+pci 4
+kernel 7.0.0-38-generic
+kernel 7.0.0-42-generic
+dkms amdgpu/7.1.0-2410483.26.04, 7.0.0-38-generic, x86_64: installed (Original modules exist)
+dkms ifoe-drv/0.2.10.1000, 7.0.0-38-generic, x86_64: installed
+dkms ionic/26.09.30.001~ubu26.04, 7.0.0-38-generic, x86_64: installed
+dkms pds/26.09.18.001~ubu26.04, 7.0.0-38-generic, x86_64: installed

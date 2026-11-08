@@ -241,7 +241,8 @@ _ON_CMD = re.compile(r"\bon\s+(?:the\s+)?([A-Za-z0-9][\w.-]*)(?:\s*\(([\w.-]+)\)
 
 
 _CMD_START = re.compile(r"^(?:sudo\s+)?(?:show|bcm-view|bcmcmd|afmctl|amd-smi|sonic-db-cli|docker|dmesg|journalctl|systemctl|"
-                        r"rdma|nicctl|crm|watchdogutil|ip\s|lspci|ibv_devinfo|ipmitool\s+sel|tail\s+-n|ls\s+-lt)\b")
+                        r"rdma|nicctl|crm|watchdogutil|ip\s|lspci|ibv_devinfo|ipmitool\s+sel|tail\s+-n|ls\s+-lt|uname|dkms|"
+                        r"cat\s+/proc/cmdline|ls\s+/boot)\b")
 _BDF = r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d"
 
 
@@ -424,7 +425,7 @@ EXAMPLES = {   # exact forms a refused proposal is shown again (models add flags
                "systemctl status afm-agent", "tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log", "ls -lt /opt/amd/afm/agent/logs/",
                "ip -n asic0 -s -o link show"],
     "compute": ["sudo afmctl show device --json", "sudo amd-smi list --json", "sudo amd-smi metric --ecc --json",
-                "sudo journalctl -k -p err -n 200 --no-pager", "dmesg | grep -i amdgpu", "lspci -d 1002:", "rdma link show",
+                "sudo journalctl -k -p err -n 200 --no-pager", "dmesg | grep -i amdgpu", "lspci -d 1002:", "lspci -k -d 1002:", "uname -r", "dkms status", "rdma link show",
                 "systemctl --failed --no-pager", "df -h", "free -m"],
 }
 

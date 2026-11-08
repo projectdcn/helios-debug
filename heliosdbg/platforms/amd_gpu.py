@@ -7,6 +7,7 @@ import re
 
 from ..checks import CRITICAL, LIMITS, WARNING, Platform, _cmd, _num, _out, finding
 from ..checks import _NS, _WORD  # noqa: F401 - the allow-list patterns
+from .. import gpudriver
 
 READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platform (heliosdbg/guide.py)
     (r"lspci(?:\s+-[nvkD]+)?(?:\s+-s\s+[0-9a-f:.]+)?", False),
@@ -20,6 +21,7 @@ COMMANDS = [
     ('pcie', 'amd-smi metric --pcie --json', True),
     ('metric', 'amd-smi metric --usage --power --temperature --mem-usage --json', True),
     ('processes', 'amd-smi process --json', True),
+    ('driver', gpudriver.COMMAND, False),          # the kernel the tray runs, and whether the AMD driver is built for it
 ]
 
 
@@ -53,7 +55,13 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
     g_out = outs.get("gpus") or {}
     said = (g_out.get("out") or "") + "\n" + (g_out.get("err") or "")   # amd-smi puts its error on stderr (ct06 5 Nov)
     smi_err = g_out.get("rc") not in (0, None) and not gpus and re.search(r"Exception|not supported|error|Unable to detect", said, re.I)
-    if smi_err:
+    drv = gpudriver.diagnose(_out(outs, "driver"), expect_gpus)
+    if drv:                               # the reason before the symptom: with no driver, 'amd-smi sees 0 GPUs' says nothing more
+        F.append(finding(node, "compute", "driver", "gpu", CRITICAL if drv["severity"] == "down" else WARNING,
+                         drv["what"], drv["cause"], drv["next"], drv["evidence"], _cmd(outs, "driver")))
+    if drv and drv["severity"] == "down":
+        pass
+    elif smi_err:
         bad = [ln for ln in said.splitlines() if re.search(r"Exception|not supported|error|Unable", ln, re.I)]
         msg = re.sub(r"\s+", " ", " ".join(bad) or said).strip()[:240]
         F.append(finding(node, "compute", "gpus", "gpu", CRITICAL, "amd-smi cannot read the GPUs on this tray",

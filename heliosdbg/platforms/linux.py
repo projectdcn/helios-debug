@@ -18,6 +18,13 @@ READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platf
          r"chassis\s+status|mc\s+info|lan\s+print)", True),
     (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+--no-pager)?|systemctl\s+--failed(?:\s+--no-pager)?", False),
     (r"lsmod|sensors|nvme\s+list|ethtool(?:\s+-[Sim])?\s+[A-Za-z0-9_.-]+", False),
+    # the kernel and its drivers (g02-g17 7 Nov: 7 trays booted a kernel with no AMD DKMS build - none of these could be
+    # asked for): which kernel runs and which are installed, what DKMS built for which, which driver holds the GPUs,
+    # when a kernel was installed
+    (r"uname(?:\s+-[asrv]+)?|cat\s+/proc/(?:cmdline|version)|ls(?:\s+-l)?\s+/boot/?|dkms\s+status|"
+     r"cat\s+/sys/module/[a-z_]+/version|ls\s+/sys/bus/pci/drivers/amdgpu/?|"
+     r"lspci(?:\s+-[nvkD]+)*\s+-d\s+1002:(?:\s+-[nvkD]+)*|"
+     r"grep\s+(?:-h\s+)?(?:'|\")?(?:linux-image|linux-headers|amdgpu|dkms)(?:'|\")?\s+/var/log/(?:dpkg\.log\*?|apt/history\.log)", False),
 ]
 
 COMMANDS = [
