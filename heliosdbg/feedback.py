@@ -43,6 +43,9 @@ def record(results_dir: Path, req: dict, recent: dict) -> dict:
         raise FeedbackError("say what was wrong: pick a reason or write the right answer")
     guided = any("guiding an investigation step by step" in str(m.get("content") or "") for m in src.get("messages") or []
                  if m.get("role") == "system")
+    drafted = False
+    if guided and rating == "down" and not correction and src.get("draft"):   # a 👎 alone: what the outputs say, read
+        correction, drafted = src["draft"], True                              # by code - the reviewer checks it (9 Nov)
     if guided and correction and not correction.lstrip().startswith("{"):   # a step-by-step conclusion is answered in JSON
         cause, _, nxt = correction.partition("\nNext:")
         correction = json.dumps({"done": True, "conclusion": cause.strip(), "next": nxt.strip()})
@@ -63,6 +66,8 @@ def record(results_dir: Path, req: dict, recent: dict) -> dict:
         "model": src.get("model", ""),
         "answer": src.get("answer", ""),
         "messages": src.get("messages") or [],
+        **({"drafted": "the correction is helios-debug's reading of the outputs (by code), not typed by a person"}
+           if drafted else {}),
     }
     d = Path(results_dir) / "ai"
     d.mkdir(parents=True, exist_ok=True)

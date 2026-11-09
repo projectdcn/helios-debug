@@ -668,3 +668,19 @@ def test_a_finished_debug_a_node_question_is_logged_for_model_tests(tmp_path):
     rec = json.loads((tmp_path / "res" / "ai" / "questions.jsonl").read_text())
     assert rec["subject"] == "check vlans on switch tray 1" and rec["stay"] == ["st1"] and rec["by_code"]
     assert rec["steps"][0]["output"] == VLAN_BRIEF
+
+
+def test_a_thumbs_down_alone_on_a_conclusion_takes_the_outputs_reading_as_the_draft(tmp_path, monkeypatch):
+    # 9 Nov: a 👎 without a typed correction was dropped by the training hub - nobody types the right VLAN list
+    from heliosdbg import feedback
+    steps = [{"node": "st1", "command": "show vlan brief -n asic0", "rc": 0, "output": VLAN_BRIEF}]
+    right = '{"done": true, "conclusion": "st1 asic0 has VLAN 1000 with 3 member ports [S1]", "next": "nothing"}'
+    monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (right, "m"))
+    p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
+    assert "VLAN 1000 - 3 member ports" in ai.RECENT[p["answer_id"]]["draft"]
+    r = feedback.record(tmp_path, {"rating": "down", "answer_id": p["answer_id"], "reasons": ["wrong_count"]}, ai.RECENT)
+    assert r["drafted"] and json.loads(r["correction"])["conclusion"].startswith("From the outputs: st1 asic0: VLAN 1000")
+    wrong = '{"done": true, "conclusion": "st1 has no VLAN configured [S1]", "next": "nothing"}'
+    monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (wrong, "m"))
+    p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
+    assert p["by_code"] and p["answer_id"] in ai.RECENT                 # the by-code answer can be rated too

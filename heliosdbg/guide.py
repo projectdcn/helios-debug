@@ -632,6 +632,15 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
         if out.get("done") and out.get("contradicts") and step_facts(steps):   # still: the outputs answer, not the AI
             out = by_code(steps, "the AI's conclusion contradicted the outputs twice", subject) | {
                 "ai_conclusion": out["conclusion"], "contradicts": out["contradicts"], "model": out.get("model")}
+    if out.get("done"):                         # rateable, with what the outputs say as the draft of a correction
+        bc = by_code(steps, "", subject) if step_facts(steps) else None
+        draft = json.dumps({"done": True, "conclusion": bc["conclusion"].replace("From the outputs, read by code (): ",
+                                                                                  "From the outputs: "), "next": bc["next"]}) if bc else ""
+        if out.get("by_code") or not out.get("answer_id"):
+            out["answer_id"] = ai.remember(msgs, json.dumps({k: out.get(k) for k in ("done", "conclusion", "next")}),
+                                           out.get("model") or "", subject + " (step by step)")
+        if draft and out["answer_id"] in getattr(ai, "RECENT", {}):
+            ai.RECENT[out["answer_id"]]["draft"] = draft
     out.pop("_text", None)
     return out
 
