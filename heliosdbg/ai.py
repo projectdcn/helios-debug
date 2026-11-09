@@ -335,6 +335,8 @@ def link_context(scan: dict, key: str) -> tuple[Evidence, str]:
     ln = next((x for x in scan.get("links") or [] if f"{x.get('switch')} {x.get('sw_port')}" == key), None)
     if ln is None:
         raise AIError(f"no link {key} in this check")
+    from .live import as_read
+    ln = as_read(ln)                 # saved from Live: the ends as Live read them, not the earlier check's (9 Nov)
     names, ev = _names(scan), Evidence()
     ev.add(f"Rack {scan.get('rack')}, check of {scan.get('time_utc')} (UTC)", "check")
     _link_facts(ev, ln, names, "link")

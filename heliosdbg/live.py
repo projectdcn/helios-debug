@@ -31,6 +31,38 @@ from . import reach
 from .afmctl import Afmctl
 from .transport import build_command, is_local
 
+_SAID = re.compile(r"switch oper (\S+) / admin (\S+), GPU (.+?), IFCP ll_up (\S+)")
+
+
+def as_read(ln: dict) -> dict:
+    """A link saved from Live, as Live read it. Live keeps the earlier check's record and puts its own reading only in
+    the cause: the record's ends (sw_oper 'up') and its evidence lines ('GPU ... LINK_UP') were the check's - mr2 st1
+    Ethernet257, 9 Nov: the AI was told 'down: switch oper down, GPU NO_PHY_LINK' and 'switch oper up, GPU LINK_UP',
+    and wrote both. Returns a copy: the ends Live read, the older lines marked as older, and the cause the two ends
+    give (no signal at either end: the cable)."""
+    m = _SAID.search(str(ln.get("cause") or ""))
+    if not m or ln.get("kind") not in ("live", "ifcp"):
+        return ln
+    sw_oper, sw_admin, gpu, ll = m.groups()
+    x = dict(ln, sw_oper=sw_oper, sw_admin=sw_admin, gpu_link=gpu)
+    ev = list(ln.get("evidence") or [])
+    x["evidence"] = ev[:1] + [e if e.startswith("Earlier check") else f"Earlier check (before Live, may be out of date): {e}"
+                              for e in ev[1:]]
+    gpu_up = gpu.startswith("LINK_UP")
+    if ln.get("kind") == "live" and sw_oper == "down" and sw_admin == "up" and not gpu_up and gpu != "not read":
+        x.update(kind="phys_both", owner="site (cabling)",
+                 cause=f"no link at either end (read by Live): switch oper down / admin up, GPU {gpu} - neither end receives "
+                       "the other: the cable, a connector or a transceiver of this one link",
+                 action="Reseat, then swap the cable of this one link (site / cabling); the GPU and the switch tray are not "
+                        "the first suspects while their other ports are up. Read both ends again first if it was a moment ago.")
+    elif ln.get("kind") == "live" and (sw_oper == "down") != (not gpu_up) and gpu != "not read":
+        down = "switch" if sw_oper == "down" else "GPU"
+        x.update(kind="one_sided", owner=x.get("owner") or "operator",
+                 cause=f"only the {down} end is down (read by Live): switch oper {sw_oper} / admin {sw_admin}, GPU {gpu}",
+                 action="Read both ends again (Diagnose a link): a one-sided link points at that end's port or optic.")
+    return x
+
+
 SW_STREAM = ("tail -n0 -F /var/log/syslog | grep --line-buffered -E 'oper state set from|admin status to'")
 TRAY_STREAM = ("journalctl -kf -n0 -o short-iso-precise | grep --line-buffered -E 'ifoe .*link (up|down)'")
 OPER_RX = re.compile(r"Port (Ethernet\d+) oper state set from (\w+) to (\w+)")

@@ -699,3 +699,19 @@ def test_config_reads_reach_the_model_as_facts():
     assert "[S1] st1: runs A, boots B next (an image change waits for its reboot)" in f
     assert "[S2] st1: clock synced to 1.2.3.4" in f
     assert "[S3] st1 asic0 Ethernet39 (oper up): described 'To ComputeTray Slot10/GPU2[42]/Port35'" in f
+
+
+def test_a_link_saved_from_live_is_told_as_live_read_it():
+    # mr2 st1 Ethernet257, 9 Nov: Live said 'switch oper down, GPU NO_PHY_LINK', the saved record still had the earlier
+    # check's 'oper up' / 'GPU LINK_UP' - the AI wrote both ('GPU port not up [E7]' and 'the GPU port is up [E7]')
+    from heliosdbg.live import as_read
+    ln = {"switch": "st1", "sw_port": "Ethernet257", "sw_oper": "up", "sw_admin": "up", "kind": "live", "state": "down",
+          "cause": "read by Live: switch oper down / admin up, GPU NO_PHY_LINK, PCS_NO_BLOCK_LOCK, IFCP ll_up no",
+          "evidence": ["Live 2026-11-04 03:18:02Z: switch oper down / admin up, GPU NO_PHY_LINK",
+                       "GPU c1 0002:01:00.1 port 13: admin enabled, link LINK_UP"]}
+    x = as_read(ln)
+    assert x["sw_oper"] == "down" and x["kind"] == "phys_both" and "cable" in x["cause"] and x["owner"] == "site (cabling)"
+    assert x["evidence"][1].startswith("Earlier check (before Live") and ln["sw_oper"] == "up"      # a copy
+    one = as_read(dict(ln, cause="read by Live: switch oper down / admin up, GPU LINK_UP, IFCP ll_up no"))
+    assert one["kind"] == "one_sided" and "only the switch end" in one["cause"]
+    assert as_read({"kind": "ifcp_chip", "cause": "x"}) == {"kind": "ifcp_chip", "cause": "x"}

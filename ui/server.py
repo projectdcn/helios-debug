@@ -1631,6 +1631,7 @@ def live_save(state: State, what: str) -> dict:
         d = json.loads(Path(src).read_text()) if src else {}
     except (OSError, ValueError):
         d = {}
+    from heliosdbg.live import as_read as live_read
     links, counts = [], {}
     with lv.lock:
         for k, ln in lv.src.items():
@@ -1647,6 +1648,7 @@ def live_save(state: State, what: str) -> dict:
                 elif stt != ln.get("state"):
                     x.update(kind="live", cause=f"read by Live: {said}", check_kind=ln.get("kind") or "")
                 x["evidence"] = [f"Live {time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime())}: {said}"] + list(ln.get("evidence") or [])[:6]
+                x = live_read(x)                    # its ends as Live read them, the check's lines marked older (9 Nov)
             else:
                 stt = "unknown"                     # as Live showed it, quarantined trays too (audit 4 Nov)
                 x["cause"] = ("not read by Live (" + ("tray quarantined: no GPU to read" if ln.get("kind") == "tray_quarantined"
