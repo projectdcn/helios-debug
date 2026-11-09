@@ -347,8 +347,9 @@ def step_facts(steps: list[dict]) -> list[str]:
         down_up = (sm.group(4) or "").split() if sm else [p_ for p_, oper, admin in _SW_PORT.findall(out)
                                                           if oper == "down" and admin == "up"]
         if sm:                                          # a whole chip's listing: how many up / down, then the first few
+            rest = re.search(r"; (speed .*)$", (_STATUS_SUM.search(out) and out.split("\n", 1)[0]) or status_line(out) or "")
             facts.append(f"[S{i}] {where}: {sm.group(1)} ports - {sm.group(2)} up, {sm.group(3)} admin up but oper down"
-                         + (f", {sm.group(5)} shut (admin down)" if sm.group(5) else ""))
+                         + (f", {sm.group(5)} shut (admin down)" if sm.group(5) else "") + (f"; {rest.group(1)}" if rest else ""))
         for port in down_up[:6]:
             sw_down += 1
             facts.append(f"[S{i}] {node} {port}: admin up, oper down - enabled, but no link (not shut by configuration)")
@@ -621,7 +622,7 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
         again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
         out = again | {"retried": True, "contradiction_before": out["contradiction"]}
     if not out.get("done") and str(out.get("refused") or "").startswith("already run") and step_facts(steps):
-        out = by_code(steps, "the AI kept proposing a step already run") | {"model": out.get("model")}
+        out = by_code(steps, "the AI kept proposing a step already run", subject) | {"model": out.get("model")}
     if out.get("done") and out.get("contradicts"):       # once more, told what its own outputs show
         msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
                        {"role": "user", "content": "Your conclusion contradicts the outputs: " + "; ".join(out["contradicts"])
@@ -629,16 +630,23 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
         again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
         out = again | {"retried": True, "contradicts_before": out["contradicts"]}
         if out.get("done") and out.get("contradicts") and step_facts(steps):   # still: the outputs answer, not the AI
-            out = by_code(steps, "the AI's conclusion contradicted the outputs twice") | {
+            out = by_code(steps, "the AI's conclusion contradicted the outputs twice", subject) | {
                 "ai_conclusion": out["conclusion"], "contradicts": out["contradicts"], "model": out.get("model")}
     out.pop("_text", None)
     return out
 
 
-def by_code(steps: list[dict], why: str) -> dict:
+_TOPIC = {"vlan": r"VLAN", "vlans": r"VLAN", "mtu": r"MTU", "speed": r"speed", "gpu": r"GPU", "gpus": r"GPU",
+          "asic": r"asic\d", "asics": r"asic\d", "down": r"down", "ports": r"ports -", "links": r"ports -"}
+
+
+def by_code(steps: list[dict], why: str, subject: str = "") -> dict:
     """A conclusion from what code read in the outputs, when the model cannot give one that agrees with them (9 Nov:
     'check vlans on st1' - the 4B repeated 'show vlan brief' five times, then said 'no VLAN' over VLAN 100/200/300)."""
     facts = step_facts(steps)
+    words = {w for w in re.findall(r"[a-z]{3,}", (subject or "").lower()) if w in _TOPIC}
+    if words:                                   # what was asked first ('check MTU on st3': the MTUs, not the down ports)
+        facts = sorted(facts, key=lambda f: not any(re.search(_TOPIC[w], f, re.I) for w in words))
     return {"done": True, "by_code": True, "facts": facts,
             "conclusion": f"From the outputs, read by code ({why}): " + "; ".join(f.split("] ", 1)[-1] + " [" + f[1:].split("]")[0] + "]"
                                                                            if f.startswith("[S") else f for f in facts[:10]) + ".",
