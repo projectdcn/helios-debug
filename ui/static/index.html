@@ -1200,6 +1200,7 @@ function aiStatus(){
   .then(function(){var b=$("ai-ind");b.textContent=aiState.ok?"AI: "+String(aiState.model).split("/").pop():"AI: not connected";
     b.className="aibadge "+(aiState.ok?"ok":"off");b.title=aiState.ok?"advice from "+aiState.model:aiState.error;
     document.querySelectorAll(".ai-go").forEach(function(x){x.disabled=!aiState.ok;x.title=aiState.ok?"":aiState.error});
+    document.querySelectorAll(".ai-offnote").forEach(function(x){x.classList.toggle("hide",aiState.ok);x.textContent=aiState.error});
     setTimeout(aiStatus,aiState.ok?120000:20000)});
 }
 /* the model's answer: escaped, then headings / lists / `code` / **bold** / [E3] citations */
@@ -1229,7 +1230,8 @@ function aiPanel(box,ctx){
     '<span style="flex:1"></span><button class="sec ai-go ai-guide-go"'+(aiState.ok?"":" disabled")+' title="the AI proposes read-only commands one at a time; you click Run">Investigate step by step</button>'+
     (/\/scan-/.test(ctx.path)&&!ctx.link?'<select class="ai-aud" style="width:auto" title="who the ticket is for"><option value="all">ticket for: everyone</option><option value="amd">AMD (GPU / AFM)</option><option value="switch">switch / SONiC owner</option><option value="site">site / cabling</option><option value="operator">operator</option></select><button class="sec ai-ticket-go">Write a ticket</button>':"")+
     '<button class="sec ai-res-go" title="what it turned out to be and what fixed it - the AI learns from these">Record the resolution</button>'+
-    '<button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div><div class="ai-out"></div><div class="ai-ticket"></div><div class="ai-res"></div>'+
+    '<button class="go ai-go"'+(aiState.ok?"":" disabled")+'>Ask the AI</button></div>'+
+    '<p class="err ai-offnote'+(aiState.ok?" hide":"")+'" style="margin:6px 0 0">'+esc(aiState.error)+'</p><div class="ai-out"></div><div class="ai-ticket"></div><div class="ai-res"></div>'+
     '<form class="row ai-more hide" style="margin:6px 0 0"><input class="ai-q" placeholder="Follow-up question - it sees the commands run so far (e.g. what does port 13 NO_PHY_LINK mean?)" style="flex:1;min-width:240px" maxlength="2000"><button class="sec">Ask</button></form></div>';
   var out=box.querySelector(".ai-out"),go=box.querySelector("button.go.ai-go"),form=box.querySelector(".ai-more");
   sess.out=out;sess.onActivity=function(){form.classList.remove("hide")};
@@ -2354,7 +2356,7 @@ function portExtra(k){
     var rh=rel.length?'<h3 style="font-size:.95rem;margin-top:12px">Related ports</h3><div class="rel">'+rel.map(function(r){var x=r[1];
       return '<a data-rel="'+esc(lkey(x))+'" class="'+esc(mEff(x))+'" title="'+esc(r[0]+": "+mEff(x))+'">'+esc(x.sw_port+" · "+r[0])+"</a>"}).join("")+
       '</div><p class="mut" style="margin:4px 0 0">If the related ports fail too, the cause is likely something they share (the GPU station, a switch connector, or one plane).</p>':"";
-    box.innerHTML=linkDiagram(l,v)+(lvl?'<p>Live now: <b class="st-'+esc(lvl.state)+'">'+esc(lvl.state)+"</b> · switch port "+esc(lvl.sw_admin==="down"?"shut (admin down)":(lvl.sw_oper||"?"))+" · GPU link "+esc(lvl.gpu_link||"?")+(lvl.since?" · since "+esc(new Date(lvl.since).toLocaleTimeString()):"")+"</p>":"")+
+    box.innerHTML=linkDiagram(l,v)+(lvl?'<p>Live now: <b class="st-'+esc(lvl.state)+'">'+esc(lvl.state)+"</b> · switch port "+esc(lvl.sw_admin==="down"?"shut (admin down)":"oper "+(lvl.sw_oper||"?")+" / admin "+(lvl.sw_admin||"?"))+" · GPU link "+esc(lvl.gpu_link||"?")+(lvl.since?" · since "+esc(new Date(lvl.since).toLocaleTimeString()):"")+"</p>":"")+
       '<div class="ends2">'+swCard+gpCard+"</div>"+hh+rh+'<p class="mut">From the check of '+esc(stampLocal(v.time_utc))+' - "Diagnose now" reads both ends again.</p>';
     box.querySelectorAll("a[data-rel]").forEach(function(a){a.addEventListener("click",function(){mapDetail(a.dataset.rel)})});
     box.querySelectorAll("a[data-cfgsw]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgOpen(l.switch,l.asic||null,"PORT",l.sw_port)})});
