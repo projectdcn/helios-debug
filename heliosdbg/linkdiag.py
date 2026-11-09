@@ -225,8 +225,12 @@ def sample_counters(sw, asics: list[str]) -> dict:
         n = ns or None
         cnt = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters{ns_flag(n)} -d all", timeout=180))}
         fec = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters fec-stats{ns_flag(n)}", timeout=180))}
+        try:
+            fh = {h["port"]: h["bins"] for h in l1.histograms(sw.sh(f"portstat -fh{ns_flag(n)}", timeout=180)) if h["port"]}
+        except Exception:  # noqa: BLE001 - margin is extra evidence
+            fh = {}
         fdb = read_fdb(sw, n)
-        out[ns] = {"counters": cnt, "fec": fec, "fdb": fdb}
+        out[ns] = {"counters": cnt, "fec": fec, "fdb": fdb, "fec_hist": fh}
     return out
 
 
@@ -305,7 +309,8 @@ class Link:
     vlans: list | None = None           # [[Vlan100, tagging_mode], ...] of the switch port (None = VLANs not read)
     mtu: str | None = None              # switch port MTU ('show interfaces status'; the fabric uses 9100)
     flap_count: int | None = None       # APPL_DB PORT_TABLE flap_count of the switch port (None = not read)
-    fec_max_t: int | None = None        # the switch end's deepest corrected codeword, of 15 (portstat -fh; None = not read)
+    fec_max_t: int | None = None        # the switch end's deepest corrected codeword, of 15, since the counters were cleared
+    fec_window_max_t: int | None = None  # ... of the codewords between the check's two samples (None = not read twice)
     last_down_time: str | None = None   # APPL_DB PORT_TABLE last_down_time
 
 
@@ -632,7 +637,7 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
     m = margin(ln)
     if m:
         ev.append(m["line"])
-        if m["k"] >= 12:
+        if (m["k"] or 0) >= 12:
             return set_("degraded", "fec_margin", m["cause"], SITE,
                         "Marginal cable / connector of this one link: read it again to see the tail grow (Watch FEC), "
                         "compare both ends, then reseat / swap that cable (CHANGES THE RACK, with a go-ahead) before it "
@@ -658,22 +663,26 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
 
 
 def margin(ln: Link) -> dict | None:
-    """The FEC margin of an up link from both ends' histograms (switch: portstat -fh; GPU: afmctl port statistics fec):
-    {k, line, cause} or None when neither end was read. KP4 corrects 15 symbols per codeword: 0-5 comfortable, 6-11
-    degrading, 12+ at the cliff (JTAC 'SONiC Interface' deck)."""
+    """The FEC margin of an up link: {k (the sample window's deepest corrected codeword, of 15, or None), line, cause}.
+    KP4 corrects 15 symbols per codeword: 0-5 comfortable, 6-11 degrading, 12+ at the cliff (JTAC 'SONiC Interface'
+    deck). Judged on the codewords between the check's two samples: the cumulative histograms (since the counters
+    were cleared) of g02-g17 st1 had 34 links at 13-15 of 15 while all stayed at 0-4 over a minute (9 Nov) - deep
+    bins from link bring-up / flaps, history, not the link now; said as such, not judged."""
     g = ln.gpu or {}
-    ks, kg = ln.fec_max_t, g.get("fec_max_t")
-    if ks is None and kg is None:
+    kw, ks, kg = ln.fec_window_max_t, ln.fec_max_t, g.get("fec_max_t")
+    if kw is None and ks is None and kg is None:
         return None
-    k = max(x for x in (ks, kg) if x is not None)
-    parts = ([f"switch end {ks} of 15"] if ks is not None else []) + (
+    hist = ([f"switch end {ks} of 15"] if ks is not None else []) + (
         [f"GPU end {kg} of 15" + (f", {g['fec_uncorr']} uncorrectable" if g.get("fec_uncorr") else "")
          + (f", link up count {g['link_up_count']}" if g.get("link_up_count") is not None else "")] if kg is not None else [])
-    end = ("both ends" if ks is not None and kg is not None and min(ks, kg) >= 12 else
-           "the switch end" if ks is not None and (kg is None or ks >= kg) else "the GPU end")
-    return {"k": k, "line": f"FEC margin (deepest corrected codeword): {'; '.join(parts)} - {l1.margin_word(k)}",
-            "cause": (f"the link is up but at the FEC cliff: {end}'s worst codewords needed {k} of 15 symbols corrected "
-                      f"({'; '.join(parts)}) - a slightly worse codeword is lost; errors into that end's receiver")}
+    line = ("FEC margin: " + (f"in the sample window the worst codeword needed {kw} of 15 ({l1.margin_word(kw)})"
+                              if kw is not None else "not sampled twice")
+            + (f"; since the counters were cleared: {'; '.join(hist)}" + (
+                " - deep bins there are history (link bring-up / flaps) unless Watch FEC sees them grow"
+                if max([x for x in (ks, kg) if x is not None] or [0]) >= 12 else "") if hist else ""))
+    return {"k": kw, "line": line,
+            "cause": (f"the link is up but at the FEC cliff now: in the check's sample window the switch end's worst "
+                      f"codewords needed {kw} of 15 symbols corrected - a slightly worse codeword is lost")}
 
 
 FDB_RETRIES, FDB_RETRY_S = 3, 10.0
@@ -972,6 +981,9 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
             ln.fec_total[k] = e
             if b is not None and e is not None and e > b:
                 ln.deltas[k] = e - b
+        h0, h1 = (a0.get("fec_hist") or {}).get(ln.sw_port), (a1.get("fec_hist") or {}).get(ln.sw_port)
+        if h0 and h1:                                 # the histogram of the sample window: the margin now, not history
+            ln.fec_window_max_t = l1.max_t([max(0, y - x) for x, y in zip(h0, h1)])
         if a1.get("fdb") is not None:
             ln.fdb_static_late = any(r.get("Port") == ln.sw_port and str(r.get("Type", "")).lower() == "static" for r in a1["fdb"])
         t = tr_res.get(ln.tray) or {}

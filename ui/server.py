@@ -45,7 +45,7 @@ PAGE = (STATIC / "index.html").read_bytes()
 VENDOR = {n: (t, (STATIC / "vendor" / n).read_bytes()) for n, t in (            # served as-is, a fixed list
     ("xterm/xterm.js", "text/javascript; charset=utf-8"), ("xterm/addon-fit.js", "text/javascript; charset=utf-8"),
     ("xterm/xterm.css", "text/css; charset=utf-8")) if (STATIC / "vendor" / n).is_file()}
-TOOLS = ("scan", "link", "watch", "cabling", "isolate", "bcm", "path", "pingmap", "health")
+TOOLS = ("scan", "link", "watch", "cabling", "isolate", "bcm", "path", "pingmap", "health", "fecwatch")
 TARGET_RX = re.compile(r"^[A-Za-z0-9 _./:\[\],()-]{1,200}$")
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PORTS_RX = re.compile(r"^Ethernet\d{1,4}(,Ethernet\d{1,4}){0,63}$")
@@ -185,7 +185,7 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
     rack = inv.rack or f.stem
     out = state.results_dir / "link-check" / rack / f"{tool}-{stamp}"
     a = [tool, "--inventory", str(f), "--out", str(out)]
-    if tool in ("scan", "pingmap", "health"):
+    if tool in ("scan", "pingmap", "health", "fecwatch"):
         s = _names(req.get("switches"), sws, "switch")
         t = _names(req.get("trays"), cts, "compute tray")
         a += (["--switches", s] if s else []) + (["--trays", t] if t else [])
@@ -201,6 +201,10 @@ def build_args(state: State, req: dict) -> tuple[list[str], Path, str]:
         if cmp_:
             p = _result_file(state, f"{cmp_}/link_check.json")
             a += ["--compare", str(p)]
+    elif tool == "fecwatch":
+        a += ["--minutes", str(_int(req, "minutes", 1, 120, 10))]
+        if req.get("no_trays"):
+            a.append("--no-trays")
     elif tool == "link":
         target = " ".join(str(req.get("target") or "").split())
         if not TARGET_RX.match(target):

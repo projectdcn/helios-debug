@@ -310,6 +310,15 @@ body.chat-open main{margin-right:min(460px,100vw)}
     </div>
     <div class="row"><button class="go" data-run="health">Check node health</button></div>
   </section>
+  <section class="card hide" data-p="health">
+    <h2>Watch FEC</h2>
+    <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>Reads every link's FEC at both ends (switch: fec-stats, the FEC histogram per port, the flap table; GPU: afmctl port statistics fec) twice, minutes apart, and says what grew in between: frames lost (uncorrectable codewords), how close a link came to the FEC cliff while watched (the deepest histogram bin of the window, of 15), and which links went down and came back. FEC counters are cumulative since they were last cleared - the change is the signal, not the total - and clearing them changes the switch, so this never clears anything.</dd><dt>When</dt><dd>Before a test or job run, when a link is suspected of being marginal, or after a reseat to see that it stays clean.</dd><dt>How long</dt><dd>The minutes you choose, plus a minute of reading.</dd><dt>Safe?</dt><dd>Yes - it only reads.</dd></dl></details>
+    <div class="grid">
+      <div><label for="fw-min">Minutes between the two reads</label><input id="fw-min" type="number" min="1" max="120" value="10"></div>
+      <div class="checks"><label><input type="checkbox" id="fw-trays" checked>GPU ends too (afmctl on the compute trays)</label></div>
+    </div>
+    <div class="row"><button class="go" data-run="fecwatch">Watch FEC</button></div>
+  </section>
 
   <section class="card hide" data-p="debug">
     <h2>Debug a node</h2>
@@ -639,10 +648,11 @@ function req(tool){
   if(tool==="health"){r.switches=picked("health-sw");r.trays=picked("health-ct");r.only=$("health-only").value;r.no_drift=!$("health-drift").checked;
     r.afm=$("health-afm").checked;if(r.afm&&$("health-afmpw").value)r.afm_password=$("health-afmpw").value;
     r.no_bmc=!$("health-bmc").checked;if(!r.no_bmc&&$("health-bmcpw").value)r.bmc_password=$("health-bmcpw").value}
+  if(tool==="fecwatch"){r.minutes=+$("fw-min").value;r.no_trays=!$("fw-trays").checked}
   if(tool==="pingmap"){r.switches=picked("pm-sw");r.trays=picked("pm-ct");r.rounds=+$("pm-rounds").value;r.wait=+$("pm-wait").value}
   return r;
 }
-var EST={scan:150,link:60,bcm:25,path:40,cabling:5,isolate:60,health:60};
+var EST={scan:150,link:60,bcm:25,path:40,cabling:5,isolate:60,health:60,fecwatch:660};
 function estimate(tool){if(tool==="watch")return Math.round(+$("watch-dur").value*60);if(tool==="pingmap")return (+$("pm-rounds").value)*(+$("pm-wait").value+20);return EST[tool]||60}
 function moveJobcard(){var sec=document.querySelector("section[data-p]:not(.hide)");if(sec&&sec.nextElementSibling!==$("jobcard"))sec.insertAdjacentElement("afterend",$("jobcard"))}
 function run(tool){
@@ -655,7 +665,7 @@ function badge(s){var c=s==="running"?"b-run":s==="ok"?"b-ok":"b-bad";return '<s
 function links(j){
   if(!j||j.status==="running")return "";
   var b="/results/"+j.out+"/";
-  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:j.tool==="cabling"?["report.html","report.txt","cabling.json"]:j.tool==="isolate"?["report.txt","isolate.json"]:j.tool==="health"?["report.html","report.txt","health.json"]:["report.html","report.txt"];
+  var f=j.tool==="bcm"?["bcm.txt","bcm.json"]:j.tool==="path"?["report.txt","link_check.json"]:j.tool==="link"?["report.html","report.txt","link.json"]:j.tool==="watch"?["report.html","report.txt","watch.json"]:j.tool==="cabling"?["report.html","report.txt","cabling.json"]:j.tool==="isolate"?["report.txt","isolate.json"]:j.tool==="health"?["report.html","report.txt","health.json"]:j.tool==="fecwatch"?["report.txt","fec_watch.json"]:["report.html","report.txt"];
   return f.map(function(n){return '<a href="'+esc(b+n)+'" target="_blank" rel="noopener">'+esc(n)+'</a>'}).join(" · ")+
     ' · <a href="/api/bundle?path='+encodeURIComponent(j.out)+'">bundle.zip</a>';
 }

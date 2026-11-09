@@ -102,7 +102,8 @@ def hist_says(h: dict) -> str:
          f" there) - " + ("a comfortable margin" if k <= 5 else
                           "the tail has crept right: degrading - read it again later and see whether it grows (the counts "
                           "are cumulative since the counters were cleared)" if k < 12
-                          else "close to the cliff: a slightly worse codeword is uncorrectable"))
+                          else "at the cliff at some point since the counters were cleared (a slightly worse codeword is "
+                          "lost); often from link bring-up or a flap - whether it happens now, read it twice (Watch FEC)"))
     if h["uncorr"] is not None:
         s += (", no uncorrectable codewords" if not h["uncorr"] else f", {h['uncorr']:,} uncorrectable codewords - frames lost")
     if h["link_up"] is not None:

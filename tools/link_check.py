@@ -1561,6 +1561,51 @@ def _changes_html(ch: dict, e) -> str:
             f"{ch['same']} unchanged</p>" + (f"<ul>{''.join(li)}</ul>" if li else ""))
 
 
+def fecwatch_cmd(a) -> int:
+    """Read every link's FEC (both ends) twice, --minutes apart, and say what grew in between - nothing is cleared
+    (heliosdbg/fecwatch.py). Read-only."""
+    import json as _json
+    from heliosdbg import fecwatch
+    inv = load_inventory(a.inventory)
+    rack = Rack(inv)
+    sws = [x.strip() for x in (a.switches or "").split(",") if x.strip()] or sorted(rack.switches)
+    trs = [] if a.no_trays else ([x.strip() for x in (a.trays or "").split(",") if x.strip()] or sorted(rack.computes))
+    unknown = [n for n in sws if n not in rack.switches] + [n for n in trs if n not in rack.computes]
+    if unknown:
+        raise SystemExit(f"unknown node {unknown}")
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    out = a.out or ROOT / "results" / "link-check" / (inv.rack or "rack") / f"fecwatch-{stamp}"
+    _OUTS.append(out)
+    _room(out, 5)
+    wait = max(60.0, min(7200.0, a.minutes * 60))
+
+    def read(tag):
+        sw, tr, miss = {}, {}, []
+        for node, val, exc in fan_out(fecwatch.read_switch, [rack.switches[n] for n in sws]):
+            (miss.append(node.host.name) if exc else sw.__setitem__(node.host.name, val))
+        for node, val, exc in fan_out(fecwatch.read_tray, [rack.computes[n] for n in trs]):
+            (miss.append(node.host.name) if exc else tr.__setitem__(node.host.name, val))
+        print(f"  {tag}: {len(sw)} switch(es), {len(tr)} tray(s) read" + (f"; not read: {', '.join(miss)}" if miss else ""),
+              flush=True)
+        return sw, tr, miss
+    print(f"Watch FEC on {inv.rack}: {len(sws)} switch(es), {len(trs)} compute tray(s), {wait / 60:.0f} min apart - "
+          "read-only, nothing cleared", flush=True)
+    t0 = time.monotonic()
+    sw0, tr0, miss0 = read("first read")
+    print(f"  waiting {wait / 60:.0f} min ...", flush=True)
+    time.sleep(max(0.0, wait - (time.monotonic() - t0)))
+    sw1, tr1, miss1 = read("second read")
+    rep = fecwatch.compare(sw0, sw1, tr0, tr1, time.monotonic() - t0)
+    rep.update(rack=inv.rack, time_utc=stamp, not_read=sorted(set(miss0) | set(miss1)))
+    lines = fecwatch.summary(rep)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "fec_watch.json").write_text(_json.dumps(rep))
+    (out / "report.txt").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines), flush=True)
+    print(f"report: {out / 'report.txt'}", flush=True)
+    return 0
+
+
 def health_cmd(a) -> int:
     """One health check, or with --every one every N minutes (each its own folder, compared with the one before)."""
     if not a.every:
@@ -1663,6 +1708,13 @@ def main(argv=None) -> int:
                     "e.g. http://10.83.2.15:8443): the new ones since the last run, critical first")
     hc.add_argument("--incidents-all", action="store_true", help="with --incidents: every finding, not only the new ones")
     hc.add_argument("--incidents-max", type=int, default=10, help="with --incidents: at most N per run (10)")
+    fw = sub.add_parser("fecwatch", help="read every link's FEC (both ends) twice, minutes apart: what grew - read-only")
+    fw.add_argument("--inventory", **inv_kw)
+    fw.add_argument("--minutes", type=float, default=10.0, help="minutes between the two reads (1 to 120, default 10)")
+    fw.add_argument("--switches", help="only these switches (comma-separated inventory names)")
+    fw.add_argument("--trays", help="only these compute trays (comma-separated inventory names)")
+    fw.add_argument("--no-trays", action="store_true", help="the switch ends only")
+    fw.add_argument("--out", type=Path, help="report folder (default results/link-check/<rack>/fecwatch-<UTC time>)")
     i = sub.add_parser("isolate", help="DISRUPTIVE: take one end of ONE GPU link down for a short hold and bring it back")
     i.add_argument("--inventory", **inv_kw)
     i.add_argument("target", help="the link, as for 'link'")
@@ -1674,7 +1726,7 @@ def main(argv=None) -> int:
     if a.cmd == "watch":
         a.every, a.duration = max(2.0, a.every), min(86400.0, max(a.every, a.duration))
     fn = {"scan": scan_cmd, "pingmap": pingmap_cmd, "path": path_cmd, "bcm": bcm_cmd, "link": link_cmd, "watch": watch_cmd,
-          "cabling": cabling_cmd, "isolate": isolate_cmd, "health": health_cmd}[a.cmd]
+          "cabling": cabling_cmd, "isolate": isolate_cmd, "health": health_cmd, "fecwatch": fecwatch_cmd}[a.cmd]
     if a.cmd == "cabling":                               # no node is logged into
         return fn(a)
     if a.cmd in ("scan", "link", "watch", "isolate"):                        # these keep their log in raw/ and in report.html

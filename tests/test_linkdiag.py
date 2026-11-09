@@ -424,13 +424,35 @@ def test_now_read_live_over_check():
     assert y["kind"] == "phys_both"
 
 
-def test_fec_margin_from_both_ends():
+def test_fec_margin_judged_on_the_sample_window():
     sw = _switch()
-    sw["asics"]["asic0"]["fec_hist"] = {"Ethernet25": [9, 5, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]}   # 13 of 15
+    sw["asics"]["asic0"]["fec_hist"] = {"Ethernet25": [9, 5, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]}   # 13: history
     tr = _tray()
     tr["gpus"][0]["ports"][0].update(fec_max_t=4, fec_uncorr=0, link_up_count=1)
-    ln, _ = _one(sw, tr)
-    assert ln.kind == "fec_margin" and ln.state == "degraded" and "the switch end" in ln.cause and "13 of 15" in ln.cause
-    sw["asics"]["asic0"]["fec_hist"] = {"Ethernet25": [9, 5, 2, 1, 0, 0, 0, 1] + [0] * 8}                  # 7: degrading
-    ln, _ = _one(sw, _tray())
-    assert ln.state == "ok" and any("7 of 15" in e and "degrading" in e for e in ln.evidence)
+    links, _ = ld.join([sw], [tr])
+    ln = links[0]
+    ln.fec_window_max_t = 2                                                  # the sample: clean now
+    ld.diagnose(ln, {"ct03": tr}, False, 30)
+    assert ln.state == "ok" and any("13 of 15" in e and "history" in e for e in ln.evidence)
+    links, _ = ld.join([sw], [tr])
+    ln = links[0]
+    ln.fec_window_max_t = 13                                                 # at the cliff while sampled
+    ld.diagnose(ln, {"ct03": tr}, False, 30)
+    assert ln.kind == "fec_margin" and ln.state == "degraded" and "13 of 15" in ln.cause
+
+
+def test_fecwatch_window():
+    from heliosdbg import fecwatch
+    b0, b1 = [100, 10, 1] + [0] * 13, [200, 20, 2] + [0] * 10 + [1, 0, 0]       # one codeword at 13 in the window
+    sw0 = {"st1": {"asic0": {"fec": {"Ethernet4": {"state": "U", "corr": 5, "uncorr": 20, "sym": 0, "pre_ber_max": "0"}},
+                             "hist": {"Ethernet4": b0}, "flaps": {"Ethernet4": 7}}}}
+    sw1 = {"st1": {"asic0": {"fec": {"Ethernet4": {"state": "U", "corr": 9, "uncorr": 23, "sym": 0, "pre_ber_max": "0"}},
+                             "hist": {"Ethernet4": b1}, "flaps": {"Ethernet4": 7}}}}
+    tr0 = {"ct17": {"0004:01:00.1": {33: {"bins": b0, "uncorr": 0, "link_up": 1}}}}
+    tr1 = {"ct17": {"0004:01:00.1": {33: {"bins": [x + 1 if i < 3 else x for i, x in enumerate(b0)], "uncorr": 0, "link_up": 2}}}}
+    rep = fecwatch.compare(sw0, sw1, tr0, tr1, 600)
+    sw, g = rep["rows"]
+    assert sw["uncorr"] == 3 and sw["window_max_t"] == 13 and sw["flaps"] == 0
+    assert g["window_max_t"] == 2 and g["flaps"] == 1
+    text = "\n".join(fecwatch.summary(rep))
+    assert "st1 Ethernet4 +3" in text and "st1 Ethernet4 13 of 15" in text and "ct17 GPU 0004:01:00.1 port 33" in text
