@@ -165,6 +165,9 @@ def compact(output: str) -> str:
     rx = _sonic.cpu_rx(t) if not t.startswith("{") else None
     if rx is not None:                      # 'ip -s -o link show': ~110 KB for 257 ports - what it says, in one line
         return _sonic.cpu_rx_line(rx)
+    sl = status_line(t) if not t.startswith(("{", "Port status:")) else None
+    if sl is not None:                      # a whole chip's port status: the counts and the down ports, not 256 rows
+        return sl
     vl = vlan_brief(t) if not t.startswith("{") else None
     if vl is not None:                      # 'show vlan brief': one table row per member port, ~200 per chip - cut at
         return vlan_line(vl)                # OUTPUT_MAX the model saw some ports and none of the VLAN ids (9 Nov)
@@ -209,6 +212,83 @@ def _age_min(ts: str) -> int | None:
 _CPU_RX = re.compile(r"^CPU receive[^:]*: \d+ Ethernet ports, (\d+) with link; (\d+) of those", re.M)
 _GPU_PORT = re.compile(r"^\s*port (\d+): (\S+?)(?:, (\S+?))?, admin (\w+)", re.M)
 _SW_PORT = re.compile(r"^(Ethernet\d+)\s+\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+(up|down)\s+(up|down)\b", re.M)
+
+
+_STATUS_ROW_ALL = re.compile(r"^\s*(Ethernet\d+)\s+\S+\s+(\S+)\s+(\d+)\s+\S+\s+\S+\s+\S+\s+(up|down)\s+(up|down)\b", re.M)
+_STATUS_SUM = re.compile(r"^Port status: (\d+) ports - (\d+) up, (\d+) admin up but oper down(?: \(([^)]*)\))?"
+                         r"(?:, (\d+) shut)?", re.M)
+
+
+def status_line(out: str) -> str | None:
+    """A whole chip's 'show interfaces status' (~256 rows, cut at OUTPUT_MAX: counts read from a cut table were
+    wrong, 9 Nov) in one line: how many up / down / shut, the down ports, speeds and MTUs. None under 8 rows."""
+    rows = _STATUS_ROW_ALL.findall(out or "")
+    if len(rows) < 8:
+        return None
+    down = [p_ for p_, _s, _m, o, a_ in rows if o == "down" and a_ == "up"]
+    shut = sum(1 for r in rows if r[4] == "down")
+    dist = lambda k: ", ".join(f"{n} x {v}" for v, n in sorted(  # noqa: E731
+        {r[k]: sum(1 for x in rows if x[k] == r[k]) for r in rows}.items(), key=lambda x: -x[1]))
+    return (f"Port status: {len(rows)} ports - {sum(1 for r in rows if r[3] == 'up')} up, {len(down)} admin up but oper down"
+            + (f" ({' '.join(down)})" if down else "") + (f", {shut} shut" if shut else "")
+            + f"; speed {dist(1)}; MTU {dist(2)}")
+
+
+_VLAN_SUM = re.compile(r"^VLAN (\S+): IP ([^;]*); (\d+) member ports \(([^)]*)\)", re.M)
+
+
+def vlans_of(out: str) -> list[dict]:
+    """The VLANs one output shows: from its summary line (a run's output: cut tables lose rows) or the table itself;
+    [{vlan: '' }] for an empty table, [] when it is not a VLAN listing."""
+    got = [{"vlan": m.group(1), "ip": m.group(2), "members": int(m.group(3)), "tagging": m.group(4)}
+           for m in _VLAN_SUM.finditer(out or "")]
+    if got or "no VLAN configured (the table is empty)" in (out or ""):
+        return got or [{"vlan": ""}]
+    vl = vlan_brief(out)
+    if vl is None:
+        return []
+    return [{"vlan": m.group(1), "ip": m.group(2), "members": int(m.group(3)), "tagging": m.group(4)}
+            for m in _VLAN_SUM.finditer(vlan_line(vl))] or [{"vlan": ""}]
+
+
+def gpus_listed(out: str, command: str) -> list[str] | None:
+    """The GPUs a listing shows (afmctl show device / lspci -d 1002:), None for another command."""
+    c = re.sub(r"^\s*sudo\s+", "", command)
+    if c.startswith("afmctl show device"):
+        return re.findall(r"^GPU (\S+): accelerator", compact(out), re.M)
+    if re.match(r"lspci\b.*-d\s+1002:", c):
+        return re.findall(r"^([0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d) (?:Processing accelerators|Display)", out, re.M)
+    return None
+
+
+_NO_VLAN = re.compile(r"\bno VLANs?\b|\bVLANs? (?:is |are )?(?:not (?:configured|set|there|present)|missing|absent)", re.I)
+_NO_GPU = re.compile(r"\bno GPUs?\b(?!\s*(?:driver|port|link|session))|\b0 GPUs\b|\bGPUs? (?:are |is )?(?:missing|absent|"
+                     r"not (?:present|detected|there|listed))", re.I)
+_ALL_DOWN = re.compile(r"\ball (?:the |its )?(?:ports|links) (?:are |were )?down\b", re.I)
+_ALL_UP = re.compile(r"\ball (?:the |its )?(?:ports|links) (?:are |were )?up\b", re.I)
+
+
+def contradictions(text: str, steps: list[dict]) -> list[str]:
+    """What a conclusion says that the step outputs, read by code, show is not so (9 Nov: 'st1 has no VLAN configured
+    [S1] [S2]' while both showed VLAN 100 with 72 member ports)."""
+    out = []
+    for i, s in enumerate(steps, 1):
+        o, node, cmd = str(s.get("output") or ""), s.get("node"), str(s.get("command") or "")
+        vl = [v for v in vlans_of(o) if v["vlan"] and v["members"]]
+        if vl and _NO_VLAN.search(text or ""):
+            out.append(f"it says there is no VLAN, but [S{i}] on {node} shows VLAN {vl[0]['vlan']} with {vl[0]['members']} member ports")
+        g = gpus_listed(o, cmd)
+        if g and _NO_GPU.search(text or ""):
+            out.append(f"it says there are no GPUs, but [S{i}] on {node} lists {len(g)}")
+        sm = _STATUS_SUM.search(o) or _STATUS_SUM.search(status_line(o) or "")
+        rows = _SW_PORT.findall(o)
+        up, down = ((int(sm.group(2)), int(sm.group(3))) if sm else
+                    (sum(1 for _p, op, _a in rows if op == "up"), sum(1 for _p, op, a_ in rows if op == "down" and a_ == "up")))
+        if up and _ALL_DOWN.search(text or ""):
+            out.append(f"it says all ports are down, but [S{i}] on {node} shows {up} up")
+        if down and _ALL_UP.search(text or ""):
+            out.append(f"it says all ports are up, but [S{i}] on {node} shows {down} down")
+    return list(dict.fromkeys(out))
 
 
 def step_facts(steps: list[dict]) -> list[str]:
@@ -258,10 +338,26 @@ def step_facts(steps: list[dict]) -> list[str]:
         elif m:
             facts.append(f"[S{i}] {node}: {m.group(2)} of its {m.group(1)} ports with link receive packets on the CPU - "
                          "the switch's packet path to the CPU works")
-        for port, oper, admin in _SW_PORT.findall(out):
-            if oper == "down" and admin == "up":
-                sw_down += 1
-                facts.append(f"[S{i}] {node} {port}: admin up, oper down - enabled, but no link (not shut by configuration)")
+        ns = (re.search(r"-n\s+(asic\d)", str(s.get("command") or "")) or [None, ""])[1]
+        where = f"{node} {ns}".strip()
+        for v in vlans_of(out):                         # what was asked ('check vlans on st1') read exactly (9 Nov)
+            facts.append(f"[S{i}] {where}: VLAN {v['vlan']} - {v['members']} member ports ({v['tagging']})"
+                         + f", IP {v['ip']}" if v["vlan"] else f"[S{i}] {where}: no VLAN configured (the table is empty)")
+        sm = _STATUS_SUM.search(out) or _STATUS_SUM.search(status_line(out) or "")
+        down_up = (sm.group(4) or "").split() if sm else [p_ for p_, oper, admin in _SW_PORT.findall(out)
+                                                          if oper == "down" and admin == "up"]
+        if sm:                                          # a whole chip's listing: how many up / down, then the first few
+            facts.append(f"[S{i}] {where}: {sm.group(1)} ports - {sm.group(2)} up, {sm.group(3)} admin up but oper down"
+                         + (f", {sm.group(5)} shut (admin down)" if sm.group(5) else ""))
+        for port in down_up[:6]:
+            sw_down += 1
+            facts.append(f"[S{i}] {node} {port}: admin up, oper down - enabled, but no link (not shut by configuration)")
+        if len(down_up) > 6:
+            sw_down += len(down_up) - 6
+            facts.append(f"[S{i}] {node}: and {len(down_up) - 6} more ports admin up, oper down")
+        gpus = gpus_listed(out, str(s.get("command") or ""))
+        if gpus is not None:
+            facts.append(f"[S{i}] {node}: {len(gpus)} GPU(s) listed" + (f" ({', '.join(gpus)})" if gpus else ""))
     if gpu_down and sw_dark:
         facts.append("Together: the GPU port has no link (NO_PHY_LINK) and the switch receives no signal on any lane while "
                      "it transmits - neither end sees the other: the cable or a connector of that one link (site / cabling: "
@@ -505,6 +601,10 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
             msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},   # for the same afmctl / status again)
                            {"role": "user", "content": again_text(out, steps)}]
             out = _propose_once(ai, msgs, subject, steps, nodes, env, stay) | {"retried": True}
+            if str(out.get("refused") or "").startswith("already run"):   # the same again: it has nothing new to read -
+                msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},   # conclude (9 Nov: 3 of 6 steps
+                               {"role": "user", "content": CONCLUDE_NOW}]                 # went to refused repeats)
+                out = _propose_once(ai, msgs, subject, steps, nodes, env, stay) | {"retried": True}
             continue
         role = nodes.get(out.get("node"), "switch")
         msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
@@ -520,8 +620,18 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
                         f"or propose another step. Answer with the JSON object only."}]
         again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
         out = again | {"retried": True, "contradiction_before": out["contradiction"]}
+    if out.get("done") and out.get("contradicts"):       # once more, told what its own outputs show
+        msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
+                       {"role": "user", "content": "Your conclusion contradicts the outputs: " + "; ".join(out["contradicts"])
+                        + ". Conclude again from what the outputs show. Answer with the JSON object only."}]
+        again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
+        out = again | {"retried": True, "contradicts_before": out["contradicts"]}
     out.pop("_text", None)
     return out
+
+
+CONCLUDE_NOW = ("Refused again: that step was run already. Do not propose it again - conclude now from what the outputs "
+                "above show: {\"done\": true, \"conclusion\": ..., \"next\": ...}. Answer with the JSON object only.")
 
 
 def again_text(out: dict, steps: list[dict]) -> str:
@@ -550,6 +660,7 @@ def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=No
         return {"done": True, "conclusion": concl, "next": nxt, "model": model, "facts": step_facts(steps),
                 "unsafe": unsafe_text(concl + "\n" + nxt), "_text": text,
                 "not_in_evidence": invented(concl, Evidence(), _seen(msgs)), "contradiction": mtu_contradiction(concl),
+                "contradicts": contradictions(concl + " " + nxt, steps),
                 "answer_id": ai.remember(msgs, text, model, subject + " (step by step)")}
     node = str(st.get("node") or "").strip()
     out = {"done": False, "node": node, "command": str(st.get("command") or "").strip(), "why": str(st.get("why") or ""),
@@ -669,8 +780,9 @@ def run(host, transport, command: str, role: str, log_dir: Path | None = None) -
     u = unreachable({"rc": rc, "output": out, "node": host.name})
     if u:
         out = f"Could not log in to {host.name}: {u['what']}.\nNext: {u['next']} (owner: {u['owner']})\n\n{out}"
-    vl = vlan_brief(out)                                 # the person sees the table too, the summary on top of it
-    out = compact(out) if vl is None else vlan_line(vl) + "\n\n" + out   # before cutting: a cut JSON cannot be read
+    vl, sl = vlan_brief(out), status_line(out)           # the person sees the table too, the summary on top of it
+    out = (vlan_line(vl) + "\n\n" + out if vl is not None else sl + "\n\n" + out if sl else
+           compact(out))                                 # before cutting: a cut JSON cannot be read any more
     if len(out) > OUTPUT_MAX:
         out = out[:OUTPUT_MAX // 2] + f"\n... ({len(out) - OUTPUT_MAX} characters cut) ...\n" + out[-OUTPUT_MAX // 2:]
     return {"node": host.name, "command": c, "rc": rc, "output": out, "seconds": round(time.time() - t0, 1)}

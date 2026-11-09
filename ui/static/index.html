@@ -1354,6 +1354,7 @@ function guideNext(sess){
   api("/api/ai/guide",aiReq(ctx,{steps:steps})).then(function(p){
     if(p.done){nx.classList.remove("pending");nx.innerHTML='<div class="verdict '+(p.unsafe?"degraded":"ok")+'"><h3>Step by step: conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+
         (p.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(p.unsafe)+'") - only with a go-ahead, and check it against what the outputs show below.</div>':"")+notSeen(p)+
+        ((p.contradicts||[]).length?'<div class="warn">It contradicts the outputs: '+esc(p.contradicts.join("; "))+' - trust the outputs, not this conclusion.</div>':"")+
         ((p.facts||[]).length?'<div style="margin:6px 0"><b>What the outputs show</b> <span class="mut" style="font-size:12px">read by code, not the AI</span><ul style="margin:4px 0">'+p.facts.map(function(f){return "<li>"+esc(f)+"</li>"}).join("")+"</ul></div>":"")+
         '<div class="mut" style="font-size:12px">'+steps.length+" command(s) run · advisory - check it against the outputs above</div><div class=\"fb\"></div></div>";
       sess.hist.push({q:"(step by step) what is the cause?",a:p.conclusion+(p.next?"\nNext: "+p.next:"")});
