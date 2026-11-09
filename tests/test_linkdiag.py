@@ -422,3 +422,15 @@ def test_now_read_live_over_check():
     assert x["state"] == "down" and x["kind"] == "sw_admin_down" and "startup Ethernet4" in x["action"]
     y = now_read(ln, {"read": True, "state": "down", "sw_oper": "down", "sw_admin": "up", "gpu_link": "NO_PHY_LINK", "ll_up": None})
     assert y["kind"] == "phys_both"
+
+
+def test_fec_margin_from_both_ends():
+    sw = _switch()
+    sw["asics"]["asic0"]["fec_hist"] = {"Ethernet25": [9, 5, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]}   # 13 of 15
+    tr = _tray()
+    tr["gpus"][0]["ports"][0].update(fec_max_t=4, fec_uncorr=0, link_up_count=1)
+    ln, _ = _one(sw, tr)
+    assert ln.kind == "fec_margin" and ln.state == "degraded" and "the switch end" in ln.cause and "13 of 15" in ln.cause
+    sw["asics"]["asic0"]["fec_hist"] = {"Ethernet25": [9, 5, 2, 1, 0, 0, 0, 1] + [0] * 8}                  # 7: degrading
+    ln, _ = _one(sw, _tray())
+    assert ln.state == "ok" and any("7 of 15" in e and "degrading" in e for e in ln.evidence)

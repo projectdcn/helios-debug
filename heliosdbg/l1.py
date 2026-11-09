@@ -69,17 +69,20 @@ def histograms(text: str) -> list[dict]:
     out = []
     b = {int(i): _n(v) for i, v in _BIN.findall(t)}
     if len(b) >= 8:
-        out.append({"who": "", "bins": [b.get(i, 0) for i in range(T + 1)], "uncorr": None, "link_up": None})
+        out.append({"who": "", "port": None, "bins": [b.get(i, 0) for i in range(T + 1)], "uncorr": None, "link_up": None})
     for p, row in _FH_ROW.findall(t):
-        out.append({"who": p, "bins": [_n(x) for x in row.split()], "uncorr": None, "link_up": None})
-    for blk in re.split(r"(?=^BDF\s*:)", t, flags=re.M):
+        out.append({"who": p, "port": p, "bins": [_n(x) for x in row.split()], "uncorr": None, "link_up": None})
+    bdf = None                         # one 'BDF :' line, then a 'Station id / Port id' block per port (-p 0-35)
+    for blk in re.split(r"(?=^\s*(?:BDF|Station id)\s*:)", t, flags=re.M):
+        b_ = re.match(r"\s*BDF\s*:\s*(\S+)", blk)
+        if b_:
+            bdf = b_.group(1)
         a = {int(i): int(v) for i, v in _AFM_BIN.findall(blk)}
         if len(a) >= 8:
-            bdf = re.search(r"^BDF\s*:\s*(\S+)", blk, re.M)
             port = re.search(r"Port id\s*:\s*(\d+)", blk)
             unc = re.search(r"uncorrectable\s*:\s*(\d+)", blk)
             up = re.search(r"Link up count\s*:\s*(\d+)", blk)
-            out.append({"who": f"GPU {bdf.group(1) if bdf else '?'} port {port.group(1) if port else '?'}",
+            out.append({"who": f"GPU {bdf or '?'} port {port.group(1) if port else '?'}", "port": int(port.group(1)) if port else None,
                         "bins": [a.get(i, 0) for i in range(T + 1)], "uncorr": int(unc.group(1)) if unc else None,
                         "link_up": int(up.group(1)) if up else None})
     return out
@@ -87,6 +90,10 @@ def histograms(text: str) -> list[dict]:
 
 def max_t(bins: list[int]) -> int:
     return max((i for i, n in enumerate(bins) if n), default=0)
+
+
+def margin_word(k: int) -> str:
+    return "comfortable" if k <= 5 else "degrading" if k < 12 else "at the cliff"
 
 
 def hist_says(h: dict) -> str:

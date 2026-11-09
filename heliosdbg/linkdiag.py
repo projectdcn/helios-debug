@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 
-from . import gpudriver, reach
+from . import gpudriver, l1, reach
 from .afmctl import Afmctl, parse_port_description
 from .parsers import parse_table
 from .rack import fan_out
@@ -39,6 +39,7 @@ KINDS = {
     "phys_no_optic": "no transceiver / cable detected in the switch port",
     "one_sided": "one-sided link: the two ends disagree",
     "bit_errors": "bit errors growing on a link that is up",
+    "fec_margin": "link up but at the FEC cliff (worst codewords 12+ of 15 symbols corrected)",
     "ifcp": "physical link up but no IFCP session",
     "not_programmed": "link up but not programmed by AFM",
     "miscabled": "GPU port reaches a different switch port than described",
@@ -195,6 +196,10 @@ def collect_switch(sw) -> dict:
             fec = {r.get("IFACE"): r for r in parse_table(sw.sh(f"show interfaces counters fec-stats{ns_flag(ns)}", timeout=180))}
             pres = {r.get("Port"): r.get("Presence", "") for r in
                     parse_table(sw.run(f"show interfaces transceiver presence{ns_flag(ns)}", sudo=True, timeout=180).stdout)}
+            try:                                     # every port's FEC histogram: the margin left (9 Nov, JTAC deck)
+                fh = {h["port"]: h["bins"] for h in l1.histograms(sw.sh(f"portstat -fh{ns_flag(ns)}", timeout=180)) if h["port"]}
+            except Exception:  # noqa: BLE001 - margin is extra evidence
+                fh = {}
             try:
                 flaps = read_flaps(sw, ns)
             except Exception:  # noqa: BLE001 - flap counts are extra evidence: without them the links are still checked
@@ -204,7 +209,7 @@ def collect_switch(sw) -> dict:
             except Exception as e:  # noqa: BLE001 - VLANs are extra: a failed read is noted, the links are still checked
                 vl = {"vlans": [], "members": {}, "error": f"{type(e).__name__}: {str(e)[:160]}"}
             out["asics"][key] = {"status": status, "desc": desc, "fdb": fdb, "counters": cnt, "fec": fec, "presence": pres,
-                                 "vlan": vl, "flaps": flaps}
+                                 "vlan": vl, "flaps": flaps, "fec_hist": fh}
     except Exception as e:  # noqa: BLE001 - an unreachable switch is reported, not fatal
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     if broken:                                       # a problem on the switch: named in full, entries kept
@@ -244,6 +249,13 @@ def collect_tray(tray) -> dict:
                               "fec_mode": sp.get("fec_mode"), "loopback": sp.get("loopback_mode"),
                               "ifcp": {k: i.get(k) for k in ("link_up", "ll_up", "in_error", "peer_enabled",
                                                               "peer_in_error", "peer_device_id", "peer_port_id")}})
+            try:                                     # the GPU end's FEC histogram + link up count per port (9 Nov)
+                for h in l1.histograms(a.fec_stats(d.bdf)):
+                    p_ = next((x for x in ports if x["port"] == h["port"]), None)
+                    if p_ is not None:
+                        p_["fec_max_t"], p_["fec_uncorr"], p_["link_up_count"] = l1.max_t(h["bins"]), h["uncorr"], h["link_up"]
+            except Exception:  # noqa: BLE001 - margin is extra evidence
+                pass
             acc, members = accels.get(d.bdf, ("", set()))   # not 'reach': that name is the module the except uses
             out["gpus"].append({"bdf": d.bdf, "accelerator": acc, "vpod_accelerators": len(members),
                                 "config_phase": d.config_phase, "ports": sorted(ports, key=lambda x: x["port"])})
@@ -293,6 +305,7 @@ class Link:
     vlans: list | None = None           # [[Vlan100, tagging_mode], ...] of the switch port (None = VLANs not read)
     mtu: str | None = None              # switch port MTU ('show interfaces status'; the fabric uses 9100)
     flap_count: int | None = None       # APPL_DB PORT_TABLE flap_count of the switch port (None = not read)
+    fec_max_t: int | None = None        # the switch end's deepest corrected codeword, of 15 (portstat -fh; None = not read)
     last_down_time: str | None = None   # APPL_DB PORT_TABLE last_down_time
 
 
@@ -323,6 +336,8 @@ def join(switches: list[dict], trays: list[dict], quarantined: dict | None = Non
                 ln.vlans = None if vl.get("error") or "members" not in vl else vl["members"].get(port, [])
                 ln.fdb_static = bool(static.get(port))
                 ln.flap_count, ln.last_down_time = (a.get("flaps") or {}).get(port, (None, None))
+                fh = (a.get("fec_hist") or {}).get(port)
+                ln.fec_max_t = l1.max_t(fh) if fh else None
                 hits = [by_mac[mac] for mac in sorted(static.get(port, ())) if mac in by_mac]
                 hit = next((h for h in hits if h[2]["port"] == cab[3]), None)
                 if hit is None and len(hits) == 1:
@@ -614,6 +629,14 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
                     SITE,
                     "Marginal cable / connector: reseat it, then sample again; if the errors follow the cable after a swap, "
                     "replace the cable.")
+    m = margin(ln)
+    if m:
+        ev.append(m["line"])
+        if m["k"] >= 12:
+            return set_("degraded", "fec_margin", m["cause"], SITE,
+                        "Marginal cable / connector of this one link: read it again to see the tail grow (Watch FEC), "
+                        "compare both ends, then reseat / swap that cable (CHANGES THE RACK, with a go-ahead) before it "
+                        "loses frames or flaps.")
     i = g["ifcp"]
     if not ifcp_in_use:
         ev.append("IFCP not judged: no GPU port on this rack has an IFCP session or peer (not running here)")
@@ -634,10 +657,29 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
     return set_("ok", "", "", "", "")
 
 
+def margin(ln: Link) -> dict | None:
+    """The FEC margin of an up link from both ends' histograms (switch: portstat -fh; GPU: afmctl port statistics fec):
+    {k, line, cause} or None when neither end was read. KP4 corrects 15 symbols per codeword: 0-5 comfortable, 6-11
+    degrading, 12+ at the cliff (JTAC 'SONiC Interface' deck)."""
+    g = ln.gpu or {}
+    ks, kg = ln.fec_max_t, g.get("fec_max_t")
+    if ks is None and kg is None:
+        return None
+    k = max(x for x in (ks, kg) if x is not None)
+    parts = ([f"switch end {ks} of 15"] if ks is not None else []) + (
+        [f"GPU end {kg} of 15" + (f", {g['fec_uncorr']} uncorrectable" if g.get("fec_uncorr") else "")
+         + (f", link up count {g['link_up_count']}" if g.get("link_up_count") is not None else "")] if kg is not None else [])
+    end = ("both ends" if ks is not None and kg is not None and min(ks, kg) >= 12 else
+           "the switch end" if ks is not None and (kg is None or ks >= kg) else "the GPU end")
+    return {"k": k, "line": f"FEC margin (deepest corrected codeword): {'; '.join(parts)} - {l1.margin_word(k)}",
+            "cause": (f"the link is up but at the FEC cliff: {end}'s worst codewords needed {k} of 15 symbols corrected "
+                      f"({'; '.join(parts)}) - a slightly worse codeword is lost; errors into that end's receiver")}
+
+
 FDB_RETRIES, FDB_RETRY_S = 3, 10.0
 
 # kinds where the switch ASIC's own view of the lanes says which side / layer fails
-BCM_KINDS = ("phys_never_up", "phys_went_down", "one_sided", "bit_errors")
+BCM_KINDS = ("phys_never_up", "phys_went_down", "one_sided", "bit_errors", "fec_margin")
 
 
 def add_bcm(rack, links: list, sw_res: dict, log=print, limit: int = 64, force: set | None = None) -> None:

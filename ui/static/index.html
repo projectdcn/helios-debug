@@ -709,6 +709,7 @@ var KIND_HELP={
   phys_went_down:{t:"No physical link - it went down",m:"The link worked and then dropped.",s:["Diagnose the link: the timeline shows when it dropped and whether someone switched it off.","If nothing was changed: ask the site to reseat / replace the cable."]},
   phys_no_optic:{t:"No cable / optic detected in the switch port",m:"The switch does not see a cable or optic in this port (or this switch cannot tell).",s:["Diagnose the link - its switch-signal part shows whether light arrives anyway.","Ask the site to seat or replace the cable / optic."]},
   one_sided:{t:"The two ends disagree",m:"One end says up and the other down: often a cable landed on a different port than its label says, or a half-broken cable.",s:["Ask the site to verify where the cable lands, then reseat it."]},
+  fec_margin:{t:"Link at the FEC cliff",m:"The link is up, but its worst codewords already need 12 or more of the 15 symbols FEC can correct: a slightly worse one is lost. It works now and will lose frames or flap before long.",s:["Run Watch FEC to see whether the tail grows; compare both ends (the end with the deeper tail receives worse).","Ask the site to reseat / swap that one cable (changes the rack: with a go-ahead)."]},
   bit_errors:{t:"Errors on a working link",m:"The link is up but errors keep growing: a marginal cable, optic or connector.",s:["Ask the site to clean / reseat the connectors; replace the cable if errors continue.","Watch links shows whether it keeps happening."]},
   ifcp:{t:"Cable is up but the link carries no traffic",m:"The GPU port's control session with the switch (IFCP) did not come up.",s:["Collect the details (evidence bundle) and raise it with AMD."]},
   not_programmed:{t:"Link is up but not set up by AFM",m:"AFM has not programmed this port (the GPU may not be in a group of GPUs).",s:["Check in AFM that the GPU is in a vPOD; raise it with AMD if it is."]},
@@ -2274,7 +2275,7 @@ function drillAsic(sw,a){
   ls.forEach(function(l){var k=(l.tray||"(no tray)")+"|"+mGpu(l);(gp[k]=gp[k]||[]).push(l)});
   /* neighbouring-port hint: physical-layer problems only (not a whole tray / GPU not set up), and only when they are
      a minority of the chip's ports - otherwise 'neighbours' just means 'many' */
-  var PHYS=["phys_never_up","phys_went_down","phys_no_optic","one_sided","bit_errors","miscabled"];
+  var PHYS=["phys_never_up","phys_went_down","phys_no_optic","one_sided","bit_errors","fec_margin","miscabled"];
   var bad=ls.filter(function(l){return mEff(l)!=="ok"&&PHYS.indexOf(l.kind)>=0}).map(function(l){return pkNum(l.sw_port)}).sort(function(x,y){return x-y}),near=0;
   for(var i=1;i<bad.length;i++)if(bad[i]-bad[i-1]<=8)near++;
   if(bad.length>ls.length/2)near=0;

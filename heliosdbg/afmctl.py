@@ -210,6 +210,11 @@ class Afmctl:
         doc = json.loads(self._json(f"show port -b {shlex.quote(bdf)} --json"))
         return next((d.get("port") or [] for d in _devices(doc) if str(d.get("bdf")) == bdf), [])
 
+    def fec_stats(self, bdf: str) -> str:
+        """`afmctl show port statistics fec -b <bdf> -p 0-35`: each port's FEC histogram, uncorrectables, link up count."""
+        return self.c.run(f"afmctl show port statistics fec -b {shlex.quote(bdf)} -p 0-35 2>/dev/null", sudo=True,
+                          timeout=self.timeout).check().stdout
+
     def ports(self, bdf: str) -> list[Port]:
         return parse_show_port(self._json(f"show port -b {shlex.quote(bdf)} --json")).get(bdf, [])
 
