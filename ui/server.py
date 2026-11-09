@@ -433,6 +433,12 @@ def port_view(state: State, rel: str, key: str) -> dict:
                 out["gpu"] = next((p_ for p_ in g.get("ports") or [] if p_.get("port") == ln.get("gpu_port")), None)
     except (OSError, ValueError, EOFError):
         pass
+    if out["switch"] is None or out["gpu"] is None:   # saved from Live: no raw files, the ends are in Live's reading
+        from heliosdbg.live import as_read
+        r = as_read(ln)
+        if r is not ln:
+            out["live_read"] = {"sw_oper": r.get("sw_oper"), "sw_admin": r.get("sw_admin"), "gpu_link": r.get("gpu_link"),
+                                "time": (str((ln.get("evidence") or [""])[0]).split(": ", 1)[0].replace("Live ", ""))}
     for f in sorted(run.parent.glob("scan-*/link_check.json"), reverse=True)[:12]:
         try:
             e = json.loads(f.read_text())
