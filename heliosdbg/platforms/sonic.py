@@ -18,7 +18,13 @@ READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platf
     (rf"show\s+vlan\s+brief{_NS}", False),
     (r"show\s+(?:version|platform\s+(?:summary|psustatus|fan|temperature|syseeprom|firmware\s+status)|system-memory|"
          r"processes\s+summary|uptime|services|environment|reboot-cause)", False),
-    (rf"show\s+(?:pfc\s+counters|queue\s+counters|pfcwd\s+stats|buffer_pool\s+watermark){_NS}", False),
+    (rf"show\s+(?:pfc\s+counters|queue\s+counters|pfcwd\s+stats|buffer_pool\s+watermark){_NS}(?:\s+Ethernet\d+)?", False),
+    # link quality (JTAC 'SONiC Interface' deck, 9 Nov; checked on g02-g17 st1 202505): FEC histogram, portstat's FEC
+    # views (never -c / -d / -D: they clear or delete counters), flaps per chip, the retimers, a port's kernel netdev
+    (rf"show\s+interfaces\s+counters\s+fec-histogram{_NS}\s+Ethernet\d+", False),
+    (rf"portstat\s+-fh?{_NS}(?:\s+-i\s+Ethernet\d+(?:,Ethernet\d+){{0,7}})?", False),
+    (rf"show\s+interfaces\s+flap{_NS}(?:\s+Ethernet\d+)?", False),
+    (r"(?:ip\s+netns\s+exec\s+asic\d\s+)?(?:ip\s+-d\s+link\s+show\s+Ethernet\d+|gearboxutil\s+interfaces\s+status)", True),
     (r"systemctl\s+status\s+[A-Za-z0-9@_.-]+(?:\s+(?:--no-pager|-l|--full|-n\s+\d{1,3}))*", False),
     (r"show\s+logging", True),                    # not -f: it never ends and holds a jump-host session
     (rf"show\s+lldp\s+(?:table|neighbors){_NS}", False),

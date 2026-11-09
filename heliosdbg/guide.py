@@ -107,7 +107,12 @@ GUIDE_SYSTEM_ADD = (
     "the switch ASIC's own view of a link that is down, flaps or has errors: bcm-view -n asicN EthernetX; "
     "no IFCP session on a switch's links: sudo ip -n asicN -s -o link show (does the switch CPU receive from its ports), "
     "systemctl status afm-agent, sudo tail -n 100 /opt/amd/afm/agent/logs/ifcp-err.log, "
-    "sudo ls -lt /opt/amd/afm/agent/logs/ - a log that stopped being written means a stuck agent). One command, no ; && pipes except '| grep X' or '| tail -N'. "
+    "sudo ls -lt /opt/amd/afm/agent/logs/ - a log that stopped being written means a stuck agent; "
+    "link quality (FEC, flaps, retimer) of a port: show interfaces counters fec-stats -n asicN | grep -w EthernetX, "
+    "show interfaces counters fec-histogram -n asicN EthernetX, show interfaces flap -n asicN EthernetX, "
+    "sudo ip netns exec asicN gearboxutil interfaces status | grep -w EthernetX, "
+    "sudo sonic-db-cli -n asicN APPL_DB hgetall PORT_TABLE:EthernetX; its GPU end: sudo afmctl show port statistics fec "
+    "-b <address> -p <port>, sudo afmctl show device health --detail -b <address> -p <port>). One command, no ; && pipes except '| grep X' or '| tail -N'. "
     "Use only PCI addresses (-b ..) seen in the evidence or an earlier step; when none is, list them first "
     "(sudo afmctl show device --json). Do not repeat a command already run. Stay on the problem asked about: its nodes "
     "only, not the rack's other problems. At most 6 steps; conclude earlier when you can."
@@ -165,6 +170,10 @@ def compact(output: str) -> str:
     rx = _sonic.cpu_rx(t) if not t.startswith("{") else None
     if rx is not None:                      # 'ip -s -o link show': ~110 KB for 257 ports - what it says, in one line
         return _sonic.cpu_rx_line(rx)
+    from . import l1
+    ll = l1.compact(t) if not t.startswith("{") else None
+    if ll is not None:                      # a chip's FEC / flap / retimer table (9 Nov, JTAC SONiC Interface deck)
+        return ll
     pl = pfc_line(t) if not t.startswith(("{", "PFC pause")) else None
     if pl is not None:                      # 'show pfc counters': where pauses come from, not 500 rows
         return pl
@@ -288,7 +297,7 @@ def vlans_of(out: str) -> list[dict]:
 def gpus_listed(out: str, command: str) -> list[str] | None:
     """The GPUs a listing shows (afmctl show device / lspci -d 1002:), None for another command."""
     c = re.sub(r"^\s*sudo\s+", "", command)
-    if c.startswith("afmctl show device"):
+    if c.startswith("afmctl show device") and not re.match(r"afmctl show device\s+health", c):   # health: no GPU list
         return re.findall(r"^GPU (\S+): accelerator", compact(out), re.M)
     if re.match(r"lspci\b.*-d\s+1002:", c):
         return re.findall(r"^([0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d) (?:Processing accelerators|Display)", out, re.M)
@@ -330,6 +339,9 @@ def contradictions(text: str, steps: list[dict]) -> list[str]:
                 if st in ("X", "D")] if len(ctr) <= 6 else []
         if few and _WORKS.search(text or ""):
             out.append(f"it says the link works, but [S{i}] on {node} shows {few[0][0]} {few[0][1]}")
+    from . import l1
+    for i, s in enumerate(steps, 1):
+        out += l1.contradictions(i, s.get("node"), str(s.get("output") or ""), text)
     ran = [(i, s) for i, s in enumerate(steps, 1) if str(s.get("rc")) not in ("refused", "skipped")]
     if ran and _NOTHING.search(text or "") and all(not str(s.get("output") or "").strip() or
                                                    str(s.get("output") or "").startswith("(no output") for _i, s in ran):
@@ -442,6 +454,8 @@ def step_facts(steps: list[dict]) -> list[str]:
             rows = re.findall(r"^[ \t]*(Ethernet\d+)[ \t]+(up|down)[ \t]+(up|down)[ \t]+\S+[ \t]*(.*?)[ \t]*$", out, re.M)
             for port, oper, _adm, desc in rows[:3] if len(rows) <= 3 else []:
                 facts.append(f"[S{i}] {where} {port} (oper {oper}): described '{desc or '(none)'}'")
+        from . import l1
+        facts += l1.facts(i, node, where, str(s.get("command") or ""), out)
         gpus = gpus_listed(out, str(s.get("command") or ""))
         if gpus is not None:
             facts.append(f"[S{i}] {node}: {len(gpus)} GPU(s) listed" + (f" ({', '.join(gpus)})" if gpus else ""))

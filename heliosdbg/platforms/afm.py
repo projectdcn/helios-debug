@@ -11,6 +11,13 @@ from ..checks import _NS, _WORD  # noqa: F401 - the allow-list patterns
 
 COMPUTE_READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platform (heliosdbg/guide.py)
     (r"afmctl\s+show\s+(?:device|port|port\s+accelerator-addr|station|version)(?:\s+-b\s+[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)?(?:\s+--json)?", True),
+    # a GPU port's link quality (9 Nov, JTAC 'SONiC Interface' deck): FEC histogram + link-up count, MAC / PFC counters,
+    # station / port health and anomaly counters - all reads (never 'afmctl test' / 'collect')
+    (r"afmctl\s+show\s+port\s+statistics\s+(?:fec|mac|pfc)(?:\s+-b\s+[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)?"
+     r"(?:\s+-s\s+\d{1,2})?\s+-p\s+\d{1,2}(?:\s+--json)?", True),
+    (r"afmctl\s+show\s+device\s+health(?:\s+--anomalies|\s+--detail)?(?:\s+-b\s+[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)?"
+     r"(?:\s+-p\s+\d{1,2})?", True),
+    (r"afmctl\s+show\s+port\s+--brief(?:\s+-b\s+[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)?", True),
 ]
 
 SWITCH_COMMANDS = [

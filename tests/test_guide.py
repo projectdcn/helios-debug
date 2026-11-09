@@ -772,3 +772,40 @@ def test_bcm_view_finds_padded_port():
     except RuntimeError:
         return                                        # got past the lookup: it found the port
     assert "is not in" not in out
+
+
+# L1 readings (9 Nov, JTAC 'SONiC Interface' deck): real g02-g17 st1 / ct17 output shapes
+_HIST = "Symbol Errors Per Codeword         Codewords\n---  ---\n" + "".join(
+    f"BIN{i}  {n}\n" for i, n in enumerate([24754838865339, 1599, 45, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]))
+_FLAP = ("Interface      Flap Count  Admin    Oper    Link Down TimeStamp(UTC)    Link Up TimeStamp(UTC)\n"
+         "-----------  ------------  -------  ------  --------------------------  ------------------------\n"
+         "Ethernet4               7  Up       Up      Sun Nov 08 19:18:49 2026    Sun Nov 08 19:19:43 2026\n")
+_AFM = ("BDF                           : 0004:01:00.1\n  Station id                  : 16\n  Port id                     : 33\n"
+        "  Statistics:\n    Bit error rate                                : 0\n    Link up count                                 : 3\n"
+        + "".join(f"    FEC CW symbol errs {i}                          : {n}\n" for i, n in enumerate([9, 5, 2, 1] + [0] * 12))
+        + "    FEC CW symbol errs uncorrectable              : 0\n")
+
+
+def test_l1_facts_and_allow_list():
+    from heliosdbg import guide
+    f = guide.step_facts([{"node": "st1", "command": "show interfaces counters fec-histogram -n asic0 Ethernet4", "output": _HIST},
+                          {"node": "st1", "command": "show interfaces flap -n asic0 Ethernet4", "output": _FLAP},
+                          {"node": "ct17", "command": "sudo afmctl show port statistics fec -b 0004:01:00.1 -p 33", "output": _AFM}])
+    assert any("MAX_T 9" in x and "Ethernet4" in x for x in f)
+    assert any("flap count 7" in x and "54 s later" in x for x in f)
+    assert any("port 33" in x and "came up 3 times" in x for x in f)
+    c = guide.contradictions("It never flapped.", [{"node": "ct17", "command": "x", "output": _AFM}])
+    assert c and "went down and came back" in c[0]
+    for cmd, role in (("show interfaces counters fec-histogram -n asic1 Ethernet260", "switch"),
+                      ("portstat -fh -n asic0 -i Ethernet4", "switch"), ("show interfaces flap -n asic0", "switch"),
+                      ("sudo ip netns exec asic1 gearboxutil interfaces status | grep -w Ethernet260", "switch"),
+                      ("sudo afmctl show port statistics fec -b 0004:01:00.1 -p 33", "compute"),
+                      ("sudo afmctl show device health --detail -b 0001:01:00.1 -p 11", "compute")):
+        guide.check(cmd, role)
+    for cmd, role in (("portstat -c", "switch"), ("portstat -f -d", "switch"), ("sudo afmctl test ping --bdf 0003:01:00.1", "compute")):
+        try:
+            guide.check(cmd, role)
+            raise AssertionError(cmd)
+        except guide.GuideError:
+            pass
+    assert guide.gpus_listed("0001:01:00.1 (accelerator 0, config phase: ACTIVE)", "sudo afmctl show device health -b 0001:01:00.1") is None
