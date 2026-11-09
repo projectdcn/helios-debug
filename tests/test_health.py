@@ -339,3 +339,29 @@ def test_info_findings_are_not_sent_as_incidents():
     from heliosdbg import incidents
     fs = [{"node": "ct01", "check": "kernel", "severity": "info"}, {"node": "ct02", "check": "gpus", "severity": "critical"}]
     assert [f["node"] for f in incidents.pick({"findings": fs})[0]] == ["ct02"]
+
+
+def _running(vlans: dict) -> dict:
+    """A chip's running configuration with these VLANs: {vlan id: member count}."""
+    import json as _j
+    return {"cmd": "sonic-cfggen -n asic0 -d --print-data", "rc": 0, "err": "", "out": _j.dumps({
+        "VLAN": {f"Vlan{v}": {"vlanid": str(v)} for v in vlans},
+        "VLAN_MEMBER": {f"Vlan{v}|Ethernet{i}": {"tagging_mode": "priority_tagged"} for v, n in vlans.items()
+                        for i in range(n)}})}
+
+
+def test_vlans_differing_between_a_switchs_chips_and_across_the_rack():
+    # g02-g17 9 Nov: VLAN 100 / 200 / 300 with 72 member ports each on every chip
+    from heliosdbg.platforms import sonic
+    good = {100: 72, 200: 72, 300: 72}
+    outs = {"running:asic0": _running(good), "running:asic1": _running(good)}
+    assert sonic.vlans_running(outs)["asic0"]["200"] == {"members": 72, "tagging": {"priority_tagged": 72}}
+    assert not [f for f in health.judge_switch("st1", outs) if f["check"] == "vlan"]
+    bad = {"running:asic0": _running(good), "running:asic1": _running({100: 72, 200: 70})}
+    f = [f for f in health.judge_switch("st2", bad) if f["check"] == "vlan"]
+    assert f and "asic1 VLAN 100 x 72, VLAN 200 x 70" in f[0]["what"]
+    rack = {"st1": outs, "st2": bad, "st3": outs}
+    r = sonic.judge_rack(rack)
+    assert len(r) == 1 and r[0]["what"].endswith("st2 asic1")
+    assert "st2 asic1: VLAN 300 missing; VLAN 200 70 members, not 72" in r[0]["evidence"]
+    assert not sonic.judge_rack({"st1": outs, "st3": outs})

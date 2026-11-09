@@ -535,6 +535,81 @@ def _drift(node, outs, F):
                              diffs[:8], outs[key].get("cmd", "")))
 
 
+def vlans_running(outs: dict) -> dict[str, dict[str, dict]]:
+    """The VLANs of each ASIC namespace from its running configuration (read for drift already): {ns: {vlan id:
+    {members, tagging: {mode: n}}}}. g02-g17 9 Nov: VLAN 100 / 200 / 300 with 72 member ports each on every chip."""
+    got: dict[str, dict[str, dict]] = {}
+    for key in sorted(k for k in outs if k.startswith("running:")):
+        try:
+            run = json.loads(_out(outs, key) or "")
+        except ValueError:
+            continue
+        if not isinstance(run, dict):
+            continue
+        vl: dict[str, dict] = {}
+        for name, v in (run.get("VLAN") or {}).items():
+            vid = str((v or {}).get("vlanid") or re.sub(r"\D", "", name))
+            vl[vid] = {"members": 0, "tagging": {}}
+        for k, v in (run.get("VLAN_MEMBER") or {}).items():
+            vid = re.sub(r"\D", "", k.split("|", 1)[0])
+            m = vl.setdefault(vid, {"members": 0, "tagging": {}})
+            m["members"] += 1
+            mode = str((v or {}).get("tagging_mode") or "?")
+            m["tagging"][mode] = m["tagging"].get(mode, 0) + 1
+        got[key.split(":", 1)[1] or "host"] = vl
+    return got
+
+
+def _vlan_sig(vl: dict) -> tuple:
+    return tuple(sorted((vid, v["members"]) for vid, v in vl.items()))
+
+
+def _vlan_say(vl: dict) -> str:
+    return ", ".join(f"VLAN {vid} x {v['members']}" for vid, v in sorted(vl.items(), key=lambda x: int(x[0] or 0))) or "no VLAN"
+
+
+def _vlans(node, outs, F):
+    """The chips of one switch tray carry different VLANs or member counts (they serve the same trays' GPUs)."""
+    per = {ns: vl for ns, vl in vlans_running(outs).items() if ns != "host"}
+    if len(per) < 2 or len({_vlan_sig(vl) for vl in per.values()}) == 1:
+        return
+    F.append(finding(node, "switch", "vlan", "sonic", WARNING, "its switch chips carry different VLANs: "
+                     + "; ".join(f"{ns} {_vlan_say(vl)}" for ns, vl in sorted(per.items())),
+                     "the VLAN configuration was applied to one chip and not the other (or changed on one): the GPU "
+                     "ports of that chip are in the wrong VLAN or none", "compare 'show vlan brief -n asic0' with -n asic1; "
+                     "fixing the VLAN members CHANGES THE SWITCH - for the network team",
+                     [f"{ns}: {_vlan_say(vl)}" for ns, vl in sorted(per.items())], "show vlan brief -n asicN"))
+
+
+def judge_rack(outs_by_node: dict[str, dict]) -> list[dict]:
+    """Across the switch trays: chips whose VLANs (ids, member counts) differ from what most chips of the rack carry."""
+    chips = {(node, ns): vl for node, outs in outs_by_node.items() for ns, vl in vlans_running(outs).items() if ns != "host"}
+    if len(chips) < 3:
+        return []
+    sigs: dict[tuple, list] = {}
+    for c, vl in chips.items():
+        sigs.setdefault(_vlan_sig(vl), []).append(c)
+    if len(sigs) == 1:
+        return []
+    ref_sig = max(sigs, key=lambda s: len(sigs[s]))
+    ref = chips[sigs[ref_sig][0]]
+    odd = sorted(c for s, cs in sigs.items() if s != ref_sig for c in cs)
+    ev = [f"most chips ({len(sigs[ref_sig])} of {len(chips)}): {_vlan_say(ref)}"]
+    for c in odd:
+        vl = chips[c]
+        diff = ([f"VLAN {v} missing" for v in sorted(set(ref) - set(vl))] + [f"VLAN {v} extra" for v in sorted(set(vl) - set(ref))]
+                + [f"VLAN {v} {vl[v]['members']} members, not {ref[v]['members']}" for v in sorted(set(vl) & set(ref))
+                   if vl[v]["members"] != ref[v]["members"]])
+        ev.append(f"{c[0]} {c[1]}: " + "; ".join(diff))
+    return [finding(f"{len(outs_by_node)} switches", "switch", "vlan_rack", "sonic", WARNING,
+                    f"{len(odd)} switch chip(s) carry other VLANs than the rest of the rack: "
+                    + ", ".join(f"{n} {ns}" for n, ns in odd),
+                    "every chip serves one port of each GPU in the same VLANs; a chip that differs was configured "
+                    "differently (or changed later) - its GPU ports are in the wrong VLAN or none",
+                    "compare 'show vlan brief -n asicN' on those chips with a good one; fixing the VLAN members CHANGES "
+                    "THE SWITCH - for the network team", ev, "show vlan brief -n asicN")]
+
+
 CPU_RX_CMD = "ip{ns} -s -o link show"
 _IP_LINE = re.compile(r"^\d+:\s+(Ethernet\d+)(?:@\S+)?:\s+<([^>]*)>.*?RX:[^\\]*\\\s+(\d+)\s+(\d+).*?TX:[^\\]*\\\s+(\d+)\s+(\d+)", re.M)
 
@@ -619,6 +694,7 @@ def judge(node: str, outs: dict, ctx: dict | None = None) -> list[dict]:
     _tray(node, outs, F)
     _syslog(node, outs, F)
     _drift(node, outs, F)
+    _vlans(node, outs, F)
     _cpu_rx(node, outs, F, up)
     return F
 
@@ -654,4 +730,4 @@ def collect(sw, outs: dict, opts: dict) -> None:
 
 PLATFORM = Platform("sonic", "switch", "SONiC switch OS and the switch platform (PSUs, fans, sensors, watchdog)",
                     COMMANDS, judge, collect,
-                    read_only=READ_ONLY)
+                    read_only=READ_ONLY, judge_rack=judge_rack)
