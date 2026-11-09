@@ -34,6 +34,20 @@ from .transport import build_command, is_local
 _SAID = re.compile(r"switch oper (\S+) / admin (\S+), GPU (.+?), IFCP ll_up (\S+)")
 
 
+def now_read(ln: dict, now: dict | None) -> dict:
+    """A check's link with what Live reads now (Live running, the link read since it started): the check's record
+    with Live's reading as its cause, then as_read. mr2 st1 Ethernet4, 9 Nov: Live 'down since 8:39', the check of
+    3 Nov 'ok' - and the AI, told only the check, answered 'the link works'."""
+    if not now or not now.get("read") or (now.get("state") or "unknown") == (ln.get("state") or "unknown"):
+        return ln
+    said = lambda v: v or "not read"  # noqa: E731
+    return as_read(dict(ln, kind="live", state=now.get("state"),
+                        evidence=["Live now"] + list(ln.get("evidence") or []),    # every line of the check: older
+                        cause=f"read by Live now (the check said {ln.get('state') or 'unknown'}): switch oper "
+                              f"{said(now.get('sw_oper'))} / admin {said(now.get('sw_admin'))}, GPU {said(now.get('gpu_link'))}, "
+                              f"IFCP ll_up {said(now.get('ll_up'))}"))
+
+
 def as_read(ln: dict) -> dict:
     """A link saved from Live, as Live read it. Live keeps the earlier check's record and puts its own reading only in
     the cause: the record's ends (sw_oper 'up') and its evidence lines ('GPU ... LINK_UP') were the check's - mr2 st1
@@ -49,7 +63,13 @@ def as_read(ln: dict) -> dict:
     x["evidence"] = ev[:1] + [e if e.startswith("Earlier check") else f"Earlier check (before Live, may be out of date): {e}"
                               for e in ev[1:]]
     gpu_up = gpu.startswith("LINK_UP")
-    if ln.get("kind") == "live" and sw_oper == "down" and sw_admin == "up" and not gpu_up and gpu != "not read":
+    if ln.get("kind") == "live" and sw_admin == "down":    # mr2 st1 Ethernet4, 9 Nov: shut on the switch
+        x.update(kind="sw_admin_down", owner="operator / switch owner",
+                 cause=f"the switch port is administratively down (read by Live): shut on the switch, GPU {gpu} - with "
+                       "the switch end off, the GPU end has no link either; not the cable, not the GPU",
+                 action=f"Start it again if it should be up - CHANGES THE SWITCH: sudo config interface"
+                        f"{' -n ' + ln['asic'] if ln.get('asic') else ''} startup {ln.get('sw_port')} on {ln.get('switch')}")
+    elif ln.get("kind") == "live" and sw_oper == "down" and sw_admin == "up" and not gpu_up and gpu != "not read":
         x.update(kind="phys_both", owner="site (cabling)",
                  cause=f"no link at either end (read by Live): switch oper down / admin up, GPU {gpu} - neither end receives "
                        "the other: the cable, a connector or a transceiver of this one link",

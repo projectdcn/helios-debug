@@ -732,3 +732,43 @@ def test_an_ip_question_is_not_answered_from_thin_air():
     for c in ("ip addr add 1.2.3.4/24 dev eth0", "ip -br addr; reboot"):
         with pytest.raises(guide.GuideError):
             guide.check(c, "switch")
+
+
+# mr2 st1 Ethernet4, 9 Nov: SONiC pads Ethernet1-99; counters STATE X = shut; 'the link works' over it
+_ST4 = ("Interface            Lanes    Speed    MTU    FEC          Alias    Vlan    Oper    Admin    Type    Asym PFC\n"
+        "-----------  ---------------  -------  -----  -----  -------------  ------  ------  -------  ------  ----------\n"
+        "  Ethernet4            71,72     400G   9100    N/A   Ethernet71/1   trunk    down     down     N/A         N/A\n")
+_CTR4 = ("IFACE    STATE    RX_OK    RX_BPS    RX_UTIL    RX_ERR    RX_DRP    RX_OVR    TX_OK    TX_BPS    TX_UTIL\n"
+         "---------  -------  -------  --------  ---------  --------  --------  --------  -------  --------  ---------\n"
+         "Ethernet4        X        0  0.00 B/s      0.00%         0         0         0        0  0.00 B/s      0.00%\n")
+
+
+def test_padded_rows_and_shut_port():
+    from heliosdbg import guide
+    assert guide._SW_PORT.findall(_ST4) == [("Ethernet4", "down", "down")]
+    assert guide._STATUS_ROW.search(_ST4).group(1) == "Ethernet4"
+    f = guide.step_facts([{"node": "st1", "command": "show interfaces counters -n asic0 -i Ethernet4", "output": _CTR4}])
+    assert any("STATE X" in x and "shut" in x for x in f) and any(x.startswith("Together: the switch port is shut") for x in f)
+    f = guide.step_facts([{"node": "st1", "command": "show interfaces status -n asic0 Ethernet4", "output": _ST4}])
+    assert any("admin DOWN" in x for x in f)
+    c = guide.contradictions("The link works. No fault: both ends up.",
+                             [{"node": "st1", "command": "show interfaces counters -n asic0 -i Ethernet4", "output": _CTR4}])
+    assert c and "Ethernet4 disabled" in c[0]
+
+
+def test_bcm_view_finds_padded_port():
+    from heliosdbg import guide
+
+    class R:
+        rc, stdout, stderr = 0, _ST4, ""
+
+    class T:
+        def run(self, cmd, timeout=0, sudo=False):
+            if cmd.startswith("show interfaces status"):
+                return R()
+            raise RuntimeError("stop")
+    try:
+        rc, out = guide.bcm_view(T(), "asic0", "Ethernet4")
+    except RuntimeError:
+        return                                        # got past the lookup: it found the port
+    assert "is not in" not in out

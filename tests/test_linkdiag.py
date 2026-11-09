@@ -411,3 +411,14 @@ def test_a_tray_ssh_cannot_reach_keeps_its_ssh_error():
     tray = NS(host=NS(name="ct10", host="10.255.4.56", extra={}), t=T(), gpus=4, run=T().run)
     out = ld.collect_tray(tray)
     assert "No route to host" in out["error"]
+
+
+def test_now_read_live_over_check():
+    from heliosdbg.live import now_read
+    ln = {"switch": "st1", "asic": "asic0", "sw_port": "Ethernet4", "state": "ok", "kind": "", "evidence": ["x"]}
+    assert now_read(ln, None) is ln
+    assert now_read(ln, {"read": True, "state": "ok"}) is ln
+    x = now_read(ln, {"read": True, "state": "down", "sw_oper": "down", "sw_admin": "down", "gpu_link": "NO_PHY_LINK", "ll_up": None})
+    assert x["state"] == "down" and x["kind"] == "sw_admin_down" and "startup Ethernet4" in x["action"]
+    y = now_read(ln, {"read": True, "state": "down", "sw_oper": "down", "sw_admin": "up", "gpu_link": "NO_PHY_LINK", "ll_up": None})
+    assert y["kind"] == "phys_both"

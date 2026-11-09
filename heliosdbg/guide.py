@@ -214,9 +214,13 @@ def _age_min(ts: str) -> int | None:
 
 _CPU_RX = re.compile(r"^CPU receive[^:]*: \d+ Ethernet ports, (\d+) with link; (\d+) of those", re.M)
 _GPU_PORT = re.compile(r"^\s*port (\d+): (\S+?)(?:, (\S+?))?, admin (\w+)", re.M)
-_SW_PORT = re.compile(r"^(Ethernet\d+)\s+\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+(up|down)\s+(up|down)\b", re.M)
+# ^\s*: SONiC pads Ethernet1-99 (mr2 9 Nov: bcm-view said Ethernet4 "is not in show interfaces status")
+_SW_PORT = re.compile(r"^\s*(Ethernet\d+)\s+\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+(up|down)\s+(up|down)\b", re.M)
 
 
+# 'show interfaces counters': STATE U up, D oper down, X disabled (admin down) - mr2 9 Nov: Ethernet4 read 'X' and the
+# answer was 'the link works'
+_CTR_STATE = re.compile(r"^\s*(Ethernet\d+)\s+([UDX])\s+[\d,]+\s", re.M)
 _STATUS_ROW_ALL = re.compile(r"^\s*(Ethernet\d+)\s+\S+\s+(\S+)\s+(\d+)\s+\S+\s+\S+\s+\S+\s+(up|down)\s+(up|down)\b", re.M)
 _STATUS_SUM = re.compile(r"^Port status: (\d+) ports - (\d+) up, (\d+) admin up but oper down(?: \(([^)]*)\))?"
                          r"(?:, (\d+) shut)?", re.M)
@@ -295,6 +299,7 @@ _NO_VLAN = re.compile(r"\bno VLANs?\b|\bVLANs? (?:is |are )?(?:not (?:configured
 _NO_GPU = re.compile(r"\bno GPUs?\b(?!\s*(?:driver|port|link|session))|\b0 GPUs\b|\bGPUs? (?:are |is )?(?:missing|absent|"
                      r"not (?:present|detected|there|listed))", re.I)
 _ALL_DOWN = re.compile(r"\ball (?:the |its )?(?:ports|links) (?:are |were )?down\b", re.I)
+_WORKS = re.compile(r"\b(?:the )?link works\b|\bno fault\b|\bboth ends (?:are )?up\b|\bnothing (?:is )?wrong\b", re.I)
 _ALL_UP = re.compile(r"\ball (?:the |its )?(?:ports|links) (?:are |were )?up\b", re.I)
 
 
@@ -318,6 +323,13 @@ def contradictions(text: str, steps: list[dict]) -> list[str]:
             out.append(f"it says all ports are down, but [S{i}] on {node} shows {up} up")
         if down and _ALL_UP.search(text or ""):
             out.append(f"it says all ports are up, but [S{i}] on {node} shows {down} down")
+        few = [(p_, "oper down" if op == "down" and a_ == "up" else "admin down (shut)") for p_, op, a_ in rows
+               if op == "down"] if len(rows) <= 6 else []
+        ctr = _CTR_STATE.findall(o)
+        few += [(p_, "disabled (STATE X)" if st == "X" else "oper down (STATE D)") for p_, st in ctr
+                if st in ("X", "D")] if len(ctr) <= 6 else []
+        if few and _WORKS.search(text or ""):
+            out.append(f"it says the link works, but [S{i}] on {node} shows {few[0][0]} {few[0][1]}")
     ran = [(i, s) for i, s in enumerate(steps, 1) if str(s.get("rc")) not in ("refused", "skipped")]
     if ran and _NOTHING.search(text or "") and all(not str(s.get("output") or "").strip() or
                                                    str(s.get("output") or "").startswith("(no output") for _i, s in ran):
@@ -335,7 +347,7 @@ def step_facts(steps: list[dict]) -> list[str]:
     the GPU, switch ports admin up / oper down. g02-g17 4 Nov (mr2): one link down at both ends, and the model's
     conclusion was to power the switch tray off and on."""
     facts, gpu_down, sw_down, sw_dark, cpu_dead = [], 0, 0, False, False
-    sw_remote = sw_lane = False
+    sw_remote = sw_lane = sw_shut = False
     sw_cfg = ""
     for i, s in enumerate(steps, 1):
         out, node = str(s.get("output") or ""), s.get("node")
@@ -395,6 +407,18 @@ def step_facts(steps: list[dict]) -> list[str]:
         if len(down_up) > 6:
             sw_down += len(down_up) - 6
             facts.append(f"[S{i}] {node}: and {len(down_up) - 6} more ports admin up, oper down")
+        shut = [p_ for p_, _o, admin in _SW_PORT.findall(out) if admin == "down"]
+        for port in shut if not sm and len(shut) <= 6 else []:
+            sw_shut = True
+            facts.append(f"[S{i}] {node} {port}: admin DOWN - shut on the switch (by configuration), so it has no link")
+        ctr = _CTR_STATE.findall(out)
+        for port, st in ctr if len(ctr) <= 6 else []:
+            if st == "X":
+                sw_shut = True
+            if st in ("X", "D"):
+                facts.append(f"[S{i}] {node} {port}: STATE {st} in the counters - " + (
+                    "disabled: admin down, shut on the switch (by configuration), so it has no link" if st == "X"
+                    else "oper down: enabled, but no link"))
         cmd = re.sub(r"^\s*sudo\s+", "", str(s.get("command") or ""))
         pm = _PFC_SUM.search(out)
         pl = pm and out.split("\n", 1)[0] or pfc_line(out)
@@ -421,7 +445,12 @@ def step_facts(steps: list[dict]) -> list[str]:
         gpus = gpus_listed(out, str(s.get("command") or ""))
         if gpus is not None:
             facts.append(f"[S{i}] {node}: {len(gpus)} GPU(s) listed" + (f" ({', '.join(gpus)})" if gpus else ""))
-    if gpu_down and sw_dark:
+    if sw_shut:                                     # the switch end is off: the GPU end's no-link follows from it
+        facts.append("Together: the switch port is shut (admin down) - someone or a configuration turned it off; with "
+                     "the switch end off the GPU end has no link either. Not the cable, not the GPU. The operator / switch "
+                     "owner starts it again if it should be up - CHANGES THE SWITCH: sudo config interface -n <asic> "
+                     "startup <port>.")
+    elif gpu_down and sw_dark:
         facts.append("Together: the GPU port has no link (NO_PHY_LINK) and the switch receives no signal on any lane while "
                      "it transmits - neither end sees the other: the cable or a connector of that one link (site / cabling: "
                      "reseat or swap it). Not the GPU, not the switch tray: their other ports work.")
@@ -839,7 +868,7 @@ def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=No
     return out
 
 
-_STATUS_ROW = re.compile(r"^(Ethernet\d+)\s+(\S+)\s+\S+\s+\d+\s+\S+\s+\S+\s+(\S+)\s+(up|down)\s+(up|down)\b", re.M)
+_STATUS_ROW = re.compile(r"^\s*(Ethernet\d+)\s+(\S+)\s+\S+\s+\d+\s+\S+\s+\S+\s+(\S+)\s+(up|down)\s+(up|down)\b", re.M)
 
 
 def bcm_view(transport, ns: str | None, port: str) -> tuple[int, str]:

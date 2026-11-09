@@ -2030,7 +2030,7 @@ function drawMap(){
       (c.down?'<span class="down">'+c.down+" down</span>":"")+(c.unknown?'<span class="unknown">'+c.unknown+" not known</span>":"")+"</span>"}
   /* a tray / switch header says why its links are not ok when most of them share one reason (st4 4 Nov: 384 degraded, no word why) */
   function effCause(l){var z=lv&&lv[lkey(l)];
-    if(z&&z.read&&z.state){if(z.sw_oper&&z.sw_oper!=="up")return "switch port "+z.sw_oper;
+    if(z&&z.read&&z.state){if(z.sw_admin==="down")return "switch port shut (admin down)";if(z.sw_oper&&z.sw_oper!=="up")return "switch port "+z.sw_oper;
       if(z.gpu_link&&z.gpu_link!=="LINK_UP")return "GPU port "+z.gpu_link;
       if(z.ll_up&&z.ll_up!=="yes")return "no IFCP session - the port is up at both ends (switch up, GPU LINK_UP) but IFCP ll_up "+z.ll_up}
     return (l.cause||"").replace(/^read by Live: /,"")}
@@ -2329,7 +2329,7 @@ function portExtra(k){
     var rh=rel.length?'<h3 style="font-size:.95rem;margin-top:12px">Related ports</h3><div class="rel">'+rel.map(function(r){var x=r[1];
       return '<a data-rel="'+esc(lkey(x))+'" class="'+esc(mEff(x))+'" title="'+esc(r[0]+": "+mEff(x))+'">'+esc(x.sw_port+" · "+r[0])+"</a>"}).join("")+
       '</div><p class="mut" style="margin:4px 0 0">If the related ports fail too, the cause is likely something they share (the GPU station, a switch connector, or one plane).</p>':"";
-    box.innerHTML=linkDiagram(l,v)+(lvl?'<p>Live now: <b class="st-'+esc(lvl.state)+'">'+esc(lvl.state)+"</b> · switch port "+esc(lvl.sw_oper||"?")+" · GPU link "+esc(lvl.gpu_link||"?")+(lvl.since?" · since "+esc(new Date(lvl.since).toLocaleTimeString()):"")+"</p>":"")+
+    box.innerHTML=linkDiagram(l,v)+(lvl?'<p>Live now: <b class="st-'+esc(lvl.state)+'">'+esc(lvl.state)+"</b> · switch port "+esc(lvl.sw_admin==="down"?"shut (admin down)":(lvl.sw_oper||"?"))+" · GPU link "+esc(lvl.gpu_link||"?")+(lvl.since?" · since "+esc(new Date(lvl.since).toLocaleTimeString()):"")+"</p>":"")+
       '<div class="ends2">'+swCard+gpCard+"</div>"+hh+rh+'<p class="mut">From the check of '+esc(stampLocal(v.time_utc))+' - "Diagnose now" reads both ends again.</p>';
     box.querySelectorAll("a[data-rel]").forEach(function(a){a.addEventListener("click",function(){mapDetail(a.dataset.rel)})});
     box.querySelectorAll("a[data-cfgsw]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgOpen(l.switch,l.asic||null,"PORT",l.sw_port)})});

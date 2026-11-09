@@ -330,13 +330,14 @@ def _unread(x: dict, n: int) -> str:
     return f"answered over SSH, but a command failed on it (not a reachability problem): {err.strip()[:n]}"
 
 
-def link_context(scan: dict, key: str) -> tuple[Evidence, str]:
-    """Evidence for one link of a check ('st6 Ethernet170')."""
+def link_context(scan: dict, key: str, now: dict | None = None) -> tuple[Evidence, str]:
+    """Evidence for one link of a check ('st6 Ethernet170'); `now`: Live's record of it, when Live is running."""
     ln = next((x for x in scan.get("links") or [] if f"{x.get('switch')} {x.get('sw_port')}" == key), None)
     if ln is None:
         raise AIError(f"no link {key} in this check")
-    from .live import as_read
+    from .live import as_read, now_read
     ln = as_read(ln)                 # saved from Live: the ends as Live read them, not the earlier check's (9 Nov)
+    ln = now_read(ln, now)           # Live running and reading it otherwise than the check: Live's reading
     names, ev = _names(scan), Evidence()
     ev.add(f"Rack {scan.get('rack')}, check of {scan.get('time_utc')} (UTC)", "check")
     _link_facts(ev, ln, names, "link")

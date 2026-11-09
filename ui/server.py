@@ -439,6 +439,10 @@ def port_view(state: State, rel: str, key: str) -> dict:
         if r is not ln:
             out["live_read"] = {"sw_oper": r.get("sw_oper"), "sw_admin": r.get("sw_admin"), "gpu_link": r.get("gpu_link"),
                                 "time": (str((ln.get("evidence") or [""])[0]).split(": ", 1)[0].replace("Live ", ""))}
+    now = _live_now(state, run.parent.name, key)       # Live running: the ends as it reads them now (mr2 9 Nov:
+    if now and now.get("read"):                       # 'GPU end not read' beside 'Live now: down')
+        out["live_read"] = {"sw_oper": now.get("sw_oper"), "sw_admin": now.get("sw_admin"), "gpu_link": now.get("gpu_link"),
+                            "time": "now"}
     for f in sorted(run.parent.glob("scan-*/link_check.json"), reverse=True)[:12]:
         try:
             e = json.loads(f.read_text())
@@ -627,7 +631,7 @@ def _ai_subject(state: State, req: dict, past: bool = False):
         else:
             scan = scan_view(state, rel)
             link = str(req.get("link") or "").strip()
-            ev, subject = ai.link_context(scan, link) if link else ai.check_context(
+            ev, subject = ai.link_context(scan, link, _live_now(state, rack, link)) if link else ai.check_context(
                 scan, *ai.focus_of(scan, str(req.get("question") or ""), _focus(req)))
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
@@ -635,6 +639,16 @@ def _ai_subject(state: State, req: dict, past: bool = False):
         lk = str(req.get("link") or "").strip() or (subject[5:] if subject.startswith("link ") else "")
         add_past_resolutions(state, ev, rack, lk, str(req.get("question") or "") + " " + " ".join(x["text"] for x in ev.items[:8]))
     return ev, subject, rack
+
+
+def _live_now(state: State, rack: str, link: str) -> dict | None:
+    """Live's record of a link when Live is running on this rack (what the 'Live now' line shows)."""
+    lv = state.live
+    if lv is None or not link or lv.rack_name != rack:
+        return None
+    with lv.lock:
+        r = lv.links.get(link)
+        return dict(r) if r else None
 
 
 def _focus(req: dict) -> list[str]:
