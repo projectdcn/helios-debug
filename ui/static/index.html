@@ -135,6 +135,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
   </div>
 </header>
 <div id="disk-warn" class="err hide" role="alert" style="margin:8px 16px"></div>
+<div id="login-warn" class="err hide" role="alert" style="margin:8px 16px"></div>
 <main>
   <div id="inverr" class="card err hide"></div>
   <nav role="tablist">
@@ -471,6 +472,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
       <div><label for="cfg-node">Node</label><select id="cfg-node" style="min-width:260px"></select></div>
       <button class="go" id="cfg-read">Read config</button>
       <button class="sec" id="cfg-rack" title="read every switch and compute tray (4 at a time), keep each read, and list what stands out">Read whole rack</button>
+      <button class="sec" id="cfg-logins" title="log into every node with the inventory's user and key and run 'true' - nothing else">Test logins</button>
       <a class="btn sec" id="cfg-zip" href="#" title="the newest saved read of every node, as one zip">Download all configs (zip)</a>
       <span id="cfg-msg" class="mut"></span>
     </div>
@@ -1522,7 +1524,11 @@ function diskWarn(d){var b=$("disk-warn");if(!d||!d.low){b.className="err hide";
   b.className="err";b.textContent="Only "+d.free_mb+" MB free on the machine this UI runs on ("+d.path+")"+
     (d.free_mb<50?" - checks will not start until some space is freed.":" - checks stop at 50 MB, and a full disk can leave files half-written. Free some space (on a shared jump host, ask whoever owns the biggest folders).")}
 function verPoll(){fetch("/api/version").then(function(r){return r.json()}).then(function(v){$("hd-ver").textContent=v.version||"";
-  $("hd-ver").title="code "+(v.commit||"?")+(v.built?", built "+v.built:"");diskWarn(v.disk)}).catch(function(){})}
+  $("hd-ver").title="code "+(v.commit||"?")+(v.built?", built "+v.built:"");diskWarn(v.disk);loginWarn(v.logins)}).catch(function(){})}
+/* a node that refuses the inventory's login (9 Nov: the jump host UI's switch logins failed for a week unnoticed) */
+function loginWarn(l){var b=$("login-warn"),ks=Object.keys(l||{});if(!ks.length){b.className="err hide";return}
+  b.className="err";b.innerHTML="Login refused - every command on these nodes fails: "+ks.map(function(k){return "<b>"+esc(k)+"</b>: "+esc(l[k].refused.join(", "))}).join("; ")+
+    ". The inventory's user / key for them is wrong (or their host key changed). Config &rarr; Test logins shows why per node."}
 verPoll();setInterval(verPoll,300000);
 document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-go-health]");if(!b)return;
   var t=document.querySelector('[data-t="health"]');if(t){t.click();var r=document.querySelector('[data-run="health"]');if(r)r.scrollIntoView({block:"center",behavior:"smooth"})}});
@@ -1795,6 +1801,14 @@ $("cfg-rack").addEventListener("click",function(){
   api("/api/config/rack",{inventory:i.file}).then(function(r){$("cfg-msg").textContent="";$("cfg-rackout").innerHTML=cfgRackHtml(r,i);
     $("cfg-rackout").querySelectorAll("[data-cfgopen]").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();cfgLoadSaved().then(function(){cfgOpenSaved(a.dataset.cfgopen)})})});
     return cfgLoadSaved()})
+  .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+friendly(e.message)+"</span>"}).then(function(){b.disabled=false})});
+$("cfg-logins").addEventListener("click",function(){
+  var i=inv(),b=$("cfg-logins");if(!i)return;b.disabled=true;$("cfg-msg").textContent="logging into every node of "+i.rack+" ...";$("cfg-rackout").innerHTML="";
+  api("/api/logins",{inventory:i.file}).then(function(r){$("cfg-msg").textContent="";
+    var bad=r.nodes.filter(function(n){return !n.ok});
+    $("cfg-rackout").innerHTML="<p>"+(r.nodes.length-bad.length)+" of "+r.nodes.length+" nodes accept the login"+(r.refused.length?' - <b class="st-down">refused on '+esc(r.refused.join(", "))+"</b>":"")+
+      (r.unreachable.length?"; not reached: "+esc(r.unreachable.join(", ")):"")+".</p>"+(bad.length?"<table><tr><th>Node</th><th>Login</th><th>What</th><th>Next</th></tr>"+
+      bad.map(function(n){return "<tr><td>"+esc(n.node)+"</td><td>"+esc(n.user+"@"+n.host)+"</td><td>"+esc(n.what||n.kind)+"</td><td>"+esc(n.next||"")+"</td></tr>"}).join("")+"</table>":"");verPoll()})
   .catch(function(e){$("cfg-msg").innerHTML='<span class="err">'+friendly(e.message)+"</span>"}).then(function(){b.disabled=false})});
 /* a whole-rack read: what stands out (values few nodes have), forwarding entries no GPU port answers, nodes not
    reached, every node's read (open / download) */

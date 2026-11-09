@@ -456,3 +456,43 @@ def test_fecwatch_window():
     assert g["window_max_t"] == 2 and g["flaps"] == 1
     text = "\n".join(fecwatch.summary(rep))
     assert "st1 Ethernet4 +3" in text and "st1 Ethernet4 13 of 15" in text and "ct17 GPU 0004:01:00.1 port 33" in text
+
+
+def test_login_check_says_refused(monkeypatch):
+    from heliosdbg import logins
+
+    class R:
+        def __init__(self, rc, err=""):
+            self.rc, self.stdout, self.stderr = rc, "", err
+
+    class T:
+        def __init__(self, r):
+            self.r = r
+
+        def run(self, cmd, timeout=0):
+            assert cmd == "true"
+            return self.r
+
+    class H:
+        def __init__(self, n):
+            self.name, self.host, self.user = n, "10.0.0.1", "tenant_hpe"
+
+    class N:
+        def __init__(self, n, r):
+            self.host, self.t = H(n), T(r)
+
+    class FakeRack:
+        def __init__(self, inv):
+            self.switches = {"st1": N("st1", R(255, "tenant_hpe@10.0.0.1: Permission denied (publickey,password)."))}
+            self.computes = {"ct01": N("ct01", R(0)), "ct10": N("ct10", R(255, "ssh: connect to host 10.0.0.1 port 22: No route to host"))}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(logins, "Rack", FakeRack)
+
+    class Inv:
+        rack = "r"
+    r = logins.check(Inv())
+    assert r["refused"] == ["st1"] and r["unreachable"] == ["ct10"]
+    assert [n["ok"] for n in r["nodes"]] == [False, True, False]

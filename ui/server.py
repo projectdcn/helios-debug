@@ -71,6 +71,7 @@ class State:
         self.live_inventory = None
         self.live_starting = False
         self.live_view = 0.0                           # last time a page asked for the live state
+        self.logins: dict = {}                         # {rack: the last login check's refused / unreachable nodes}
         self.current: str | None = None
         from heliosdbg.term import Terminals
         self.terms = Terminals(results_dir / "term")      # browser terminals (Access to the rack)
@@ -655,6 +656,31 @@ def _live_now(state: State, rack: str, link: str) -> dict | None:
         return dict(r) if r else None
 
 
+def check_logins(state: State, name: str) -> dict:
+    """One `true` per node of an inventory with its own user / key (heliosdbg/logins.py); kept for the banner."""
+    from heliosdbg import logins
+    _f, inv = state.inventory(name)
+    r = logins.check(inv)
+    with state.lock:
+        state.logins[inv.rack] = {k: r[k] for k in ("rack", "time", "refused", "unreachable")}
+    return r
+
+
+def check_logins_at_start(state: State) -> None:
+    """Every inventory's logins once, in the background, when the UI starts: a refused login is said on every page."""
+    def run():
+        for f in sorted(state.inventory_dir.glob("*.yaml")):
+            try:
+                check_logins(state, f.name)
+            except Exception as e:  # noqa: BLE001 - a broken inventory is said where it is used
+                print(f"login check of {f.name}: {type(e).__name__}: {str(e)[:160]}", flush=True)
+                continue
+        bad = {k: v["refused"] for k, v in state.logins.items() if v.get("refused")}
+        print("login check: " + ("; ".join(f"{k}: refused on {', '.join(v)}" for k, v in bad.items()) if bad
+                                 else "every reachable node accepts the inventory's login"), flush=True)
+    threading.Thread(target=run, daemon=True, name="login-check").start()
+
+
 def _focus(req: dict) -> list[str]:
     """The nodes a question is about (from the Ask button or an earlier answer): names only."""
     f = req.get("focus") or []
@@ -983,7 +1009,8 @@ def version_info(state: State) -> dict:
     except Exception:  # noqa: BLE001
         terms = 0
     return code_version() | {"busy": {"jobs": jobs, "live": live, "terminals": terms}, "idle": not (jobs or live or terms),
-                             "disk": disk_info(state)}
+                             "disk": disk_info(state),
+                             "logins": {k: v for k, v in state.logins.items() if v.get("refused")}}
 
 
 CHAT_LOG = "chat.jsonl"
@@ -2100,6 +2127,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, node_config(self.state, req))
             if u.path == "/api/config/rack":
                 return self._json(200, rack_config(self.state, req))
+            if u.path == "/api/logins":
+                return self._json(200, check_logins(self.state, req.get("inventory", "")))
             if u.path == "/api/term/open":
                 _f, inv = self.state.inventory(req.get("inventory", ""))
                 name = str(req.get("node", ""))
@@ -2151,6 +2180,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     a.results_dir.mkdir(parents=True, exist_ok=True)
     srv = make_server(a.port, a.inventory_dir.expanduser(), a.results_dir.expanduser())
+    if not os.environ.get("HELIOS_DEBUG_NO_LOGIN_CHECK"):
+        check_logins_at_start(Handler.state)
     print(f"helios-debug UI on http://127.0.0.1:{a.port}  (inventories: {a.inventory_dir}, results: {a.results_dir})")
     print(f"from your machine: ssh -L {a.port}:localhost:{a.port} <user>@{os.uname().nodename}  then http://localhost:{a.port}")
     try:
