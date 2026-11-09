@@ -92,7 +92,9 @@ def max_t(bins: list[int]) -> int:
 def hist_says(h: dict) -> str:
     k = max_t(h["bins"])
     s = (f"deepest corrected codeword {k} of {T} symbols (MAX_T {k}, {h['bins'][k]:,} codeword{'s' if h['bins'][k] != 1 else ''}"
-         f" there) - " + ("a comfortable margin" if k <= 5 else "less margin: watch it" if k < 12
+         f" there) - " + ("a comfortable margin" if k <= 5 else
+                          "the tail has crept right: degrading - read it again later and see whether it grows (the counts "
+                          "are cumulative since the counters were cleared)" if k < 12
                           else "close to the cliff: a slightly worse codeword is uncorrectable"))
     if h["uncorr"] is not None:
         s += (", no uncorrectable codewords" if not h["uncorr"] else f", {h['uncorr']:,} uncorrectable codewords - frames lost")
@@ -220,7 +222,8 @@ def facts(i: int, node: str, where: str, cmd: str, out: str) -> list[str]:
     an = anomalies(out)
     if an:
         got.append(f"[S{i}] {node} GPU port anomaly counters (since the counters started): "
-                   + ", ".join(f"{k} {v:,}" for k, v in an[:6]))
+                   + ", ".join(f"{k} {v:,}" for k, v in an[:6]) + " - counts present on every station alike are a "
+                   "bring-up baseline, not by themselves a fault; compare another port / station")
     return got
 
 
