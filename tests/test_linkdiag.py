@@ -363,3 +363,51 @@ def test_switch_wide_ifcp_is_one_finding():
     assert [x["kind"] for x in ld.group_causes(ls2)] == ["ifcp"]
     ls3 = ls + [_d("st4", "ct01", "down", "phys_never_up")]       # another cause on the switch: not switch-wide
     assert "switch_ifcp" not in [x["kind"] for x in ld.group_causes(ls3)]
+
+
+def test_an_unreachable_tray_is_explained_by_its_bmc():
+    # g02-g17 8 Nov: ct10/14/18 - 432 links 'down'; by hand: BMC answers, host no ARP = off or OS down
+    tr = _tray(error="ssh: connect to host 10.255.4.56 port 22: No route to host", slot=2)
+    tr["gpus"] = []
+    tr["bmc"] = {"address": "10.255.4.38", "reachable": True, "product": "1.17.0"}
+    ln = _one(_switch(oper="down", fdb=False), tr)[0]
+    assert ln.kind == "tray_unreachable" and ln.owner == ld.OPERATOR and "BMC 10.255.4.38 answers" in ln.cause
+    assert "powered off" in ln.cause and "CHANGES THE RACK" in ln.action
+    tr["bmc"]["reachable"] = False
+    ln = _one(_switch(oper="down", fdb=False), tr)[0]
+    assert ln.owner == ld.SITE and "does not answer either" in ln.cause
+
+
+def test_the_bmc_is_probed_only_for_trays_ssh_did_not_reach(monkeypatch):
+    from types import SimpleNamespace as NS
+    from heliosdbg import bmc
+    asked = []
+
+    class RF:
+        def __init__(self, address, *a, **k):
+            asked.append(address)
+
+        def get_many(self, paths, auth=True):
+            return {"/redfish/v1/": (200, {"RedfishVersion": "1.17.0"})}
+    monkeypatch.setattr(bmc, "Redfish", RF)
+    tray = lambda b: NS(host=NS(extra={"bmc": b}))                                   # noqa: E731
+    rack = NS(computes={"ct10": tray("10.0.0.38"), "ct02": tray("10.0.0.30"), "ct03": tray("")}, inv=NS(transport={}))
+    res = {"ct10": {"error": "ssh: connect to host x port 22: No route to host"},
+           "ct02": {"error": "a command hung: timed out after 120 s"},          # answered SSH: not probed
+           "ct03": {"error": "ssh: connect to host y port 22: No route to host"}}  # no BMC address in the inventory
+    res["ct02"]["error"] = "rc=1 afmctl: No such file or directory"
+    ld.bmc_probe(rack, res, log=lambda *a: None)
+    assert asked == ["10.0.0.38"] and res["ct10"]["bmc"]["reachable"] and "bmc" not in res["ct02"]
+
+
+def test_a_tray_ssh_cannot_reach_keeps_its_ssh_error():
+    # 7-9 Nov: a local 'reach' in collect_tray shadowed the module - every unreachable tray read "cannot access local
+    # variable 'reach'" (asked about in chat), and the link check could not tell no route from a failing afmctl
+    from types import SimpleNamespace as NS
+
+    class T:
+        def run(self, *a, **k):
+            raise OSError("ssh: connect to host 10.255.4.56 port 22: No route to host")
+    tray = NS(host=NS(name="ct10", host="10.255.4.56", extra={}), t=T(), gpus=4, run=T().run)
+    out = ld.collect_tray(tray)
+    assert "No route to host" in out["error"]

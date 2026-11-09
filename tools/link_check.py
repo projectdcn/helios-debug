@@ -346,7 +346,15 @@ def _not_checked(res) -> list[tuple[str, str, str, str]]:
     out += [(n, "switch", f"second counter sample failed ({s['resample_error']})", "its links' error counters (CRC, "
              "FEC, drops) were not judged - their 'ok' says only that they are up; scan again")
             for n, s in res["switches"].items() if s.get("resample_error") and not s.get("error")]
-    out += [(n, "tray", t["error"], hint(t["error"])) for n, t in res["trays"].items() if t.get("error")]
+    def bmc_hint(t: dict) -> str:
+        b = t.get("bmc") or {}
+        if not b:
+            return hint(t["error"])
+        return (f"its BMC {b['address']} answers - standby power and management network are there: the host is powered "
+                "off, hung or booting, or its OS network is down; read its power state with the BMC password (Node health) "
+                "or the BMC web console" if b.get("reachable") else
+                f"its BMC {b['address']} does not answer either: no power to the tray or its management network - on site")
+    out += [(n, "tray", t["error"], bmc_hint(t)) for n, t in res["trays"].items() if t.get("error")]
     return out
 
 

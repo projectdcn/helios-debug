@@ -244,8 +244,8 @@ def collect_tray(tray) -> dict:
                               "fec_mode": sp.get("fec_mode"), "loopback": sp.get("loopback_mode"),
                               "ifcp": {k: i.get(k) for k in ("link_up", "ll_up", "in_error", "peer_enabled",
                                                               "peer_in_error", "peer_device_id", "peer_port_id")}})
-            acc, reach = accels.get(d.bdf, ("", set()))
-            out["gpus"].append({"bdf": d.bdf, "accelerator": acc, "vpod_accelerators": len(reach),
+            acc, members = accels.get(d.bdf, ("", set()))   # not 'reach': that name is the module the except uses
+            out["gpus"].append({"bdf": d.bdf, "accelerator": acc, "vpod_accelerators": len(members),
                                 "config_phase": d.config_phase, "ports": sorted(ports, key=lambda x: x["port"])})
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
@@ -508,6 +508,19 @@ def diagnose(ln: Link, trays: dict, optics_reported: bool, interval_s: float, if
                         + (acc["what"] if acc else str(t["error"])[:160]) + ")", OPERATOR,
                         f"Run 'sudo afmctl show device --json' on {ln.tray} and read the error (the AFM node agent, afmctl "
                         "itself, or a GPU in a bad state); the links themselves are not judged.")
+        b = t.get("bmc") if acc and acc["kind"] in NOT_REACHED else None
+        if b and b.get("reachable"):    # its BMC answers: standby power and management network are there
+            return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH, but its BMC "
+                        f"{b['address']} answers - the tray has standby power and a working management network: the host "
+                        "is powered off, hung or still booting, or its OS network is down", OPERATOR,
+                        "Read its power state and console with the BMC password (Node health with the BMC password, or the "
+                        "BMC web console); powering it on CHANGES THE RACK - for the lab team. Every link of the tray is "
+                        "affected (one root cause); the links themselves are not judged.")
+        if b:
+            return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH and its BMC "
+                        f"{b['address']} does not answer either - no power to the tray (feed, power shelf) or its management "
+                        "network is down", SITE, "Check the tray's power feed and its BMC's management switch port on site. "
+                        "Every link of the tray is affected (one root cause).")
         if up(ln.sw_oper):              # g02-g17 3 Nov: ct10 'site (cabling)' while st5 read all 24 of its ports up
             return set_("down", "tray_unreachable", f"compute tray {ln.tray} not reachable over SSH"
                         + (f" ({acc['what']})" if acc else "") + " - its switch ports are up, so it is powered and cabled",
@@ -823,6 +836,36 @@ def check_afm_ports(links: list[Link], pairs: dict) -> None:
                 ln.cause += "; AFM still reports the port PortReady"
 
 
+NOT_REACHED = {"no_route", "timeout", "ssh_refused", "dropped"}      # reach kinds: SSH did not get through
+
+
+def bmc_probe(rack, tr_res: dict, log=print) -> None:
+    """For each tray SSH did not reach and whose inventory names its BMC: does the BMC answer its Redfish service root
+    (no password needed)? tr_res[tray]['bmc'] = {address, reachable, product}. g02-g17 8 Nov: ct10/14/18 - 432 links
+    'down', and only by hand: BMC answers, host no ARP = powered off or OS down; both silent = no power / network."""
+    from . import bmc
+    todo = []
+    for name, t in tr_res.items():
+        acc = reach.classify(t.get("error") or "") if t.get("error") else None
+        tray = rack.computes.get(name)
+        address = str(((getattr(tray, "host", None) and tray.host.extra) or {}).get("bmc") or "").strip()
+        if acc and acc["kind"] in NOT_REACHED and address:
+            todo.append((name, address))
+    if not todo:
+        return
+    jump = ((getattr(rack, "inv", None) and rack.inv.transport) or {}).get("jump")
+
+    def one(item):
+        name, address = item
+        code, root = bmc.Redfish(address, jump=jump, timeout=15).get_many(["/redfish/v1/"], auth=False)["/redfish/v1/"]
+        return {"address": address, "reachable": bool(code), "product": " ".join(
+            str((root or {}).get(k) or "") for k in ("Vendor", "Product", "RedfishVersion")).strip()}
+    for item, val, exc in fan_out(one, todo, workers=4):
+        if exc is None:
+            tr_res[item[0]]["bmc"] = val
+            log(f"  {item[0]} does not answer SSH; its BMC {item[1]} {'answers' if val['reachable'] else 'does not answer either'}")
+
+
 def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_max: int = 64,
          afm_cfg: dict | None = None) -> dict:
     t0 = time.monotonic()
@@ -850,6 +893,7 @@ def scan(rack, interval_s: float = 30.0, log=print, bcm_view: bool = True, bcm_m
                  and not any(r for a in v["asics"].values() for r in a["fdb"] if str(r.get("Type", "")).lower() == "static")}
     for tr, val, exc in fan_out(collect_tray, list(rack.computes.values())):
         tr_res[tr.host.name] = val if not exc else {"name": tr.host.name, "gpus": [], "error": str(exc), "slot": None}
+    bmc_probe(rack, tr_res, log)
     links, learned = join(list(sw_res.values()), list(tr_res.values()), quarantined_slots(rack.inv))
     # second counter sample: errors are judged by what grows, not by totals since boot
     wait = max(0.0, interval_s - (time.monotonic() - t0))
