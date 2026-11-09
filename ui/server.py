@@ -668,7 +668,7 @@ def _log_question(state: State, rack: str, subject: str, stay: list, steps: list
     output, the conclusion (helios-slm realq.py replays them against new models - 9 Nov: the questions people really
     ask, 'check vlans on switch tray 1', were in no test)."""
     rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "rack": rack, "subject": subject, "stay": stay,
-           "steps": [{k: (str(s.get(k) or "")[:guide.OUTPUT_MAX] if k == "output" else s.get(k))
+           "steps": [{k: (str(s.get(k) or "")[:6000] if k == "output" else s.get(k))
                       for k in ("node", "command", "rc", "output")} for s in steps if isinstance(s, dict)],
            "conclusion": out.get("conclusion"), "next": out.get("next"), "model": out.get("model"),
            "by_code": bool(out.get("by_code")), "contradicts": out.get("contradicts") or []}
