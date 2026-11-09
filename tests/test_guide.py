@@ -684,3 +684,18 @@ def test_a_thumbs_down_alone_on_a_conclusion_takes_the_outputs_reading_as_the_dr
     monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (wrong, "m"))
     p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
     assert p["by_code"] and p["answer_id"] in ai.RECENT                 # the by-code answer can be rated too
+
+
+def test_config_reads_reach_the_model_as_facts():
+    # 9 Nov (late): PFC counters (~40 KB, cut), image, NTP, identity, a port's cabling description
+    rows = "\n".join(f"  Ethernet{i}  {'5' if i < 3 else '0'}  0  0  0  0  0  0  0" for i in range(1, 9))
+    pfc = f"    Port Rx  PFC0 PFC1 PFC2 PFC3 PFC4 PFC5 PFC6 PFC7\n{rows}\n\n    Port Tx  PFC0 PFC1 PFC2 PFC3 PFC4 PFC5 PFC6 PFC7\n" + \
+        rows.replace(" 5 ", " 0 ")
+    assert guide.compact(pfc).startswith("PFC pause frames: received on 2 of 8 ports (priority PFC0; most: Ethernet1 5")
+    f = guide.step_facts([{"node": "st1", "command": "sudo sonic-installer list", "output": "Current: A\nNext: B\nAvailable:\nA\nB"},
+                          {"node": "st1", "command": "show ntp", "output": "Leap status     : Normal\n^* 1.2.3.4  1 10 377"},
+                          {"node": "st1", "command": "show interfaces description -n asic0 | grep 'Ethernet39 '",
+                           "output": " Ethernet39      up       up  Ethernet141/1  To ComputeTray Slot10/GPU2[42]/Port35"}])
+    assert "[S1] st1: runs A, boots B next (an image change waits for its reboot)" in f
+    assert "[S2] st1: clock synced to 1.2.3.4" in f
+    assert "[S3] st1 asic0 Ethernet39 (oper up): described 'To ComputeTray Slot10/GPU2[42]/Port35'" in f

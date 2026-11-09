@@ -10,7 +10,7 @@ from ..checks import CRITICAL, LIMITS, WARNING, Platform, _cmd, _out, _run, find
 from ..checks import _NS, _WORD  # noqa: F401 - the allow-list patterns
 
 COMPUTE_READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platform (heliosdbg/guide.py)
-    (r"afmctl\s+show\s+(?:device|port|port\s+accelerator-addr|vpod|version|stats)(?:\s+-b\s+[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)?(?:\s+--json)?", True),
+    (r"afmctl\s+show\s+(?:device|port|port\s+accelerator-addr|station|version)(?:\s+-b\s+[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.\d)?(?:\s+--json)?", True),
 ]
 
 SWITCH_COMMANDS = [

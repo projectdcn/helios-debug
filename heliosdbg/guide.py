@@ -165,6 +165,9 @@ def compact(output: str) -> str:
     rx = _sonic.cpu_rx(t) if not t.startswith("{") else None
     if rx is not None:                      # 'ip -s -o link show': ~110 KB for 257 ports - what it says, in one line
         return _sonic.cpu_rx_line(rx)
+    pl = pfc_line(t) if not t.startswith(("{", "PFC pause")) else None
+    if pl is not None:                      # 'show pfc counters': where pauses come from, not 500 rows
+        return pl
     sl = status_line(t) if not t.startswith(("{", "Port status:")) else None
     if sl is not None:                      # a whole chip's port status: the counts and the down ports, not 256 rows
         return sl
@@ -232,6 +235,33 @@ def status_line(out: str) -> str | None:
     return (f"Port status: {len(rows)} ports - {sum(1 for r in rows if r[3] == 'up')} up, {len(down)} admin up but oper down"
             + (f" ({' '.join(down)})" if down else "") + (f", {shut} shut" if shut else "")
             + f"; speed {dist(1)}; MTU {dist(2)}")
+
+
+_PFC_ROW = re.compile(r"^\s*(Ethernet\d+)((?:\s+[\d,]+){8})\s*$")
+_PFC_SUM = re.compile(r"^PFC pause frames: received on (\d+) of (\d+) ports", re.M)
+
+
+def pfc_line(out: str) -> str | None:
+    """'show pfc counters' (~40 KB for 257 ports, cut at OUTPUT_MAX) in one line: on how many ports pause frames were
+    received / sent, on which priorities, the top ports. g02-g17 9 Nov: st3 asic0 received PFC0 on 56 ports (4.1 M max)."""
+    got, cur = {"rx": {}, "tx": {}}, None
+    for ln in (out or "").splitlines():
+        if re.match(r"\s*Port Rx\b", ln):
+            cur = "rx"
+        elif re.match(r"\s*Port Tx\b", ln):
+            cur = "tx"
+        elif cur and (m := _PFC_ROW.match(ln)):
+            got[cur][m.group(1)] = [int(x.replace(",", "")) for x in m.group(2).split()]
+    if len(got["rx"]) < 2:
+        return None
+    say = []
+    for d, word in (("rx", "received"), ("tx", "sent")):
+        nz = {p_: v for p_, v in got[d].items() if any(v)}
+        pr = sorted({i for v in nz.values() for i, x in enumerate(v) if x})
+        top = sorted(nz.items(), key=lambda x: -max(x[1]))[:5]
+        say.append(f"{word} on {len(nz)} of {len(got[d])} ports" + (
+            f" (priority {', '.join(f'PFC{i}' for i in pr)}; most: {', '.join(f'{p_} {max(v)}' for p_, v in top)})" if nz else ""))
+    return "PFC pause frames: " + "; ".join(say) + " - totals since the counters were cleared"
 
 
 _VLAN_SUM = re.compile(r"^VLAN (\S+): IP ([^;]*); (\d+) member ports \(([^)]*)\)", re.M)
@@ -356,6 +386,29 @@ def step_facts(steps: list[dict]) -> list[str]:
         if len(down_up) > 6:
             sw_down += len(down_up) - 6
             facts.append(f"[S{i}] {node}: and {len(down_up) - 6} more ports admin up, oper down")
+        cmd = re.sub(r"^\s*sudo\s+", "", str(s.get("command") or ""))
+        pm = _PFC_SUM.search(out)
+        pl = pm and out.split("\n", 1)[0] or pfc_line(out)
+        if pl:
+            facts.append(f"[S{i}] {where}: {pl}")
+        if cmd.startswith("sonic-installer list"):
+            cur, nb = (re.search(rf"^{k}:\s*(\S+)", out, re.M) for k in ("Current", "Next"))
+            if cur and nb:
+                facts.append(f"[S{i}] {node}: runs {cur.group(1)}, boots " + ("the same next" if nb.group(1) == cur.group(1)
+                             else f"{nb.group(1)} next (an image change waits for its reboot)"))
+        if cmd.startswith("show ntp") and re.search(r"Leap status", out):
+            src = re.search(r"^\^\*\s+(\S+)", out, re.M)
+            sync = src if src and re.search(r"Leap status\s*:\s*Normal", out) else None
+            facts.append(f"[S{i}] {node}: clock " + (f"synced to {sync.group(1)}" if sync else "NOT synced (no NTP source "
+                         "selected, or leap status not Normal)"))
+        if cmd.startswith("show platform syseeprom"):
+            f_ = {k: (re.search(rf"^{k}\s+0x\w+\s+\d+\s+(.*?)\s*$", out, re.M) or [None, "?"])[1]
+                  for k in ("Product Name", "Serial Number")}
+            facts.append(f"[S{i}] {node}: {f_['Product Name']}, serial {f_['Serial Number']}")
+        if cmd.startswith("show interfaces description"):
+            rows = re.findall(r"^[ \t]*(Ethernet\d+)[ \t]+(up|down)[ \t]+(up|down)[ \t]+\S+[ \t]*(.*?)[ \t]*$", out, re.M)
+            for port, oper, _adm, desc in rows[:3] if len(rows) <= 3 else []:
+                facts.append(f"[S{i}] {where} {port} (oper {oper}): described '{desc or '(none)'}'")
         gpus = gpus_listed(out, str(s.get("command") or ""))
         if gpus is not None:
             facts.append(f"[S{i}] {node}: {len(gpus)} GPU(s) listed" + (f" ({', '.join(gpus)})" if gpus else ""))
@@ -847,9 +900,9 @@ def run(host, transport, command: str, role: str, log_dir: Path | None = None) -
     u = unreachable({"rc": rc, "output": out, "node": host.name})
     if u:
         out = f"Could not log in to {host.name}: {u['what']}.\nNext: {u['next']} (owner: {u['owner']})\n\n{out}"
-    vl, sl = vlan_brief(out), status_line(out)           # the person sees the table too, the summary on top of it
-    out = (vlan_line(vl) + "\n\n" + out if vl is not None else sl + "\n\n" + out if sl else
-           compact(out))                                 # before cutting: a cut JSON cannot be read any more
+    vl, sl, pl = vlan_brief(out), status_line(out), pfc_line(out)   # the person sees the table too, the summary on top
+    out = (vlan_line(vl) + "\n\n" + out if vl is not None else sl + "\n\n" + out if sl else pl + "\n\n" + out if pl
+           else compact(out))                            # before cutting: a cut JSON cannot be read any more
     if len(out) > OUTPUT_MAX:
         out = out[:OUTPUT_MAX // 2] + f"\n... ({len(out) - OUTPUT_MAX} characters cut) ...\n" + out[-OUTPUT_MAX // 2:]
     return {"node": host.name, "command": c, "rc": rc, "output": out, "seconds": round(time.time() - t0, 1)}
