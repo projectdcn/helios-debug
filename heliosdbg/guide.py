@@ -318,7 +318,16 @@ def contradictions(text: str, steps: list[dict]) -> list[str]:
             out.append(f"it says all ports are down, but [S{i}] on {node} shows {up} up")
         if down and _ALL_UP.search(text or ""):
             out.append(f"it says all ports are up, but [S{i}] on {node} shows {down} down")
+    ran = [(i, s) for i, s in enumerate(steps, 1) if str(s.get("rc")) not in ("refused", "skipped")]
+    if ran and _NOTHING.search(text or "") and all(not str(s.get("output") or "").strip() or
+                                                   str(s.get("output") or "").startswith("(no output") for _i, s in ran):
+        out.append(f"it says nothing is configured / there is none, but {', '.join(f'[S{i}]' for i, _s in ran)} printed "
+                   "nothing (a grep that matched nothing, or the wrong command) - no reading, not an empty configuration")
     return list(dict.fromkeys(out))
+
+
+_NOTHING = re.compile(r"\bnothing (?:is )?(?:configured|set)\b|\bno IP\b|\bnot (?:configured|set)\b|\bnone (?:is )?configured\b",
+                      re.I)
 
 
 def step_facts(steps: list[dict]) -> list[str]:
@@ -726,6 +735,9 @@ def _vlans_said(facts: list[str]) -> list[str]:
 
 
 _TOPIC = {"vlan": r"VLAN", "vlans": r"VLAN", "mtu": r"MTU", "speed": r"speed", "gpu": r"GPU", "gpus": r"GPU",
+          "address": r"\b\d{1,3}(?:\.\d{1,3}){3}\b|inet|address", "ip": r"\b\d{1,3}(?:\.\d{1,3}){3}\b|inet",
+          "ntp": r"clock|NTP", "time": r"clock", "serial": r"serial", "image": r"runs SONiC|boots", "firmware": r"firmware",
+          "pfc": r"PFC", "pause": r"PFC", "lldp": r"LLDP|neighbor", "connected": r"described", "cabled": r"described",
           "asic": r"asic\d", "asics": r"asic\d", "down": r"down", "ports": r"ports -", "links": r"ports -"}
 
 
@@ -735,6 +747,12 @@ def by_code(steps: list[dict], why: str, subject: str = "") -> dict:
     facts = step_facts(steps)
     words = {w for w in re.findall(r"[a-z]{3,}", (subject or "").lower()) if w in _TOPIC}
     if words:                                   # what was asked first ('check MTU on st3': the MTUs, not the down ports)
+        if not any(re.search(_TOPIC[w], f, re.I) for f in facts for w in words):   # none of it: say so (9 Nov: an
+            return {"done": True, "by_code": True, "facts": facts, "unsafe": None, "not_in_evidence": [],  # IP question
+                    "contradiction": None,                                            # got Ethernet257's state)
+                    "conclusion": f"The outputs read so far do not answer '{subject[:120]}' ({why}).",
+                    "next": "Run the read-only command that shows it (for addresses on a switch: show ip interfaces, or "
+                            "ip -br addr) - step by step or in the Terminal."}
         facts = sorted(facts, key=lambda f: not any(re.search(_TOPIC[w], f, re.I) for w in words))
     named = set(re.findall(r"\bEthernet\d+\b", subject or ""))
     if named:                                   # 'what is st1 Ethernet39 connected to?': that port only (9 Nov: the

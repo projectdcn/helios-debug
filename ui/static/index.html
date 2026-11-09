@@ -1352,7 +1352,10 @@ function guideNext(sess){
   var ctx=sess.ctx,steps=sess.steps,nx=document.createElement("div");nx.className="ai-gnext pending";sess.out.appendChild(nx);
   sess.out.querySelectorAll(".g-cont").forEach(function(x){x.remove()});
   nx.innerHTML='<p class="mut">the AI is choosing the next read-only step ...</p>';
-  api("/api/ai/guide",aiReq(ctx,{steps:steps})).then(function(p){
+  /* the follow-up typed last (9 Nov: 'show me ip address configured on st1 interface', asked on a link's panel, was
+     investigated as the link) - not the panel's first question, not a step-by-step conclusion */
+  var asked=sess.hist.filter(function(h){return h.q&&h.q.indexOf("(step by step)")!==0&&h.q.indexOf("root cause / debug / fix of ")!==0}).pop();
+  api("/api/ai/guide",aiReq(ctx,{steps:steps,question:asked?asked.q:""})).then(function(p){
     if(p.done){nx.classList.remove("pending");nx.innerHTML='<div class="verdict '+(p.unsafe?"degraded":"ok")+'"><h3>Step by step: conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+
         (p.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(p.unsafe)+'") - only with a go-ahead, and check it against what the outputs show below.</div>':"")+notSeen(p)+
         ((p.contradicts||[]).length&&!p.by_code?'<div class="warn">It contradicts the outputs: '+esc(p.contradicts.join("; "))+' - trust the outputs, not this conclusion.</div>':"")+

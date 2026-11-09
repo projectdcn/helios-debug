@@ -28,12 +28,12 @@ READ_ONLY = [   # (pattern, needs sudo): what Debug a node may run on this platf
     # QFX5252 switch tray (HPE guide, 3 Nov 2026): leak, PCIe, interface errors / flaps / FEC, NTP, images, management, BMC
     (rf"show\s+(?:platform\s+(?:leak\s+(?:status|channels)|pcieinfo|current)|ntp|interfaces\s+(?:alias|errors\s+Ethernet\d+|"
          rf"flap\s+Ethernet\d+|fec\s+status{_NS}(?:\s+Ethernet\d+)?|transceiver\s+(?:info|status){_NS}(?:\s+Ethernet\d+)?))", False),
-    (r"chronyc\s+(?:tracking|sources(?:\s+-v)?)|ip\s+-br\s+(?:-4\s+|-6\s+)?(?:address|addr|link)\s+show\s+eth[01]|"
+    (r"chronyc\s+(?:tracking|sources(?:\s+-v)?)|ip\s+-br\s+(?:-4\s+|-6\s+)?(?:address|addr|a|link)(?:\s+show(?:\s+(?:dev\s+)?[\w.-]+)?)?|"
      r"ip\s+route\s+show\s+(?:default|dev\s+eth[01])|pgrep\s+-af\s+'dhclient\.\*eth0'", False),
     (r"sonic-installer\s+list|bmc-manager\s+(?:status|health|power-status|version|flash-info|check)|"
      r"bmc-manager\s+(?:dmesg|journal)\s+errors", True),
     (r"show\s+(?:system-health\s+(?:summary|detail|monitor-list|sysready-status)|platform\s+(?:voltage|current|ssdhealth)|"
-         r"reboot-cause(?:\s+history)?|feature\s+status|interfaces\s+counters\s+errors|ip\s+interfaces|ndp|arp)", False),
+         r"reboot-cause(?:\s+history)?|feature\s+status|interfaces\s+counters\s+errors|ip\s+interfaces(?:\s+-n\s+asic\d)?|ndp|arp)", False),
     (r"crm\s+show\s+(?:resources\s+(?:all|fdb|ipv4\s+route|ipv6\s+route|nexthop|neighbor|acl\s+table|acl\s+group)|thresholds\s+all|summary)", True),
     (r"watchdogutil\s+status|ssdutil(?:\s+-d\s+/dev/[a-z0-9]+)?|sensors|decode-syseeprom", True),
     (r"docker\s+exec\s+[a-z][a-z0-9_-]*\s+(?:supervisorctl\s+status(?:\s+[a-z][a-z0-9_-]*)?|cat\s+/etc/supervisor/critical_processes|"

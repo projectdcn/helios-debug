@@ -684,11 +684,19 @@ _READING = re.compile(r"`?\b((?:[a-z][a-z0-9]*\.){0,3}[a-z][a-z0-9]*_[a-z0-9_]+)
                       r"(yes|no|true|false|none|null|[A-Z][A-Z_]{2,})\b`?")
 
 
+_ADDR = re.compile(r"(?<![\w.:])(?:(?:\d{1,3}\.){3}\d{1,3}|(?:[0-9a-f]{2}:){5}[0-9a-f]{2})(?![\w.:])", re.I)
+
+
 def invented(text: str, ev: Evidence, extra: str = "") -> list[str]:
     """Readings an answer states (field = value) that no evidence item / step output shows (4 Nov: 'peer_enabled = no'
     for st4, from a documentation passage that only says what the field means)."""
     have = re.sub(r"\s+", " ", " ".join(x["text"] for x in ev.items) + " " + (extra or "")).lower()
     out = []
+    # addresses: 9 Nov 'show me ip address configured on st1 interface' -> 'eth1 ... MAC 00:11:22:33:44:55, IPv4
+    # 172.16.1.1/24, gateway 172.16.1.254' - no evidence, step output or passage held any of them
+    for a in dict.fromkeys(_ADDR.findall(text or "")):
+        if a.lower() not in have:
+            out.append(f"address {a}")
     for f, v in _READING.findall(text or ""):
         leaf = f.split(".")[-1].lower()
         if not re.search(rf"\b{re.escape(leaf)}\b\W{{0,3}}(?:is\s+|=\s*|:\s*)?{re.escape(v.lower())}\b", have):

@@ -659,7 +659,17 @@ def ai_guide(state: State, req: dict) -> dict:
         raise BadRequest("step by step needs the rack (its nodes are where the commands run) - pick one")
     _inv, roles = _rack_nodes(state, rack)
     steps = [s for s in (req.get("steps") or []) if isinstance(s, dict)][:12]
+    q = str(req.get("question") or "").strip()[:300]
+    if q:                                         # a follow-up typed on the panel: that is what to investigate now
+        subject = q
+        lk = str(req.get("link") or "")
+        if lk and not re.search(r"\b(?:link|port|cable|optic|ifcp|fec|crc|flap|down|degraded|lane|signal)\b|"
+                                + "|".join(re.escape(x) for x in lk.split()[1:]), q, re.I):
+            from heliosdbg import cases    # not about the panel's link ('show me ip address configured on st1
+            ev, _s, _r = cases.blocks_context([], q, rack)   # interface'): start from the question, as Debug a node does
     stay = _stay(ev, roles, _rack_aliases(state, rack), subject)
+    if q and named_in(q, roles, _rack_aliases(state, rack)):    # the nodes it names, not the panel's link ends
+        stay = named_in(q, roles, _rack_aliases(state, rack))
     try:
         out = guide.propose(ai, ev, subject, steps, roles, stay=stay)
     except (ai.AIError, guide.GuideError) as e:

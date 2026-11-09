@@ -715,3 +715,20 @@ def test_a_link_saved_from_live_is_told_as_live_read_it():
     one = as_read(dict(ln, cause="read by Live: switch oper down / admin up, GPU LINK_UP, IFCP ll_up no"))
     assert one["kind"] == "one_sided" and "only the switch end" in one["cause"]
     assert as_read({"kind": "ifcp_chip", "cause": "x"}) == {"kind": "ifcp_chip", "cause": "x"}
+
+
+def test_an_ip_question_is_not_answered_from_thin_air():
+    # 9 Nov, mr2: 'show me ip address configured on st1 interface' -> 'eth1, MAC 00:11:22:33:44:55, 172.16.1.1/24,
+    # gateway 172.16.1.254' (no evidence held any); then 'grep inet' printed nothing -> 'nothing configured'
+    ev = ai.Evidence()
+    ev.add("Link st1 asic1 Ethernet257 <-> c1 0002:01:00.1 port 13", "link")
+    bad = "st1 eth1: MAC 00:11:22:33:44:55, IPv4 172.16.1.1/24, gateway 172.16.1.254 [E1]"
+    assert ai.invented(bad, ev) == ["address 00:11:22:33:44:55", "address 172.16.1.1", "address 172.16.1.254"]
+    assert ai.invented("st1 eth0 10.255.4.71/24 [S1]", ev, "eth0 10.255.4.71/24 up/up") == []
+    empty = [{"node": "st1", "command": "show interfaces status -n asic0 | grep inet", "rc": 1, "output": ""}]
+    assert guide.contradictions("nothing configured on st1 interface [S1]", empty)
+    for c in ("show ip interfaces", "ip -br addr", "ip -br -4 addr show eth0", "show ip interfaces -n asic0"):
+        guide.check(c, "switch")
+    for c in ("ip addr add 1.2.3.4/24 dev eth0", "ip -br addr; reboot"):
+        with pytest.raises(guide.GuideError):
+            guide.check(c, "switch")
