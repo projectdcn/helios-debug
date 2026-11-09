@@ -645,6 +645,33 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
     return out
 
 
+_VLAN_FACT = re.compile(r"^\[S(\d+)\] (\S+) (asic\d): VLAN (\S+) - (\d+) member ports \(([^)]*)\)")
+
+
+def _vlans_said(facts: list[str]) -> list[str]:
+    """The VLAN facts of a node in one sentence when its chips carry the same ('st3: VLAN 100, 200 and 300 on asic0
+    and asic1, 72 member ports each (priority_tagged) [S1] [S2]'); [] when there are none or the chips differ."""
+    by: dict = {}
+    for f in facts:
+        m = _VLAN_FACT.match(f)
+        if m:
+            by.setdefault(m.group(2), {}).setdefault(m.group(3), {"s": m.group(1), "v": []})["v"].append(m.groups()[3:])
+    out = []
+    for node, chips in by.items():
+        sets = {tuple(c["v"]) for c in chips.values()}
+        if len(sets) != 1:
+            return []
+        vs = next(iter(sets))
+        ids = [v[0] for v in vs]
+        mem = {v[1] for v in vs}
+        out.append(f"{node}: VLAN {', '.join(ids[:-1]) + ' and ' + ids[-1] if len(ids) > 1 else ids[0]} on "
+                   f"{' and '.join(sorted(chips))}, " + (f"{vs[0][1]} member ports" + (" each" if len(vs) > 1 else "")
+                   if len(mem) == 1 else ", ".join(f"{v[0]}: {v[1]}" for v in vs) + " member ports")
+                   + f" ({vs[0][2] if ',' in vs[0][2] else vs[0][2].split(' ', 1)[-1]}) "
+                   + " ".join(f"[S{c['s']}]" for _a, c in sorted(chips.items())))
+    return out
+
+
 _TOPIC = {"vlan": r"VLAN", "vlans": r"VLAN", "mtu": r"MTU", "speed": r"speed", "gpu": r"GPU", "gpus": r"GPU",
           "asic": r"asic\d", "asics": r"asic\d", "down": r"down", "ports": r"ports -", "links": r"ports -"}
 
@@ -656,9 +683,16 @@ def by_code(steps: list[dict], why: str, subject: str = "") -> dict:
     words = {w for w in re.findall(r"[a-z]{3,}", (subject or "").lower()) if w in _TOPIC}
     if words:                                   # what was asked first ('check MTU on st3': the MTUs, not the down ports)
         facts = sorted(facts, key=lambda f: not any(re.search(_TOPIC[w], f, re.I) for w in words))
+    said = _vlans_said(facts)
+    facts_c = [f for f in facts if not (said and _VLAN_FACT.match(f))]
+    if any(" ports - " in f for f in facts):     # a chip's counts said: its down ports stay in the list, not the answer
+        facts_c = [f for f in facts_c if not re.match(r"^\[S\d+\] \S+(?: Ethernet\d+: admin up, oper down| and \d+ more)", f)]
+    if said:
+        facts_c = said + facts_c if words & {"vlan", "vlans"} or not words else facts_c + said
     return {"done": True, "by_code": True, "facts": facts,
-            "conclusion": f"From the outputs, read by code ({why}): " + "; ".join(f.split("] ", 1)[-1] + " [" + f[1:].split("]")[0] + "]"
-                                                                           if f.startswith("[S") else f for f in facts[:10]) + ".",
+            "conclusion": f"From the outputs, read by code ({why}): " + "; ".join(
+                f if not f.startswith("[S") else f.split("] ", 1)[-1] + " [" + f[1:].split("]")[0] + "]"
+                for f in facts_c[:8]) + ".",
             "next": "If this does not answer the question, ask a follow-up or run another read-only step in the Terminal.",
             "unsafe": None, "not_in_evidence": [], "contradiction": None}
 

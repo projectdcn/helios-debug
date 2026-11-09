@@ -315,6 +315,7 @@ body.chat-open main{margin-right:min(460px,100vw)}
     <h2>Debug a node</h2>
     <details class="help"><summary>What is this?</summary><dl><dt>What</dt><dd>For any problem on any node - a SONiC daemon, a PSU, a GPU, AFM, a tray's OS: describe what you see, and the AI proposes one read-only command at a time (checked against the read-only list of that kind of node; nothing runs until you click Run), reads the output and proposes the next, until it can name the cause.</dd><dt>When</dt><dd>A node misbehaves and no tool here covers it, or after Node health to dig into one finding.</dd><dt>How long</dt><dd>A few minutes, one click per step.</dd><dt>Safe?</dt><dd>Yes - read-only commands only, each on your click.</dd></dl></details>
     <div class="row"><input id="dbg-subj" maxlength="300" placeholder="what you see, e.g. st3: PSU 2 shows N/A; ct07 GPU 2 resets during RCCL; afm-agent keeps restarting on st1" style="flex:1;min-width:300px"><button class="go" id="dbg-go">Start</button></div>
+    <label class="mut" style="font-size:12px;display:inline-flex;gap:6px;align-items:center;margin:4px 0"><input type="checkbox" id="dbg-auto" style="width:auto"> Auto-run: run each proposed read-only step after 2 s (Stop on any step ends it; still only the read-only list, at most 6 steps)</label>
     <p class="mut" style="font-size:12px">Name the node(s) in the description. Add outputs you already have in Any problem instead, if you collected some.</p>
     <div id="dbg-ai"></div>
   </section>
@@ -1369,10 +1370,16 @@ function guideNext(sess){
     if(sess.onActivity)sess.onActivity();
     function done(t){nx.classList.remove("pending");nx.querySelector(".row").innerHTML='<span class="mut" style="font-size:12px">'+t+"</span>"}
     var rb=nx.querySelector(".g-run");if(rb)rb.addEventListener("click",function(){nx.classList.remove("pending");nx.querySelectorAll(".g-other,.g-stop").forEach(function(b){b.remove()});stepRun(sess,p.node,p.command,rb,true)});
+    if(rb&&autoRun(sess)){rb.textContent="Run (auto in 2 s)";setTimeout(function(){if(!sess.stopped&&document.body.contains(rb)&&!rb.disabled)rb.click()},2000)}
+    else if(bad&&autoRun(sess)){var ob=nx.querySelector(".g-other");ob.textContent="Another step (auto in 2 s)";   // refused: ask for another
+      setTimeout(function(){if(!sess.stopped&&document.body.contains(ob))ob.click()},2000)}
     nx.querySelector(".g-other").addEventListener("click",function(){steps.push({node:p.node,command:p.command,rc:"skipped",output:"(skipped by the user - propose something else)"});done("skipped");guideNext(sess)});
-    nx.querySelector(".g-stop").addEventListener("click",function(){done("stopped - ask a question below, or Investigate step by step to go on")});
+    nx.querySelector(".g-stop").addEventListener("click",function(){sess.stopped=true;done("stopped - ask a question below, or Investigate step by step to go on")});
   }).catch(function(e){nx.classList.remove("pending");nx.innerHTML='<p class="err">'+esc(e.message)+'</p><button class="sec g-retry">Try again</button>';nx.querySelector(".g-retry").addEventListener("click",function(){nx.remove();guideNext(sess)})});
 }
+/* Debug a node with Auto-run ticked: each allowed proposal runs by itself (the server checks it against the read-only
+   list again, and asks for a conclusion after 6 steps); Stop on a step ends it. 9 Nov: asked for, to not click each step. */
+function autoRun(sess){var a=$("dbg-auto");return !!(a&&a.checked&&!sess.stopped&&$("dbg-ai").contains(sess.out))}
 /* step by step in its own box (the chat): the same timeline, in el */
 function guideStart(el,ctx){el.innerHTML="";var sess={hist:[],steps:[],out:el,ctx:ctx};el._steps=sess.steps;guideNext(sess)}
 /* a resolution: what the problem turned out to be and what fixed it, written by the person who debugged it.

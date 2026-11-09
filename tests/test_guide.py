@@ -631,7 +631,7 @@ def test_a_conclusion_contradicting_the_outputs_is_asked_again_then_answered_by_
     monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (seen.append(msgs) or wrong, "m"))
     p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
     assert "contradicts the outputs" in seen[-1][-1]["content"]
-    assert p["by_code"] and "VLAN 1000 - 3 member ports" in p["conclusion"] and "[S1]" in p["conclusion"]
+    assert p["by_code"] and "st1: VLAN 1000 on asic0, 3 member ports (2 priority_tagged, 1 untagged) [S1]" in p["conclusion"]
     assert p["ai_conclusion"].startswith("st1 has no VLAN")
     right = '{"done": true, "conclusion": "st1 asic0 has VLAN 1000 with 3 member ports [S1]", "next": "nothing"}'
     monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (right, "m"))
@@ -677,9 +677,9 @@ def test_a_thumbs_down_alone_on_a_conclusion_takes_the_outputs_reading_as_the_dr
     right = '{"done": true, "conclusion": "st1 asic0 has VLAN 1000 with 3 member ports [S1]", "next": "nothing"}'
     monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (right, "m"))
     p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
-    assert "VLAN 1000 - 3 member ports" in ai.RECENT[p["answer_id"]]["draft"]
+    assert "VLAN 1000 on asic0, 3 member ports" in ai.RECENT[p["answer_id"]]["draft"]
     r = feedback.record(tmp_path, {"rating": "down", "answer_id": p["answer_id"], "reasons": ["wrong_count"]}, ai.RECENT)
-    assert r["drafted"] and json.loads(r["correction"])["conclusion"].startswith("From the outputs: st1 asic0: VLAN 1000")
+    assert r["drafted"] and json.loads(r["correction"])["conclusion"].startswith("From the outputs: st1: VLAN 1000 on asic0")
     wrong = '{"done": true, "conclusion": "st1 has no VLAN configured [S1]", "next": "nothing"}'
     monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (wrong, "m"))
     p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
