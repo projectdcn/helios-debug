@@ -2,6 +2,8 @@
 loop works with a stand-in model, and a ticket's facts come from the check (not the model)."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from heliosdbg import ai, guide, ticket
@@ -48,6 +50,7 @@ def test_refused(cmd, role):
 def test_propose_and_conclude_with_a_stand_in_model(monkeypatch):
     ev = ai.Evidence()
     ev.add("Verdict: degraded, kind ifcp", "link")
+    ev.add("st6 asic0 Ethernet170 <-> ct02 0004:01:00.1 port 7", "link")
     replies = ['{"done": false, "node": "ct02", "command": "sudo afmctl show port -b 0004:01:00.1 --json", "why": "IFCP"}',
                '{"done": false, "node": "st6", "command": "sudo config interface shutdown Ethernet170", "why": "x"}',
                '{"done": false, "node": "st6", "command": "show interfaces status -n asic0", "why": "the port"}',
@@ -576,3 +579,45 @@ def test_a_step_already_run_is_asked_again_once_with_which_step_it_was():
     assert out["allowed"] and out["command"] == "show platform psustatus" and out.get("retried")
     told = ai_.seen[1][-1]["content"]
     assert told.startswith("Refused: already run") and "step S1" in told and "DIFFERENT" in told
+
+
+VLAN_BRIEF = """+-----------+--------------+-------------+-----------------+-------------+-----------------------+
+|   VLAN ID | IP Address   | Ports       | Port Tagging    | Proxy ARP   | DHCP Helper Address   |
++===========+==============+=============+=================+=============+=======================+
+|      1000 | 10.1.0.1/16  | Ethernet0   | priority_tagged | disabled    |                       |
+|           |              | Ethernet2   | priority_tagged |             |                       |
+|           |              | Ethernet4   | untagged        |             |                       |
++-----------+--------------+-------------+-----------------+-------------+-----------------------+"""
+
+
+def test_show_vlan_brief_reaches_the_model_as_one_line_per_vlan():
+    # 9 Nov: ~200 member rows per chip, cut at OUTPUT_MAX - the model saw some ports and no VLAN id
+    s = guide.compact(VLAN_BRIEF)
+    assert s.startswith("VLAN 1000: IP 10.1.0.1/16; 3 member ports (2 priority_tagged, 1 untagged)")
+    assert "Ethernet4" in s and "+---" not in s
+    assert guide.compact("+---+\n| x |") == "+---+\n| x |"
+
+
+def test_a_pci_address_never_seen_is_refused(monkeypatch):
+    # 9 Nov: 'afmctl show port -b 0000:01:00.0' on ct01 (exit 112, No such device) - the GPUs there are 000N:01:00.x
+    class AI:
+        def chat(self, msgs, env=None, max_tokens=0):
+            return json.dumps({"done": False, "node": "ct01", "command": "sudo afmctl show port -b 0000:01:00.0 --json",
+                               "why": "x"}), "m"
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "ct01 GPUs: 0001:01:00.0"}]
+    out = guide._propose_once(AI(), msgs, "ct01", [], {"ct01": "compute"})
+    assert not out["allowed"] and "was not seen" in out["refused"]
+    msgs[1]["content"] = "lspci: 0000:01:00.0 Processing accelerators"     # .0 in lspci is .1 in afmctl: seen
+    assert guide._propose_once(AI(), msgs, "ct01", [], {"ct01": "compute"})["allowed"]
+
+
+def test_debug_a_node_stays_on_the_tray_its_description_names():
+    # 9 Nov: 'check vlans on switch tray 1' had no focus - step by step went on to ct01 and st2
+    from heliosdbg import cases
+    from ui import server
+    roles = {f"st{i}": "switch" for i in range(1, 7)} | {f"ct{i:02d}": "compute" for i in range(1, 19)}
+    al = {f"pod-1-{i - 1}-SwitchTray": f"st{i}" for i in range(1, 7)}
+    for q, want in [("check vlans on switch tray 1", {"st1"}), ("compute tray 7 is slow", {"ct07"}),
+                    ("pod-1-2-SwitchTray IFCP down", {"st3"}), ("ct05 shows no GPUs", {"ct05"}), ("check the rack", set())]:
+        ev, subject, _ = cases.blocks_context([], q, "g02-g17")
+        assert server._stay(ev, roles, al, subject) == want, q

@@ -34,6 +34,7 @@ COMPUTE_RO = platforms.read_only("compute")
 FORBIDDEN = re.compile(r"[;&`$<>\n\r\\]|\|\|")
 # a PCI address the model made up: 0000:00:00.0 is the host bridge, never a GPU (g02-g17 4 Nov: afmctl 'No such device')
 PLACEHOLDER_BDF = re.compile(r"\b0000:00:00\.0\b")
+_BDF_RX = re.compile(r"\b[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]\b", re.I)
 
 
 class GuideError(ValueError):
@@ -113,6 +114,50 @@ GUIDE_SYSTEM_ADD = (
 )
 
 
+_VLAN_HEAD = re.compile(r"\|\s*VLAN ID\s*\|", re.I)
+
+
+def vlan_brief(text: str) -> list[dict] | None:
+    """SONiC 'show vlan brief' -> [{vlan, ips, ports: {port: tagging}, proxy_arp}], None when it is not that table."""
+    if not _VLAN_HEAD.search(text or ""):
+        return None
+    out: list[dict] = []
+    for ln in text.splitlines():
+        if not ln.startswith("|") or _VLAN_HEAD.search(ln):
+            continue
+        c = [x.strip() for x in ln.strip().strip("|").split("|")]
+        if len(c) < 4:
+            continue
+        if c[0]:
+            out.append({"vlan": c[0], "ips": [], "ports": {}, "proxy_arp": c[4] if len(c) > 4 else ""})
+        if not out:
+            continue
+        v = out[-1]
+        if c[1]:
+            v["ips"].append(c[1])
+        if c[2]:
+            v["ports"][c[2]] = c[3]
+        if len(c) > 4 and c[4] and not v["proxy_arp"]:
+            v["proxy_arp"] = c[4]
+    return out
+
+
+def vlan_line(vl: list[dict]) -> str:
+    """One line per VLAN: its id, IPs, how many member ports and how they are tagged, then the ports."""
+    if not vl:
+        return "no VLAN configured (the table is empty)"
+    lines = []
+    for v in vl:
+        tags: dict = {}
+        for tg in v["ports"].values():
+            tags[tg] = tags.get(tg, 0) + 1
+        lines.append(f"VLAN {v['vlan']}: IP {', '.join(v['ips']) or 'none'}; {len(v['ports'])} member ports ("
+                     + ", ".join(f"{n} {tg}" for tg, n in sorted(tags.items(), key=lambda x: -x[1])) + ")"
+                     + (f"; proxy ARP {v['proxy_arp']}" if v["proxy_arp"] else "")
+                     + (f"; ports: {' '.join(v['ports'])}" if v["ports"] else ""))
+    return "\n".join(lines)
+
+
 def compact(output: str) -> str:
     """afmctl's --json port / device listings in one line per port / GPU (36 ports of JSON are ~6000 characters on one
     line: cut for the model, the ports after the first dozen were never seen). Anything else unchanged."""
@@ -120,6 +165,9 @@ def compact(output: str) -> str:
     rx = _sonic.cpu_rx(t) if not t.startswith("{") else None
     if rx is not None:                      # 'ip -s -o link show': ~110 KB for 257 ports - what it says, in one line
         return _sonic.cpu_rx_line(rx)
+    vl = vlan_brief(t) if not t.startswith("{") else None
+    if vl is not None:                      # 'show vlan brief': one table row per member port, ~200 per chip - cut at
+        return vlan_line(vl)                # OUTPUT_MAX the model saw some ports and none of the VLAN ids (9 Nov)
     if not t.startswith("{"):
         return output
     try:
@@ -518,8 +566,13 @@ def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=No
         return out
     try:
         out["command"], _sudo = check(out["command"], nodes[node])
+        # the same GPU is .0 in lspci / amd-smi and .1 in afmctl: the address seen, whatever its function
+        unseen = [b for b in _BDF_RX.findall(out["command"]) if b.lower()[:-1] not in _seen(msgs).lower()]
         if any(s.get("node") == node and s.get("command") == out["command"] for s in steps):
             out["refused"] = "already run - ask again for another step"
+        elif unseen:            # 9 Nov: 'afmctl show port -b 0000:01:00.0' on ct01 - no GPU has that address there
+            out["refused"] = (f"PCI address {unseen[0]} was not seen in the evidence or an earlier step - list that "
+                              f"tray's GPUs first (sudo afmctl show device --json) and use an address from it")
         else:
             out["allowed"] = True
     except GuideError as e:
@@ -616,7 +669,8 @@ def run(host, transport, command: str, role: str, log_dir: Path | None = None) -
     u = unreachable({"rc": rc, "output": out, "node": host.name})
     if u:
         out = f"Could not log in to {host.name}: {u['what']}.\nNext: {u['next']} (owner: {u['owner']})\n\n{out}"
-    out = compact(out)                                   # before cutting: a cut JSON cannot be read any more
+    vl = vlan_brief(out)                                 # the person sees the table too, the summary on top of it
+    out = compact(out) if vl is None else vlan_line(vl) + "\n\n" + out   # before cutting: a cut JSON cannot be read
     if len(out) > OUTPUT_MAX:
         out = out[:OUTPUT_MAX // 2] + f"\n... ({len(out) - OUTPUT_MAX} characters cut) ...\n" + out[-OUTPUT_MAX // 2:]
     return {"node": host.name, "command": c, "rc": rc, "output": out, "seconds": round(time.time() - t0, 1)}

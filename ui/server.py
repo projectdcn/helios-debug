@@ -653,17 +653,33 @@ def ai_guide(state: State, req: dict) -> dict:
         raise BadRequest("step by step needs the rack (its nodes are where the commands run) - pick one")
     _inv, roles = _rack_nodes(state, rack)
     steps = [s for s in (req.get("steps") or []) if isinstance(s, dict)][:12]
-    stay = _stay(ev, roles, _rack_aliases(state, rack))
+    stay = _stay(ev, roles, _rack_aliases(state, rack), subject)
     try:
         return guide.propose(ai, ev, subject, steps, roles, stay=stay)
     except (ai.AIError, guide.GuideError) as e:
         raise BadRequest(str(e)) from None
 
 
-def _stay(ev, roles: dict, aliases: dict) -> set:
+_TRAY_RX = re.compile(r"\b(switch|compute)?\s*tray\s*#?\s*(\d{1,2})\b", re.I)
+
+
+def named_in(text: str, roles: dict, aliases: dict) -> set:
+    """The nodes a Debug-a-node description names: rack names (st1, ct07), AFM names (pod-1-0-SwitchTray), or 'switch
+    tray 1' / 'compute tray 7' (9 Nov: 'check vlans on switch tray 1' had no focus - it went on to ct01 and st2)."""
+    got = {n for n in roles if re.search(rf"\b{re.escape(n)}\b", text or "", re.I)}
+    got |= {t for a, t in aliases.items() if t in roles and re.search(rf"\b{re.escape(a)}\b", text or "", re.I)}
+    for m in _TRAY_RX.finditer(text or ""):
+        kind = (m.group(1) or "compute").lower()
+        num = int(m.group(2))
+        got |= {n for n, r in roles.items() if r == ("switch" if kind == "switch" else "compute")
+                and re.fullmatch(r"\D*0*(\d+)", n) and int(re.sub(r"\D", "", n)) == num}
+    return got
+
+
+def _stay(ev, roles: dict, aliases: dict, subject: str = "") -> set:
     """Where step by step may run commands when the question is about some nodes: those, and the nodes the evidence
     names (a link's other end) - not the rack's other problems (4 Nov: an st4 IFCP question went on to ct01, st5, ct03)."""
-    focus = set(getattr(ev, "focus", None) or ())
+    focus = set(getattr(ev, "focus", None) or ()) or named_in(subject, roles, aliases)
     if not focus:
         return set()
     text = " ".join(x["text"] for x in ev.items if x.get("source") != "resolution")
