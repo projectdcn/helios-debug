@@ -736,6 +736,16 @@ def by_code(steps: list[dict], why: str, subject: str = "") -> dict:
     words = {w for w in re.findall(r"[a-z]{3,}", (subject or "").lower()) if w in _TOPIC}
     if words:                                   # what was asked first ('check MTU on st3': the MTUs, not the down ports)
         facts = sorted(facts, key=lambda f: not any(re.search(_TOPIC[w], f, re.I) for w in words))
+    named = set(re.findall(r"\bEthernet\d+\b", subject or ""))
+    if named:                                   # 'what is st1 Ethernet39 connected to?': that port only (9 Nov: the
+        mine = [f for f in facts if set(re.findall(r"\bEthernet\d+\b", f)) & named]   # answer listed others' down ports)
+        if not mine:
+            return {"done": True, "by_code": True, "facts": facts, "unsafe": None, "not_in_evidence": [], "contradiction": None,
+                    "conclusion": f"The outputs read so far say nothing about {', '.join(sorted(named))} ({why}).",
+                    "next": ("For its cabled peer: show interfaces description -n asicN | grep '<port> '; for its state: "
+                             "show interfaces status -n asicN | grep '<port> ' (the trailing space keeps Ethernet39 from "
+                             "matching Ethernet390).")}
+        facts = mine
     said = _vlans_said(facts)
     facts_c = [f for f in facts if not (said and _VLAN_FACT.match(f))]
     if any(" ports - " in f for f in facts):     # a chip's counts said: its down ports stay in the list, not the answer
