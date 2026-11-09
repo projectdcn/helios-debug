@@ -516,3 +516,7 @@ def test_port_db_stages_and_gap():
     db["APPL_DB"], db["ASIC_DB"] = "{'admin_status': 'up', 'mtu': '9100'}", "{'SAI_PORT_ATTR_ADMIN_STATE': 'false'}"
     j = portdb.judge(portdb.read(run, "asic0", "Ethernet4"), "Ethernet4")
     assert j["mismatches"] and "admin state differs" in j["mismatches"][0]
+    db["CONFIG_DB"] = db["APPL_DB"] = "{'admin_status': 'down', 'last_down_time': 'Sun Nov 08 04:49:54 2026'}"
+    db["ASIC_DB"], db["STATE_DB"] = "{'SAI_PORT_ATTR_ADMIN_STATE': 'false'}", "{'admin_status': 'down'}"
+    j = portdb.judge(portdb.read(run, "asic0", "Ethernet4"), "Ethernet4")
+    assert "shut by configuration" in j["summary"] and "startup Ethernet4" in j["summary"] and "cable" not in j["summary"].split(" - ")[0]

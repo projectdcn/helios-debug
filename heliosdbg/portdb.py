@@ -65,7 +65,7 @@ def read(run, asic: str | None, port: str) -> dict:
         c = command(asic, db, key.format(p=port, oid=oid))
         cmds.append(c)
         rec[db] = parse(run(c))
-    return {"oid": oid, "records": rec, "commands": cmds}
+    return {"oid": oid, "records": rec, "commands": cmds, "asic": asic}
 
 
 def judge(r: dict, port: str) -> dict:
@@ -97,6 +97,11 @@ def judge(r: dict, port: str) -> dict:
         summary = f"{port} stops at {gap['db']}: {gap['why']}."
     elif mm:
         summary = f"{port} is in every database, but " + "; ".join(mm) + "."
+    elif c.get("admin_status") == "down":
+        summary = (f"{port} is shut by configuration: admin_status down in CONFIG_DB, and every database after it agrees"
+                   + (f" (last down {a.get('last_down_time')})" if a.get("last_down_time") else "")
+                   + f" - not the cable or the far end. If it should be up, start it again - CHANGES THE SWITCH: sudo config "
+                     f"interface{_ns(r.get('asic'))} startup {port} (and config save to keep it).")
     else:
         summary = (f"{port} is in every database and they agree (admin {c.get('admin_status')}); it is "
                    + (f"oper {oper}" if oper else "of unknown oper state")
