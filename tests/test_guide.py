@@ -657,3 +657,14 @@ def test_a_whole_chips_port_status_is_counted_before_it_is_cut():
     assert "MTU 256 x 9100" in s and guide.compact(rows) == s
     assert any("256 ports - 251 up, 5 admin up" in f for f in guide.step_facts([{"node": "st1", "command": "show "
                "interfaces status -n asic0", "output": s + "\n\n" + rows[:3000]}]))
+
+
+def test_a_finished_debug_a_node_question_is_logged_for_model_tests(tmp_path):
+    from ui import server
+    st = server.State(tmp_path / "inv", tmp_path / "res")
+    steps = [{"node": "st1", "command": "show vlan brief -n asic0", "rc": 0, "output": VLAN_BRIEF}]
+    server._log_question(st, "g02-g17", "check vlans on switch tray 1", ["st1"], steps,
+                         {"done": True, "conclusion": "VLAN 1000 [S1]", "next": "nothing", "model": "m", "by_code": True})
+    rec = json.loads((tmp_path / "res" / "ai" / "questions.jsonl").read_text())
+    assert rec["subject"] == "check vlans on switch tray 1" and rec["stay"] == ["st1"] and rec["by_code"]
+    assert rec["steps"][0]["output"] == VLAN_BRIEF

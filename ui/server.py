@@ -655,9 +655,30 @@ def ai_guide(state: State, req: dict) -> dict:
     steps = [s for s in (req.get("steps") or []) if isinstance(s, dict)][:12]
     stay = _stay(ev, roles, _rack_aliases(state, rack), subject)
     try:
-        return guide.propose(ai, ev, subject, steps, roles, stay=stay)
+        out = guide.propose(ai, ev, subject, steps, roles, stay=stay)
     except (ai.AIError, guide.GuideError) as e:
         raise BadRequest(str(e)) from None
+    if out.get("done") and req.get("blocks") is not None:   # a Debug-a-node question: helios-slm tests models on them
+        _log_question(state, rack, subject, sorted(stay), steps, out)
+    return out
+
+
+def _log_question(state: State, rack: str, subject: str, stay: list, steps: list, out: dict) -> None:
+    """One finished Debug-a-node investigation -> results/ai/questions.jsonl: what was asked, every command and its
+    output, the conclusion (helios-slm realq.py replays them against new models - 9 Nov: the questions people really
+    ask, 'check vlans on switch tray 1', were in no test)."""
+    rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "rack": rack, "subject": subject, "stay": stay,
+           "steps": [{k: (str(s.get(k) or "")[:guide.OUTPUT_MAX] if k == "output" else s.get(k))
+                      for k in ("node", "command", "rc", "output")} for s in steps if isinstance(s, dict)],
+           "conclusion": out.get("conclusion"), "next": out.get("next"), "model": out.get("model"),
+           "by_code": bool(out.get("by_code")), "contradicts": out.get("contradicts") or []}
+    try:
+        d = state.results_dir / "ai"
+        d.mkdir(parents=True, exist_ok=True)
+        with (d / "questions.jsonl").open("a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
 
 
 _TRAY_RX = re.compile(r"\b(switch|compute)?\s*tray\s*#?\s*(\d{1,2})\b", re.I)
