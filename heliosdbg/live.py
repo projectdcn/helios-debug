@@ -216,6 +216,29 @@ class LiveRack:
         self.log_paused = False
         if self.log_path:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._earlier()
+
+    def _earlier(self, keep: int = 300) -> None:
+        """Today's changes from an earlier Live session of this rack (a UI restart cleared them, 9 Nov twice): shown
+        first, marked, then this session's."""
+        try:
+            lines = self.log_path.read_text().splitlines()[-keep:] if self.log_path.is_file() else []
+        except OSError:
+            return
+        rows = []
+        for ln in lines:
+            try:
+                rows.append(json.loads(ln))
+            except ValueError:
+                continue
+        for ch in rows:
+            self.seq += 1
+            self.changes.append(dict(ch, seq=self.seq, source=f"earlier session: {ch.get('source', '')}"))
+        if rows:
+            self.seq += 1
+            self.changes.append({"seq": self.seq, "t": _now(), "link": None, "what": "note", "from": None,
+                                 "to": f"the {len(rows)} change(s) above are from an earlier Live session today "
+                                       f"({self.log_path.name}); the states are read again now", "source": "live"})
 
     # ------------------------------------------------------------------ state changes
     def _set(self, k: str, field: str, value, source: str) -> None:

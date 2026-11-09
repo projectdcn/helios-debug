@@ -634,7 +634,7 @@ def _ai_subject(state: State, req: dict, past: bool = False):
         if "/link-" in rel:
             ev, subject = ai.diagnose_context(json.loads(_result_file(state, f"{rel}/link.json").read_text()))
         else:
-            scan = scan_view(state, rel)
+            scan = _with_live(state, rack, scan_view(state, rel))
             link = str(req.get("link") or "").strip()
             ev, subject = ai.link_context(scan, link, _live_now(state, rack, link)) if link else ai.check_context(
                 scan, *ai.focus_of(scan, str(req.get("question") or ""), _focus(req)))
@@ -644,6 +644,19 @@ def _ai_subject(state: State, req: dict, past: bool = False):
         lk = str(req.get("link") or "").strip() or (subject[5:] if subject.startswith("link ") else "")
         add_past_resolutions(state, ev, rack, lk, str(req.get("question") or "") + " " + " ".join(x["text"] for x in ev.items[:8]))
     return ev, subject, rack
+
+
+def _with_live(state: State, rack: str, scan: dict) -> dict:
+    """A check with what Live reads now for every link it reads otherwise (Live running on this rack): a question
+    about the rack or a node is answered from today's states, not the check's (9 Nov: 'the link works' over a link
+    Live read down)."""
+    lv = state.live
+    if lv is None or lv.rack_name != rack:
+        return scan
+    from heliosdbg.live import now_read
+    with lv.lock:
+        recs = {k: dict(v) for k, v in lv.links.items()}
+    return dict(scan, links=[now_read(x, recs.get(f"{x.get('switch')} {x.get('sw_port')}")) for x in scan.get("links") or []])
 
 
 def _live_now(state: State, rack: str, link: str) -> dict | None:
@@ -1535,7 +1548,7 @@ def live_start(state: State, req: dict) -> dict:
                        ifcp_in_use=bool((d.get("learned") or {}).get("ifcp_in_use", False)),
                        reconcile_s=reconcile_s, afm=afm, max_s=None if max_h == 0 else max_h * 3600.0,
                        idle_s=None if req.get("keep_unwatched") is True else 1800.0,
-                       log_dir=None, last_view=lambda: state.live_view,
+                       log_dir=state.results_dir / "live", last_view=lambda: state.live_view,
                        jump_limited=jump.get("via") == "exec", check_time=d.get("time_utc"), filled=filled)
         new.check_path = str(runs[at])
         # everything checked and built: only now is the running session stopped

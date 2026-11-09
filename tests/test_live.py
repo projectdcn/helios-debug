@@ -270,3 +270,19 @@ def test_gpu_not_listed_and_tray_not_in_inventory_are_not_ok(tmp_path, monkeypat
 def test_a_check_saved_from_live_does_not_pin_links_degraded():
     lk = {"sw_oper": "up", "gpu_link": "LINK_UP", "ll_up": "yes", "bdf": "x", "scan_state": "degraded", "scan_kind": "live"}
     assert live.link_state(lk, True) == "ok"
+
+
+def test_changes_of_an_earlier_session_today_come_back(tmp_path):
+    rack = SimpleNamespace(switches={"st1": Sw()}, computes={}, close=lambda: None)
+    a = live.LiveRack(rack, LINKS, rack_name="lab", reconcile_s=3600, log_dir=tmp_path, stream_cls=Q)
+    a._record({"link": "st1 Ethernet4", "what": "state", "from": "ok", "to": "down", "source": "first read"})
+    b = live.LiveRack(rack, LINKS, rack_name="lab", reconcile_s=3600, log_dir=tmp_path, stream_cls=Q)
+    ch = list(b.changes)
+    assert ch[0]["link"] == "st1 Ethernet4" and ch[0]["source"].startswith("earlier session")
+    assert "earlier Live session" in ch[-1]["to"] and b.seq == ch[-1]["seq"]
+
+
+def test_now_read_over_a_whole_check():
+    ln = dict(LINKS[0])
+    x = live.now_read(ln, {"read": True, "state": "down", "sw_oper": "down", "sw_admin": "down", "gpu_link": "NO_PHY_LINK", "ll_up": None})
+    assert x["state"] == "down" and x["kind"] == "sw_admin_down" and x["evidence"][0] == "Live now"
