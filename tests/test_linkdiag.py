@@ -496,3 +496,23 @@ def test_login_check_says_refused(monkeypatch):
     r = logins.check(Inv())
     assert r["refused"] == ["st1"] and r["unreachable"] == ["ct10"]
     assert [n["ok"] for n in r["nodes"]] == [False, True, False]
+
+
+def test_port_db_stages_and_gap():
+    from heliosdbg import portdb
+    db = {"COUNTERS_DB": '"oid:0x1000000000024"',
+          "CONFIG_DB": "{'admin_status': 'up', 'speed': '400000', 'lanes': '71,72'}",
+          "APPL_DB": "{'admin_status': 'up', 'speed': '400000', 'mtu': '9100', 'oper_status': 'down', 'flap_count': '4'}",
+          "ASIC_DB": "{'SAI_PORT_ATTR_ADMIN_STATE': 'true', 'SAI_PORT_ATTR_SPEED': '400000', 'SAI_PORT_ATTR_MTU': '9122'}",
+          "STATE_DB": "{'admin_status': 'up', 'netdev_oper_status': 'down', 'state': 'ok'}"}
+
+    def run(c):
+        return next(v for k, v in db.items() if f" {k} " in c)
+    j = portdb.judge(portdb.read(run, "asic0", "Ethernet4"), "Ethernet4")
+    assert j["gap"] is None and not j["mismatches"] and "programmed end to end" in j["summary"]
+    db["APPL_DB"] = "{}"
+    j = portdb.judge(portdb.read(run, "asic0", "Ethernet4"), "Ethernet4")
+    assert j["gap"]["db"] == "APPL_DB" and "portmgrd" in j["summary"]
+    db["APPL_DB"], db["ASIC_DB"] = "{'admin_status': 'up', 'mtu': '9100'}", "{'SAI_PORT_ATTR_ADMIN_STATE': 'false'}"
+    j = portdb.judge(portdb.read(run, "asic0", "Ethernet4"), "Ethernet4")
+    assert j["mismatches"] and "admin state differs" in j["mismatches"][0]

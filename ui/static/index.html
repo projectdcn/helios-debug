@@ -2660,9 +2660,17 @@ function mapDetail(k){
     (live&&liveMine()&&live.links[k]&&mEff(l)!==l.state?'<p class="mut">Live: now <b>'+esc(mEff(l))+"</b> (was "+esc(l.state)+" at the check).</p>":"")+
     '<div id="dd-port"><p class="mut">reading what the check saved about both ends ...</p></div>'+
     (l.evidence&&l.evidence.length?"<details><summary>Evidence</summary>"+l.evidence.map(function(e){return "<div><code>"+esc(e)+"</code></div>"}).join("")+"</details>":"")+
-    '<div class="row"><button class="go" id="map-diag">Diagnose now</button><button class="sec" id="map-watch">Watch it</button><button class="sec" id="map-copy">Copy link id</button><span class="mut">reads only '+esc(l.switch)+" and "+esc(l.tray||"its tray")+"</span></div>";
+    '<div class="row"><button class="go" id="map-diag">Diagnose now</button><button class="sec" id="map-watch">Watch it</button><button class="sec" id="map-copy">Copy link id</button><button class="sec" id="map-db" title="the switch port in CONFIG_DB, APPL_DB, ASIC_DB and STATE_DB, side by side - read-only">SONiC databases</button><span class="mut">reads only '+esc(l.switch)+" and "+esc(l.tray||"its tray")+"</span></div>";
   $("map-diag").addEventListener("click",function(){$("link-target").value=tgt;tab("link");run("link")});
   $("map-copy").addEventListener("click",function(){try{navigator.clipboard.writeText(tgt)}catch(e){}});
+  $("map-db").addEventListener("click",function(){var b=$("map-db"),box=$("dd-db")||(function(){var d=document.createElement("div");d.id="dd-db";b.parentNode.after(d);return d})();
+    b.disabled=true;box.innerHTML='<p class="mut">reading '+esc(l.switch+" "+l.sw_port)+" from SONiC's databases ...</p>";
+    api("/api/port-db",{rack:mapData.rack,switch:l.switch,asic:l.asic||"",port:l.sw_port}).then(function(r){
+      box.innerHTML='<p class="'+(r.gap||r.mismatches.length?"err":"")+'">'+esc(r.summary)+"</p><table><tr><th>Database</th><th>Record</th><th>What it holds</th></tr>"+
+        r.stages.map(function(st){var f=Object.keys(st.fields).map(function(k){return k.replace("SAI_PORT_ATTR_","")+" "+st.fields[k]}).join(", ");
+          return '<tr><td>'+esc(st.db)+'</td><td class="'+(st.present?"":"st-down")+'">'+(st.present?"present":"<b>missing</b>")+"</td><td>"+esc(f||st.what)+"</td></tr>"}).join("")+"</table>"+
+        "<details><summary>Commands (read-only)</summary>"+r.commands.map(function(c){return "<div><code>"+esc(c)+"</code></div>"}).join("")+"</details>"})
+    .catch(function(e){box.innerHTML='<p class="err">'+friendly(e.message)+"</p>"}).then(function(){b.disabled=false})});
   $("map-watch").addEventListener("click",function(){var ta=$("watch-targets");if(ta.value.indexOf(tgt)<0)ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+tgt;tab("watch")});
   chat.link=k;chat.keepLink=true;if(!$("chat").classList.contains("hide"))chatCtx();
   wireCrumbs();portExtra(k);aiPanel($("ai-link"),{path:mapData.path,link:k,label:"link "+k});$("map-detail").scrollIntoView({block:"nearest"});

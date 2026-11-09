@@ -669,6 +669,26 @@ def _live_now(state: State, rack: str, link: str) -> dict | None:
         return dict(r) if r else None
 
 
+def port_db(state: State, req: dict) -> dict:
+    """One switch port in CONFIG_DB / APPL_DB / ASIC_DB / STATE_DB, side by side, and where it stops (heliosdbg/portdb.py)
+    - read-only sonic-db-cli reads; what 'dump state port' would show, which crashes on the multi-ASIC switches."""
+    from heliosdbg import portdb
+    from heliosdbg.rack import Rack
+    rack, sw, asic, port = (str(req.get(k) or "").strip() for k in ("rack", "switch", "asic", "port"))
+    if not re.fullmatch(r"Ethernet\d{1,4}", port) or not re.fullmatch(r"(asic\d)?", asic):
+        raise BadRequest("port: EthernetN; asic: asicN or empty")
+    inv = _rack_inventory(state, rack)
+    if inv is None or sw not in {h.name for h in inv.switches}:
+        raise BadRequest(f"no switch {sw!r} in the inventory of rack {rack!r}")
+    r = Rack(inv)
+    try:
+        node = r.switches[sw]
+        got = portdb.read(lambda c: node.t.run(c, sudo=True, timeout=60).stdout, asic or None, port)
+    finally:
+        r.close()
+    return portdb.judge(got, port) | {"switch": sw, "asic": asic, "port": port}
+
+
 def check_logins(state: State, name: str) -> dict:
     """One `true` per node of an inventory with its own user / key (heliosdbg/logins.py); kept for the banner."""
     from heliosdbg import logins
@@ -2140,6 +2160,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, node_config(self.state, req))
             if u.path == "/api/config/rack":
                 return self._json(200, rack_config(self.state, req))
+            if u.path == "/api/port-db":
+                return self._json(200, port_db(self.state, req))
             if u.path == "/api/logins":
                 return self._json(200, check_logins(self.state, req.get("inventory", "")))
             if u.path == "/api/term/open":
