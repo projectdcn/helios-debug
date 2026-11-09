@@ -621,3 +621,39 @@ def test_debug_a_node_stays_on_the_tray_its_description_names():
                     ("pod-1-2-SwitchTray IFCP down", {"st3"}), ("ct05 shows no GPUs", {"ct05"}), ("check the rack", set())]:
         ev, subject, _ = cases.blocks_context([], q, "g02-g17")
         assert server._stay(ev, roles, al, subject) == want, q
+
+
+def test_a_conclusion_contradicting_the_outputs_is_asked_again_then_answered_by_code(monkeypatch):
+    # 9 Nov: 'check vlans on st1' - S1 showed VLAN 100/200/300 x 72 ports, the 4B concluded 'st1 has no VLAN configured'
+    steps = [{"node": "st1", "command": "show vlan brief -n asic0", "rc": 0, "output": VLAN_BRIEF}]
+    wrong = '{"done": true, "conclusion": "st1 has no VLAN configured [S1]", "next": "nothing"}'
+    seen = []
+    monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (seen.append(msgs) or wrong, "m"))
+    p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
+    assert "contradicts the outputs" in seen[-1][-1]["content"]
+    assert p["by_code"] and "VLAN 1000 - 3 member ports" in p["conclusion"] and "[S1]" in p["conclusion"]
+    assert p["ai_conclusion"].startswith("st1 has no VLAN")
+    right = '{"done": true, "conclusion": "st1 asic0 has VLAN 1000 with 3 member ports [S1]", "next": "nothing"}'
+    monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (right, "m"))
+    p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
+    assert not p.get("by_code") and not p["contradicts"]
+
+
+def test_a_step_repeated_after_being_told_is_ended_by_code(monkeypatch):
+    steps = [{"node": "st1", "command": "show vlan brief -n asic0", "rc": 0, "output": VLAN_BRIEF}]
+    rep = '{"done": false, "node": "st1", "command": "show vlan brief -n asic0", "why": "again"}'
+    seen = []
+    monkeypatch.setattr(ai, "chat", lambda msgs, env=None, max_tokens=900: (seen.append(msgs) or rep, "m"))
+    p = guide.propose(ai, ai.Evidence(), "check vlans on st1", steps, {"st1": "switch"})
+    assert guide.CONCLUDE_NOW in seen[-1][-1]["content"]
+    assert p["done"] and p["by_code"] and "VLAN 1000" in p["conclusion"]
+
+
+def test_a_whole_chips_port_status_is_counted_before_it_is_cut():
+    rows = "\n".join(f"  Ethernet{i}  {i},{i + 1}  400G  9100  N/A  Ethernet{i}/1  trunk  {'down' if i % 50 == 0 else 'up'}"
+                     f"  up  N/A  N/A" for i in range(1, 257))
+    s = guide.status_line(rows)
+    assert s.startswith("Port status: 256 ports - 251 up, 5 admin up but oper down (Ethernet50 Ethernet100")
+    assert "MTU 256 x 9100" in s and guide.compact(rows) == s
+    assert any("256 ports - 251 up, 5 admin up" in f for f in guide.step_facts([{"node": "st1", "command": "show "
+               "interfaces status -n asic0", "output": s + "\n\n" + rows[:3000]}]))

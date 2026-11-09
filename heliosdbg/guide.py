@@ -620,14 +620,30 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
                         f"or propose another step. Answer with the JSON object only."}]
         again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
         out = again | {"retried": True, "contradiction_before": out["contradiction"]}
+    if not out.get("done") and str(out.get("refused") or "").startswith("already run") and step_facts(steps):
+        out = by_code(steps, "the AI kept proposing a step already run") | {"model": out.get("model")}
     if out.get("done") and out.get("contradicts"):       # once more, told what its own outputs show
         msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
                        {"role": "user", "content": "Your conclusion contradicts the outputs: " + "; ".join(out["contradicts"])
                         + ". Conclude again from what the outputs show. Answer with the JSON object only."}]
         again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
         out = again | {"retried": True, "contradicts_before": out["contradicts"]}
+        if out.get("done") and out.get("contradicts") and step_facts(steps):   # still: the outputs answer, not the AI
+            out = by_code(steps, "the AI's conclusion contradicted the outputs twice") | {
+                "ai_conclusion": out["conclusion"], "contradicts": out["contradicts"], "model": out.get("model")}
     out.pop("_text", None)
     return out
+
+
+def by_code(steps: list[dict], why: str) -> dict:
+    """A conclusion from what code read in the outputs, when the model cannot give one that agrees with them (9 Nov:
+    'check vlans on st1' - the 4B repeated 'show vlan brief' five times, then said 'no VLAN' over VLAN 100/200/300)."""
+    facts = step_facts(steps)
+    return {"done": True, "by_code": True, "facts": facts,
+            "conclusion": f"From the outputs, read by code ({why}): " + "; ".join(f.split("] ", 1)[-1] + " [" + f[1:].split("]")[0] + "]"
+                                                                           if f.startswith("[S") else f for f in facts[:10]) + ".",
+            "next": "If this does not answer the question, ask a follow-up or run another read-only step in the Terminal.",
+            "unsafe": None, "not_in_evidence": [], "contradiction": None}
 
 
 CONCLUDE_NOW = ("Refused again: that step was run already. Do not propose it again - conclude now from what the outputs "
