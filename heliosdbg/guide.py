@@ -237,9 +237,12 @@ _STATUS_SUM = re.compile(r"^Port status: (\d+) ports - (\d+) up, (\d+) admin up 
 
 def status_line(out: str) -> str | None:
     """A whole chip's 'show interfaces status' (~256 rows, cut at OUTPUT_MAX: counts read from a cut table were
-    wrong, 9 Nov) in one line: how many up / down / shut, the down ports, speeds and MTUs. None under 8 rows."""
+    wrong, 9 Nov) in one line: how many up / down / shut, the down ports, speeds and MTUs. None under l1.SMALL rows: a
+    grep's few rows are read as they are ('grep Ethernet7' gave Ethernet7 and 70-79; summarised, the answer by code said
+    the outputs 'say nothing about Ethernet7', 9 Nov)."""
     rows = _STATUS_ROW_ALL.findall(out or "")
-    if len(rows) < 8:
+    from . import l1
+    if len(rows) < l1.SMALL:
         return None
     down = [p_ for p_, _s, _m, o, a_ in rows if o == "down" and a_ == "up"]
     shut = sum(1 for r in rows if r[4] == "down")
@@ -423,6 +426,11 @@ def step_facts(steps: list[dict]) -> list[str]:
         for port in shut if not sm and len(shut) <= 6 else []:
             sw_shut = True
             facts.append(f"[S{i}] {node} {port}: admin DOWN - shut on the switch (by configuration), so it has no link")
+        asked = (re.search(r"\b(Ethernet\d+)\b", str(s.get("command") or "")) or [None, ""])[1]
+        own = next(((o_, a_) for p_, o_, a_ in _SW_PORT.findall(out) if p_ == asked), None)
+        if own and not any(f.startswith(f"[S{i}] {node} {asked}:") for f in facts):   # the port asked about, also when
+            facts.append(f"[S{i}] {node} {asked}: admin {own[1]}, oper {own[0]} (its own row)")   # up (9 Nov: 'grep
+            # Ethernet7' gave 16 rows - Ethernet4-6 by their alias Ethernet71/1.., 70-79 - none of them said Ethernet7)
         ctr = _CTR_STATE.findall(out)
         for port, st in ctr if len(ctr) <= 6 else []:
             if st == "X":

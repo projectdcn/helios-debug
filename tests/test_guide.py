@@ -887,3 +887,14 @@ def test_default_model_is_helios_when_listed(monkeypatch):
     assert ai.status(env | {"HELIOS_AI_MODEL": "helios-docs"})["model"] == "helios-docs"
     monkeypatch.setattr(ai, "_req", lambda *a, **k: {"data": [{"id": "base"}]})
     assert ai.status(env)["model"] == "base"
+
+
+def test_grep_of_a_few_status_rows_keeps_the_port():
+    """9 Nov (g02-g17 st1): 'grep Ethernet7' gave 16 rows (Ethernet4-6 by their alias Ethernet71/1.., Ethernet70-79),
+    summarised; the answer by code said the outputs 'say nothing about Ethernet7'."""
+    rows = "".join(f"  Ethernet{p:<10} {p * 2},{p * 2 + 1}     400G   9100    N/A   Ethernet{p + 67}/1   trunk      "
+                   f"{'down' if p == 76 else 'up'}       up     N/A         N/A\n" for p in [4, 5, 6, 7, *range(70, 80), 71, 72])
+    assert guide.status_line(rows) is None                       # 16 rows: read as they are
+    st = [{"node": "st1", "command": "show interfaces status -n asic0 -d all | grep Ethernet7", "output": rows}]
+    assert "[S1] st1 Ethernet7: admin up, oper up (its own row)" in guide.step_facts(st)
+    assert "say nothing about Ethernet7" not in guide.by_code(st, "x", "link st1 Ethernet7")["conclusion"]
