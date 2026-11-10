@@ -975,7 +975,8 @@ def ai_chat(state: State, req: dict) -> dict:
         except (OSError, ValueError):
             health = None
         ages = rackfacts.ages(scan, health)
-        ks = rackfacts.kinds(q) if not link else []
+        ks = rackfacts.kinds(q) if not link and not ai.generic_howto(q) else []   # 'is a small FEC uncorrectable
+        # count after bring-up a problem?' is a how-to, not a request for the rack's counts (9 Nov)
         if getattr(ev, "map_facts", None):        # 'which switch port is c1 connected to': the rack map answers it exactly
             ks = [k for k in ks if k not in ("links", "gpus")]
         if ks:                    # who answers, how many links / GPUs, quarantine, findings, when: exact lines, not the model's

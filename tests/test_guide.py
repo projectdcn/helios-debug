@@ -853,3 +853,25 @@ def test_code_conclusion_carries_the_checks_verdict():
     assert out["next"] == "Collect afmctl show port from the tray."
     plain = {"done": True, "conclusion": "c", "next": "n"}
     assert guide.with_check(plain, SimpleNamespace(items=[{"text": "st1: VLAN 100"}])) == plain   # Debug a node: as it was
+
+
+def test_general_questions_go_to_the_documentation():
+    """9 Nov efficacy test: 'should I clear the FEC counters ...' and 'is a small FEC uncorrectable count after bring-up
+    a problem?' were answered from the rack's problem list; questions about this rack stay with the rack."""
+    from heliosdbg import ai
+    for q in ("should I clear the FEC counters before checking a link?", "is MAX_T 9 normal?",
+              "is a small FEC uncorrectable count right after link bring-up a problem?", "can I clear counters safely?"):
+        assert ai.generic_howto(q), q
+    for q in ("is a link down?", "are the links ok?", "is st1 Ethernet7 ok?", "should I reseat the cable?",
+              "do I need to reseat the cable?", "is the rack normal?", "what is wrong with ct16?"):
+        assert not ai.generic_howto(q), q
+
+
+def test_unreachable_tray_problem_names_its_trays():
+    from heliosdbg import ai
+    ls = [{"switch": "st1", "sw_port": "Ethernet226", "tray": None,
+           "cause": "slot 13: its tray did not answer - not reachable: ct10, ct14, ct18"},
+          {"switch": "st1", "sw_port": "Ethernet9", "tray": "ct02", "cause": "compute tray ct02 not reachable over SSH"},
+          {"switch": "st1", "sw_port": "Ethernet1", "tray": "ct01", "cause": "ok"}]
+    assert ai._trays_of({"kind": "tray_unreachable", "links": ["st1 Ethernet226", "st1 Ethernet9"]}, ls) == \
+        ["ct02", "ct10", "ct14", "ct18"]

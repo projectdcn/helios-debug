@@ -457,7 +457,9 @@ def check_context(scan: dict, focus: set | None = None, topic: "re.Pattern | Non
         title = rc.get("title") or rc.get("kind") or "group"
         if rc.get("kind") == "ifcp" and any(k for k in chips if chips[k]["nosess"] >= 8):
             continue
-        problem(title, [f"{rc.get('cause') or ''} - {len(rc.get('links') or [])} links, e.g. "
+        trays = _trays_of(rc, ls) if rc.get("kind") == "tray_unreachable" else []
+        problem(title, [f"{rc.get('cause') or ''}" + (f" ({', '.join(trays)})" if trays else "")
+                        + f" - {len(rc.get('links') or [])} links, e.g. "
                         f"{', '.join((rc.get('links') or [])[:3])}" + (f" (owner: {rc['owner']})" if rc.get("owner") else "")]
                 + ([t.format(sw=rc.get("switch")) for t in SWITCH_IFCP_NEXT] if rc.get("kind") == "switch_ifcp" else []),
                 _rc_nodes(rc, ls), [rc.get("switch")] if rc.get("kind") == "switch_ifcp" else None)
@@ -490,6 +492,23 @@ def check_context(scan: dict, focus: set | None = None, topic: "re.Pattern | Non
     return ev, "this check of the rack"
 
 
+def _trays_of(rc: dict, ls: list) -> list[str]:
+    """The trays a 'compute tray not reachable' group is about - its links' own causes name them ('slot 13: its tray did
+    not answer - not reachable: ct10, ct14, ct18'), the group's line did not: the 4B named none of them in 2 of 3 answers
+    to 'which links are down and why' (9 Nov)."""
+    names = set(rc.get("links") or [])
+    got = set()
+    for ln in ls:
+        if f"{ln.get('switch')} {ln.get('sw_port')}" not in names:
+            continue
+        if ln.get("tray"):
+            got.add(ln["tray"])
+        m = re.search(r"not reachable: ([\w-]+(?:, [\w-]+)*)", str(ln.get("cause") or ""))
+        if m:
+            got.update(m.group(1).split(", "))
+    return sorted(got, key=lambda t: (len(t), t))
+
+
 CHECK_MODE = ("The evidence lists separate problems as [Problem N: ...]. Treat them as INDEPENDENT unless an evidence "
               "item links them. For each problem write '### Problem N: <title>' and under it three short lines: "
               "'Root cause:', 'Debug next (read-only):' (one or two commands, on the right device), 'Remediation (who):'. "
@@ -516,7 +535,13 @@ CHAT_MODE = ("This is an open chat about the rack. Answer the question directly 
              "answers the question, say so and name the read-only command or UI view that would.")
 
 HOWTO_RX = re.compile(r"^\s*(how\s+(do|can|to|does|should)|what\s+(does|is|are|do)\b|which\s+commands?|explain|where\s+(do|can|is)|"
-                      r"is\s+there\s+a\s+(command|way)|(?:please\s+)?(?:list|give\s+me|show\s+me|tell\s+me)\b)", re.I)
+                      r"is\s+there\s+a\s+(command|way)|(?:please\s+)?(?:list|give\s+me|show\s+me|tell\s+me)\b|"
+                      # 9 Nov efficacy test: 'should I clear the FEC counters ...', 'is a small FEC uncorrectable count after
+                      # bring-up a problem?' went to the rack's problem list, not the documentation
+                      r"(?:should|can)\s+(?:i|we)\s+(?!.*\b(?:the|this|my|our)\s+(?:links?|rack|ports?|trays?|switch|cables?)\b)|"
+                      r"when\s+(?:should|do|does|is)\b|does\s+an?\b|"
+                      r"(?:is|are)\s+an?\s+.{3,120}?\b(?:a\s+problem|normal|expected|typical|a\s+concern)\s*\??\s*$|"
+                      r"(?:is|are)\s+(?!the\b|my\b|our\b|it\b|they\b).{3,60}?\b(?:normal|expected|typical)\s*\??\s*$)", re.I)
 PROBLEM_RX = re.compile(r"\b(wrong|problems?|faults?|failing|failed|broken|down|issues?|fix|why|order|cause|degraded|"
                         r"not\s+working|errors?|changed)\b", re.I)
 _NODE_RX = re.compile(r"\b(st\d+|ct\d{2}|c\d+|pod-\d+-\d+-(?:Switch|Compute)Tray|Ethernet\d+|asic\d)\b", re.I)
