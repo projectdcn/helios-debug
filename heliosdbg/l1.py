@@ -41,10 +41,15 @@ def _ber(x: str) -> float:
         return -1.0
 
 
+SMALL = 25                          # fewer rows than this: no one-line summary (a chip has ~257)
+
+
 def fec_line(text: str) -> str | None:
-    """A whole chip's FEC table (~257 rows) in one line; None under 8 rows."""
+    """A whole chip's FEC table (~257 rows) in one line; None under SMALL rows - a grep's few rows are read as they are
+    ('grep Ethernet4' gave Ethernet4 and 40-49: summarised, Ethernet4's own row was gone and the AI said the outputs
+    'say nothing about Ethernet4', 9 Nov)."""
     f = fec_stats(text)
-    if len(f) < 8:
+    if len(f) < SMALL:
         return None
     st = {k: sum(1 for v in f.values() if v["state"] == k) for k in "UDX"}
     unc = sorted(((p, v["uncorr"]) for p, v in f.items() if v["uncorr"]), key=lambda x: -x[1])
@@ -143,7 +148,7 @@ def flap_says(p: str, f: dict) -> str:
 
 def flap_line(text: str) -> str | None:
     f = flaps(text)
-    if len(f) < 8:
+    if len(f) < SMALL:
         return None
     down = [p for p, v in f.items() if v["oper"] == "Down"]
     many = sorted(f.items(), key=lambda x: -x[1]["count"])
@@ -165,7 +170,7 @@ def gearbox(text: str) -> dict:
 
 def gearbox_line(text: str) -> str | None:
     g = gearbox(text)
-    if len(g) < 8:
+    if len(g) < SMALL:
         return None
     down = [p for p, v in g.items() if v["oper"] == "down"]
     return (f"Retimers (gearbox): {len(g)} ports behind {len({v['phy'] for v in g.values()})} retimer PHYs; {len(g) - len(down)} "
@@ -215,6 +220,10 @@ def facts(i: int, node: str, where: str, cmd: str, out: str) -> list[str]:
         got.append(f"[S{i}] {where} {p} FEC: {v['corr']:,} corrected, {v['uncorr']:,} uncorrectable codewords, "
                    f"pre-FEC BER peak {v['pre_ber_max']} (counted since the counters were cleared)")
     port = (re.search(r"\b(Ethernet\d+)\b", cmd or "") or [None, ""])[1]
+    if port and port in f and not 0 < len(f) <= 6:      # the port asked about, also when the table is summarised
+        v = f[port]
+        got.append(f"[S{i}] {where} {port} FEC: {v['corr']:,} corrected, {v['uncorr']:,} uncorrectable codewords, "
+                   f"pre-FEC BER peak {v['pre_ber_max']} (counted since the counters were cleared)")
     for h in histograms(out):
         got.append(f"[S{i}] {node} {h['who'] or port or 'port'} FEC histogram: {hist_says(h)}")
     fl = flaps(out)

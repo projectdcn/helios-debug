@@ -809,3 +809,18 @@ def test_l1_facts_and_allow_list():
         except guide.GuideError:
             pass
     assert guide.gpus_listed("0001:01:00.1 (accelerator 0, config phase: ACTIVE)", "sudo afmctl show device health -b 0001:01:00.1") is None
+
+
+def test_grep_of_a_few_fec_rows_keeps_the_port():
+    """9 Nov: 'grep Ethernet4' gave Ethernet4 and Ethernet40-49; the 11 rows were summarised and Ethernet4's own row
+    was gone - the AI said the outputs 'say nothing about Ethernet4'."""
+    from heliosdbg import l1
+    rows = "".join(f"Ethernet{p:<10} U {1000 + p:>10,} {p:>6} 0 1.0e-09 0.0e+00 2.0e-09\n" for p in [4, *range(40, 50)])
+    assert len(l1.fec_stats(rows)) == 11
+    assert l1.compact(rows) is None and guide.compact(rows) == rows       # a grep's few rows stay as they are
+    f = l1.facts(1, "st1", "st1 asic0", "show interfaces counters fec-stats -n asic0 -d all | grep Ethernet4", rows)
+    assert any("Ethernet4 FEC: 1,004 corrected, 4 uncorrectable" in x for x in f)
+    whole = "".join(f"Ethernet{p:<10} U {p:>10,} 0 0 1.0e-09 0.0e+00 2.0e-09\n" for p in range(1, 258))
+    assert l1.compact(whole).startswith("FEC counters: 257 ports")
+    f = l1.facts(1, "st1", "st1 asic0", "portstat -f -n asic0 -i Ethernet7", whole)
+    assert any(x.startswith("[S1] st1 asic0 Ethernet7 FEC:") for x in f)   # the port asked about, also in a whole table
