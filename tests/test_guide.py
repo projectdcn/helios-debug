@@ -836,3 +836,20 @@ def test_docsearch_stems_and_one_passage_per_section():
               {"title": "s", "section": "x", "text": "unrelated text", "source": "sonic"}]
     hits = docsearch.Index(chunks).search("how many times did the port flap?", k=2, min_score=0)
     assert [h["section"] for h in hits] == ["Known issues", "Layer 1"]
+
+
+def test_code_conclusion_carries_the_checks_verdict():
+    """9 Nov: st1 Ethernet7 (the chip without IFCP) ended in a FEC summary by code that never named the IFCP or the
+    chip - the conclusion by code now says what the link check found and gives its next step."""
+    from types import SimpleNamespace
+    ev = SimpleNamespace(items=[{"text": "Rack g02-g17, check of 20261108-200858 (UTC)"},
+                                {"text": "Verdict: degraded, kind ifcp: physical link up but no IFCP session (owner: GPU / AFM vendor)"},
+                                {"text": "The checker's suggested next step: Collect afmctl show port from the tray."},
+                                {"text": "Chip pod-1-0-SwitchTray (st1) asic0: 216 links - 180 degraded, 36 down; 180 links up without an IFCP session"},
+                                {"text": "VLAN of the switch port: Vlan300"}])
+    out = guide.with_check({"done": True, "conclusion": "From the outputs, read by code (x): FEC fine.", "next": "ask"}, ev)
+    assert "The link check of 20261108-200858 UTC found: degraded, kind ifcp" in out["conclusion"]
+    assert "180 links up without an IFCP session" in out["conclusion"] and "Vlan300" not in out["conclusion"]
+    assert out["next"] == "Collect afmctl show port from the tray."
+    plain = {"done": True, "conclusion": "c", "next": "n"}
+    assert guide.with_check(plain, SimpleNamespace(items=[{"text": "st1: VLAN 100"}])) == plain   # Debug a node: as it was

@@ -727,7 +727,7 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
         again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
         out = again | {"retried": True, "contradiction_before": out["contradiction"]}
     if not out.get("done") and str(out.get("refused") or "").startswith("already run") and step_facts(steps):
-        out = by_code(steps, "the AI kept proposing a step already run", subject) | {"model": out.get("model")}
+        out = with_check(by_code(steps, "the AI kept proposing a step already run", subject), ev) | {"model": out.get("model")}
     if out.get("done") and out.get("contradicts"):       # once more, told what its own outputs show
         msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
                        {"role": "user", "content": "Your conclusion contradicts the outputs: " + "; ".join(out["contradicts"])
@@ -735,7 +735,7 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
         again = _propose_once(ai, msgs, subject, steps, nodes, env, stay)
         out = again | {"retried": True, "contradicts_before": out["contradicts"]}
         if out.get("done") and out.get("contradicts") and step_facts(steps):   # still: the outputs answer, not the AI
-            out = by_code(steps, "the AI's conclusion contradicted the outputs twice", subject) | {
+            out = with_check(by_code(steps, "the AI's conclusion contradicted the outputs twice", subject), ev) | {
                 "ai_conclusion": out["conclusion"], "contradicts": out["contradicts"], "model": out.get("model")}
     if out.get("done"):                         # rateable, with what the outputs say as the draft of a correction
         bc = by_code(steps, "", subject) if step_facts(steps) else None
@@ -819,6 +819,27 @@ def by_code(steps: list[dict], why: str, subject: str = "") -> dict:
                 for f in facts_c[:8]) + ".",
             "next": "If this does not answer the question, ask a follow-up or run another read-only step in the Terminal.",
             "unsafe": None, "not_in_evidence": [], "contradiction": None}
+
+
+_VERDICT = re.compile(r"^(?:Verdict: |Chip .*\d+ links up without an IFCP session|The checker's suggested next step: )")
+
+
+def with_check(out: dict, ev) -> dict:
+    """A conclusion by code, with what the link check itself found for this link (verdict, the chip-wide count) and its
+    next step - 9 Nov efficacy test: on st1 Ethernet7 (180 of 216 links of st1 asic0 without IFCP, the chip) the 4B read
+    both ends, repeated a step, and the answer by code was a FEC summary that never named the IFCP or the chip."""
+    got = [x["text"] for x in getattr(ev, "items", None) or [] if _VERDICT.match(str(x.get("text") or ""))]
+    nxt = [t.split(": ", 1)[1] for t in got if t.startswith("The checker's")]
+    said = [t for t in got if not t.startswith("The checker's")]
+    if not said:
+        return out
+    when = next((m.group(1) for x in ev.items if (m := re.search(r"check of (\d{8}-\d{6})", str(x.get("text") or "")))), "")
+    out = dict(out, check_verdict=said)
+    out["conclusion"] = (out["conclusion"].rstrip(".") + ". " + (f"The link check of {when} UTC" if when else "The link check")
+                         + " found: " + "; ".join(t.removeprefix("Verdict: ") for t in said) + ".")
+    if nxt:
+        out["next"] = nxt[0]
+    return out
 
 
 CONCLUDE_NOW = ("Refused again: that step was run already. Do not propose it again - conclude now from what the outputs "
