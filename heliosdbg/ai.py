@@ -2,7 +2,7 @@
 
 The model is any OpenAI-compatible chat server (helios-slm's mlx_lm.server on a Mac, Ollama / llama.cpp / vLLM):
     HELIOS_AI_URL    default http://127.0.0.1:8090/v1 ("off" turns the AI off)
-    HELIOS_AI_MODEL  default: the first model the server lists
+    HELIOS_AI_MODEL  default: 'helios' when the server lists it, else the first model it lists
     HELIOS_AI_KEY    optional bearer key
     HELIOS_AI_NO_THINK  1: add Qwen3's '/no_think' (a hybrid reasoning model such as Qwen3-8B answers directly)
 The UI on the jump host reaches a model on your Mac through the same SSH session as the UI tunnel:
@@ -158,6 +158,9 @@ def _req(url: str, key: str, body: dict | None = None, timeout: float = 5):
 _MODEL_CACHE: dict = {}
 
 
+DEFAULT_MODEL = "helios"
+
+
 def status(env=None) -> dict:
     """{configured, reachable, url, model[, error]} - never the key."""
     s = settings(env)
@@ -166,7 +169,9 @@ def status(env=None) -> dict:
     try:
         d = _req(s["url"] + "/models", s["key"], timeout=3)
         names = [m.get("id") for m in d.get("data") or [] if m.get("id")]
-        model = s["model"] or (names[0] if names else "")
+        # unset: 'helios' (the trained model) when the server has it, not the first listed - the jump host's UI had no
+        # HELIOS_AI_MODEL and asked the untrained base model (Qwen3-4B-Instruct), 9 Nov
+        model = s["model"] or (DEFAULT_MODEL if DEFAULT_MODEL in names else (names[0] if names else ""))
         _MODEL_CACHE[s["url"]] = model
         return {"configured": True, "reachable": bool(model), "url": s["url"], "model": model,
                 **({} if model else {"error": "the model server lists no model"})}

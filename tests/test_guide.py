@@ -875,3 +875,15 @@ def test_unreachable_tray_problem_names_its_trays():
           {"switch": "st1", "sw_port": "Ethernet1", "tray": "ct01", "cause": "ok"}]
     assert ai._trays_of({"kind": "tray_unreachable", "links": ["st1 Ethernet226", "st1 Ethernet9"]}, ls) == \
         ["ct02", "ct10", "ct14", "ct18"]
+
+
+def test_default_model_is_helios_when_listed(monkeypatch):
+    """9 Nov: the jump host's UI had no HELIOS_AI_MODEL and answered with the first listed model, the untrained base."""
+    from heliosdbg import ai
+    listed = {"data": [{"id": "Qwen/Qwen3-4B-Instruct-2507"}, {"id": "helios-incident"}, {"id": "helios"}]}
+    monkeypatch.setattr(ai, "_req", lambda *a, **k: listed)
+    env = {"HELIOS_AI_URL": "http://127.0.0.1:8090/v1"}
+    assert ai.status(env)["model"] == "helios"
+    assert ai.status(env | {"HELIOS_AI_MODEL": "helios-docs"})["model"] == "helios-docs"
+    monkeypatch.setattr(ai, "_req", lambda *a, **k: {"data": [{"id": "base"}]})
+    assert ai.status(env)["model"] == "base"
