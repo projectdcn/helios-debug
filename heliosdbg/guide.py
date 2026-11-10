@@ -223,6 +223,18 @@ def _age_min(ts: str) -> int | None:
 
 _CPU_RX = re.compile(r"^CPU receive[^:]*: \d+ Ethernet ports, (\d+) with link; (\d+) of those", re.M)
 _GPU_PORT = re.compile(r"^\s*port (\d+): (\S+?)(?:, (\S+?))?, admin (\w+)", re.M)
+_NO_IFCP = re.compile(r"^\s*port (\d+): LINK_UP\b[^\n]*\bIFCP ll_up no\b", re.M)
+_HEALTHY = re.compile(r"(?<!not )(?<!un)\b(?:looks |is |are )?healthy\b|\bno fault(?:s| found)?\b|\bnothing (?:is )?wrong\b|"
+                      r"\bno (?:problems?|issues?) (?:found|seen)?", re.I)
+
+
+def gpu_no_ifcp(out: str) -> list[tuple[str, list[str], int]]:
+    """[(bdf, ports up without an IFCP session, ports listed)] of an 'afmctl show port' read - 9 Nov efficacy test:
+    'is ct16 healthy?' -> 'ct16 looks healthy, no fault found' over ports 31, 33, 35 at 'LINK_UP ... IFCP ll_up no'."""
+    got = []
+    for bdf, body in re.findall(r"^GPU (\S+):\n((?:\s+port .*\n?)+)", out or "", re.M):
+        got.append((bdf, _NO_IFCP.findall(body), len(_GPU_PORT.findall(body))))
+    return got
 # ^\s*: SONiC pads Ethernet1-99 (mr2 9 Nov: bcm-view said Ethernet4 "is not in show interfaces status")
 _SW_PORT = re.compile(r"^\s*(Ethernet\d+)\s+\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+(up|down)\s+(up|down)\b", re.M)
 
@@ -342,6 +354,10 @@ def contradictions(text: str, steps: list[dict]) -> list[str]:
                 if st in ("X", "D")] if len(ctr) <= 6 else []
         if few and _WORKS.search(text or ""):
             out.append(f"it says the link works, but [S{i}] on {node} shows {few[0][0]} {few[0][1]}")
+        noi = [(b, ps) for b, ps, _n in gpu_no_ifcp(o) if ps]
+        if noi and _HEALTHY.search(text or ""):
+            out.append(f"it says healthy / no fault, but [S{i}] on {node} shows GPU {noi[0][0]} port(s) "
+                       f"{', '.join(noi[0][1])} up without an IFCP session")
     from . import l1
     for i, s in enumerate(steps, 1):
         out += l1.contradictions(i, s.get("node"), str(s.get("output") or ""), text)
@@ -373,6 +389,12 @@ def step_facts(steps: list[dict]) -> list[str]:
                 gpu_down += len(down)
                 facts.append(f"[S{i}] {node} GPU {bdf}: port(s) " + ", ".join(f"{n} {st}" + (f"/{x}" if x else "") for n, st, x in down)
                              + f" - the other {len(ports) - len(down)} ports of this GPU are up, so the GPU and its tray work")
+            noi = _NO_IFCP.findall(body)
+            if noi:                                  # up, but no session to the switch: not healthy (9 Nov, ct16)
+                facts.append(f"[S{i}] {node} GPU {bdf}: port(s) {', '.join(noi)} are up (LINK_UP) but have no IFCP session "
+                             f"(ll_up no) - the link has signal, the GPU-switch control session is not up: not healthy")
+            elif ports and not down and "IFCP ll_up yes" in body:
+                facts.append(f"[S{i}] {node} GPU {bdf}: all {len(ports)} ports up with an IFCP session")
         bv = re.search(r"^Broadcom view of (Ethernet\d+)[^\n]*\nVerdict \(code[^)]*\): (.*)$", out, re.M)
         if bv:
             facts.append(f"[S{i}] {node} {bv.group(1)}, Broadcom (switch ASIC): {bv.group(2)}")

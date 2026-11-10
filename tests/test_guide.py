@@ -928,3 +928,18 @@ def test_off_topic_is_declined_without_the_model(monkeypatch):
     assert not S.off_topic("what does ll_up mean?")                       # no rack word, but the documentation has it
     r = S.off_topic_reply("q", {"links": [], "time_utc": "20261108-200858"}, "g02-g17", "link-check/g02-g17/scan-1")
     assert r["off_topic"] and r["model"] == "(no model needed)" and "not something I can answer" in r["answer"]
+
+
+def test_gpu_ports_up_without_ifcp_are_a_fact_and_healthy_contradicts():
+    """9 Nov efficacy test: 'is ct16 healthy?' -> 'ct16 looks healthy, no fault found' over 3 ports without IFCP."""
+    body = "".join(f" port {p}: LINK_UP, admin enabled, IFCP ll_up {'no' if p in (31, 33, 35) else 'yes'} peer_enabled "
+                   f"{'None' if p in (31, 33, 35) else 'yes'} peer 2/7\n" for p in range(36))
+    st = [{"node": "ct16", "command": "afmctl show port -b 0001:01:00.1 --json", "output": "GPU 0001:01:00.1:\n" + body}]
+    f = guide.step_facts(st)
+    assert any("port(s) 31, 33, 35 are up (LINK_UP) but have no IFCP session" in x for x in f)
+    assert guide.contradictions("ct16 looks healthy, no fault found", st)
+    assert not guide.contradictions("ct16 is not healthy: 3 ports have no IFCP session", st)
+    ok = [{"node": "ct01", "command": "afmctl show port -b 0001:01:00.1 --json",
+           "output": "GPU 0001:01:00.1:\n" + body.replace("ll_up no", "ll_up yes")}]
+    assert "[S1] ct01 GPU 0001:01:00.1: all 36 ports up with an IFCP session" in guide.step_facts(ok)
+    assert not guide.contradictions("ct01 is healthy", ok)
