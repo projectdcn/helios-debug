@@ -737,6 +737,16 @@ def ai_guide(state: State, req: dict) -> dict:
     _inv, roles = _rack_nodes(state, rack)
     steps = [s for s in (req.get("steps") or []) if isinstance(s, dict)][:12]
     q = str(req.get("question") or "").strip()[:300]
+    if q and not steps and not req.get("link") and req.get("blocks") is None and ai.generic_howto(q) \
+            and not named_in(q, roles, _rack_aliases(state, rack)):
+        # 10 Nov (jump host): 'how do I read the IFCP state of a GPU port?' -> step by step investigated the check's
+        # problems on st4 and st6 instead - a how-to names no node to show it on
+        return {"done": True, "by_code": True, "howto": True, "facts": [], "unsafe": None, "not_in_evidence": [],
+                "contradiction": None,
+                "conclusion": "That is a how-to question - the answer above shows the commands. Step by step needs a node or "
+                              "link to run them on.",
+                "next": "Ask it about one, e.g. 'show the IFCP state of ct01 GPU 0001:01:00.1' or 'is st1 Ethernet7 up?', "
+                        "or open a link in the Rack map and investigate it."}
     if q:                                         # a follow-up typed on the panel: that is what to investigate now
         subject = q
         lk = str(req.get("link") or "")

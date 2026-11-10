@@ -1370,7 +1370,7 @@ function guideNext(sess){
   /* the follow-up typed last (9 Nov: 'show me ip address configured on st1 interface', asked on a link's panel, was
      investigated as the link) - not the panel's first question, not a step-by-step conclusion */
   var asked=sess.hist.filter(function(h){return h.q&&h.q.indexOf("(step by step)")!==0&&h.q.indexOf("root cause / debug / fix of ")!==0}).pop();
-  api("/api/ai/guide",aiReq(ctx,{steps:steps,question:asked?asked.q:""})).then(function(p){
+  api("/api/ai/guide",aiReq(ctx,{steps:steps,question:asked?asked.q:(ctx.question||"")})).then(function(p){
     if(p.done){nx.classList.remove("pending");nx.innerHTML='<div class="verdict '+(p.unsafe?"degraded":"ok")+'"><h3>Step by step: conclusion</h3>'+aiMd(p.conclusion,[])+(p.next?"<p><b>Next:</b> "+esc(p.next)+"</p>":"")+
         (p.unsafe?'<div class="warn">Careful: it suggests a step that changes the rack ("'+esc(p.unsafe)+'") - only with a go-ahead, and check it against what the outputs show below.</div>':"")+notSeen(p)+
         ((p.contradicts||[]).length&&!p.by_code?'<div class="warn">It contradicts the outputs: '+esc(p.contradicts.join("; "))+' - trust the outputs, not this conclusion.</div>':"")+
@@ -1562,7 +1562,7 @@ function chatSend(q){
       (a.evidence||[]).map(function(x){return '<div style="font-size:12px"><span class="cite">'+x.ref+"</span> "+esc(x.text)+"</div>"}).join("")+
       (a.docs||[]).map(function(d){return '<div style="font-size:12px"><span class="cite">'+d.ref+"</span> <b>"+esc(d.title)+"</b>"+(d.url&&/^https?:/.test(d.url)?' <a href="'+esc(d.url)+'" target="_blank" rel="noopener">open</a>':"")+" - "+esc(d.text.slice(0,300))+"</div>"}).join("")+
       '</details><div class="row" style="margin:6px 0 0"><button class="sec ch-guide">Investigate step by step</button><button class="sec ch-res">Record the resolution</button></div><div class="ch-fb"></div><div class="ch-g"></div><div class="ch-r"></div>';
-    var ctx={path:a.context.path,link:a.context.link||"",focus:a.context.focus||[]};
+    var ctx={path:a.context.path,link:a.context.link||"",focus:a.context.focus||[],question:q};   // what step by step investigates (10 Nov)
     fbWire(ad.querySelector(".ch-fb"),a,ctx);
     ad.querySelector(".ch-guide").addEventListener("click",function(){guideStart(ad.querySelector(".ch-g"),ctx)});
     ad.querySelector(".ch-res").addEventListener("click",function(){resolutionForm(ad.querySelector(".ch-r"),ctx,function(){

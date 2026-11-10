@@ -963,3 +963,27 @@ def test_afmctl_gets_the_address_afmctl_listed():
     assert guide.afm_bdf("sudo afmctl show port -b 0002:01:00.1 --json", "ct16", st) == "sudo afmctl show port -b 0002:01:00.1 --json"
     assert guide.afm_bdf("lspci -k -s 0001:01:00.0", "ct16", st) == "lspci -k -s 0001:01:00.0"        # not afmctl
     assert guide.afm_bdf("afmctl show port -b 0001:01:00.0 --json", "ct01", st) == "afmctl show port -b 0001:01:00.0 --json"
+
+
+def test_cpu_receive_claim_against_the_outputs():
+    """10 Nov (jump host, v41f): S1 '192 of its 192 ports with link receive packets on the CPU', conclusion 'the switch
+    CPU never got a packet from them; the afm-agent is stuck'."""
+    st = [{"node": "st4", "command": "ip -n asic0 -s -o link show", "output": "CPU receive: 257 Ethernet ports, 192 with link; "
+           "192 of those have received packets on the CPU, 0 none; 192 have sent"}]
+    assert guide.contradictions("its ports are up but the switch CPU never got a packet from them", st)
+    assert not guide.contradictions("the switch's packet path to the CPU works: 192 receive", st)
+    dead = [dict(st[0], output="CPU receive: 257 Ethernet ports, 192 with link; 0 of those have received packets on the CPU")]
+    assert not guide.contradictions("the switch CPU receives nothing from its ports", dead)
+
+
+def test_step_by_step_on_a_bare_howto_asks_for_a_node(tmp_path):
+    import ui.server as S
+    inv = tmp_path / "inv"
+    inv.mkdir()
+    (inv / "r.local.yaml").write_text("rack: r\nswitches:\n  - {name: st1, host: 127.0.0.1}\ncomputes:\n  - {name: ct01, host: 127.0.0.1}\n")
+    res = tmp_path / "res" / "link-check" / "r" / "scan-20261108-200858"
+    res.mkdir(parents=True)
+    (res / "link_check.json").write_text(json.dumps({"rack": "r", "time_utc": "20261108-200858", "links": []}))
+    st = S.State(inv, tmp_path / "res")
+    out = S.ai_guide(st, {"path": "link-check/r/scan-20261108-200858", "question": "How do I read the IFCP state of a GPU port?"})
+    assert out["done"] and out.get("howto") and "needs a node or link" in out["conclusion"]

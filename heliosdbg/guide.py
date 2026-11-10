@@ -221,6 +221,9 @@ def _age_min(ts: str) -> int | None:
     return int((dt.datetime.now(dt.timezone.utc) - t).total_seconds() // 60)
 
 
+_CPU_NONE = re.compile(r"\b(?:never (?:got|received|gets|receives) a packet|receives? (?:nothing|no packets?)|received "
+                       r"(?:nothing|no packets?)|(?:got|gets) no packets?|none of (?:its|the) \d* ?ports? (?:with link )?(?:has|have) "
+                       r"received)\b", re.I)
 _CPU_RX = re.compile(r"^CPU receive[^:]*: \d+ Ethernet ports, (\d+) with link; (\d+) of those", re.M)
 _GPU_PORT = re.compile(r"^\s*port (\d+): (\S+?)(?:, (\S+?))?, admin (\w+)", re.M)
 _NO_IFCP = re.compile(r"^\s*port (\d+): LINK_UP\b[^\n]*\bIFCP ll_up no\b", re.M)
@@ -354,6 +357,10 @@ def contradictions(text: str, steps: list[dict]) -> list[str]:
                 if st in ("X", "D")] if len(ctr) <= 6 else []
         if few and _WORKS.search(text or ""):
             out.append(f"it says the link works, but [S{i}] on {node} shows {few[0][0]} {few[0][1]}")
+        cm = _CPU_RX.search(o)
+        if cm and int(cm.group(2)) > 0 and _CPU_NONE.search(text or ""):   # 10 Nov (jump host, v41f): S1 '192 of 192 receive
+            out.append(f"it says the switch CPU receives nothing, but [S{i}] on {node} shows {cm.group(2)} of its "  # on
+                       f"{cm.group(1)} ports with link receiving packets on the CPU")       # the CPU', conclusion: 'never got a packet'
         noi = [(b, ps) for b, ps, _n in gpu_no_ifcp(o) if ps]
         if noi and _HEALTHY.search(text or ""):
             out.append(f"it says healthy / no fault, but [S{i}] on {node} shows GPU {noi[0][0]} port(s) "
