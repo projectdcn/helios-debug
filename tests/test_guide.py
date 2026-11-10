@@ -898,3 +898,33 @@ def test_grep_of_a_few_status_rows_keeps_the_port():
     st = [{"node": "st1", "command": "show interfaces status -n asic0 -d all | grep Ethernet7", "output": rows}]
     assert "[S1] st1 Ethernet7: admin up, oper up (its own row)" in guide.step_facts(st)
     assert "say nothing about Ethernet7" not in guide.by_code(st, "x", "link st1 Ethernet7")["conclusion"]
+
+
+def test_node_facts_list_its_links_rarest_kind_first():
+    from heliosdbg import rackfacts
+    ls = [{"switch": "st1", "sw_port": f"Ethernet{p}", "tray": "ct16", "bdf": "0001:01:00.1", "gpu_port": p, "state": "degraded",
+           "kind": "ifcp", "cause": "no IFCP session"} for p in range(10, 15)]
+    ls += [{"switch": "st5", "sw_port": "Ethernet494", "tray": "ct16", "bdf": "0002:01:00.1", "gpu_port": 5, "state": "down",
+            "kind": "phys_never_up", "cause": "never up"},
+           {"switch": "st1", "sw_port": "Ethernet1", "tray": "ct16", "state": "ok", "kind": ""}]
+    scan = {"time_utc": "20261108-200858", "links": ls, "not_checked": [{"node": "ct10"}]}
+    f = rackfacts.node_facts(scan, {"ct16", "ct10"})
+    assert f[0] == "ct10: no link of it in the check of 20261108-200858 - it could not be read"
+    assert f[1] == "ct16: 7 links in the check of 20261108-200858 - 1 ok, 5 degraded, 1 down (1 phys_never_up, 5 ifcp)"
+    assert f[2].startswith("st5 Ethernet494 <-> ct16 0002:01:00.1 port 5: down phys_never_up")
+    assert f[-1] == "ct16: and 2 more ifcp links" and len(f) == 7
+    assert rackfacts.node_state_question("what is wrong with ct16?") and rackfacts.node_state_question("is st5 ok?")
+    for q in ("how many GPUs on ct01", "who should fix the IFCP problem on st1?", "why is ct16 down?"):
+        assert not rackfacts.node_state_question(q), q
+
+
+def test_off_topic_is_declined_without_the_model(monkeypatch):
+    import ui.server as S
+    from heliosdbg import docsearch
+    monkeypatch.setattr(docsearch, "load", lambda: docsearch.Index([{"title": "g", "section": "IFCP", "text": "ll_up is the "
+                        "IFCP link-level state of a GPU port", "source": "debug guide"}]))
+    assert S.off_topic("what is the capital of France?")
+    assert not S.off_topic("which links are down?") and not S.off_topic("is ct16 ok?")
+    assert not S.off_topic("what does ll_up mean?")                       # no rack word, but the documentation has it
+    r = S.off_topic_reply("q", {"links": [], "time_utc": "20261108-200858"}, "g02-g17", "link-check/g02-g17/scan-1")
+    assert r["off_topic"] and r["model"] == "(no model needed)" and "not something I can answer" in r["answer"]

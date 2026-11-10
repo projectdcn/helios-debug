@@ -898,6 +898,37 @@ SMALLTALK_RX = re.compile(r"\s*(hi+|hello|hey|hiya|yo|good\s+(morning|afternoon|
                           r"ok(ay)?|cool|great|nice|got\s+it|bye|help|\?)\s*[!.?]*\s*", re.I)
 
 
+# a word of the rack or of debugging it: without one (and no documentation passage that matches) a question is off topic
+DOMAIN_RX = re.compile(r"\b(?:links?|ports?|switch\w*|trays?|gpus?|accelerators?|fec|vlans?|mtu|afm\w*|sonic|ifcp|racks?|"
+                       r"cables?|optics?|transceivers?|bmc|nodes?|checks?|errors?|down|up|flap\w*|asic\w*|ethernet\w*|nics?|"
+                       r"firmware|drivers?|kernel|health\w*|tests?|commands?|logs?|counters?|ber|lanes?|serdes|retimers?|"
+                       r"pfc|qos|roce|rdma|ip|mac|arp|lldp|bgp|routes?|interfaces?|lag|vpod|scale-?up|helios|amd|broadcom|"
+                       r"bcm|power|psu|fans?|temperature|reboot\w*|restart\w*|config\w*|debug\w*|diagnos\w*|fault\w*|"
+                       r"owner|ticket|jtac|tac|pod|cluster|network|traffic|packets?|frames?|bandwidth|speed|latency|"
+                       r"st\d+|ct\d+|c\d+|mr\d|g\d\d)\b", re.I)
+
+
+TECH_RX = re.compile(r"\b(?:\w+_\w+|(?=\w*\d)(?=\w*[A-Za-z])\w{2,}|[A-Z]{2,}[\w-]*)\b")  # ll_up, KP4, MAX_T, RS-FEC
+
+
+def off_topic(q: str) -> bool:
+    """'what is the capital of France' (9 Nov efficacy test: the model answered 'Paris'): no rack / debugging word and no
+    documentation passage that matches - declined without a model call."""
+    if DOMAIN_RX.search(q or "") or TECH_RX.search(q or ""):
+        return False
+    from heliosdbg import docsearch
+    docs = docsearch.load()
+    return not (docs is not None and docs.search(q, k=1, min_score=8.0))
+
+
+def off_topic_reply(q: str, scan: dict, rack: str, rel: str) -> dict:
+    out = smalltalk("hi", scan, rack, rel)
+    out["answer"] = ("That is not something I can answer: I answer questions about this rack and debugging it - its links, "
+                     "ports, GPUs and switches, the checks and the documentation. For example: which links are down and why?")
+    out["off_topic"] = True
+    return out
+
+
 def smalltalk(q: str, scan: dict, rack: str, rel: str) -> dict:
     """A greeting / thanks / 'help': a short reply with what the chat can do and the rack's state in one line."""
     ls = scan.get("links") or []
@@ -946,6 +977,8 @@ def ai_chat(state: State, req: dict) -> dict:
     scan = scan_view(state, rel)
     if SMALLTALK_RX.fullmatch(q):                  # 'hi', 'thanks', 'ok': no model call, no rack dump
         return smalltalk(q, scan, rack, rel)
+    if not req.get("link") and off_topic(q):        # 'what is the capital of France': declined, no model call
+        return off_topic_reply(q, scan, rack, rel)
     live = []
     with state.lock:
         lv, lv_inv = state.live, state.live_inventory
@@ -990,6 +1023,11 @@ def ai_chat(state: State, req: dict) -> dict:
         else:
             for t in rackfacts.answered_lines(q, health):   # the node asked about answered (or not) - not a doc's guess
                 ev.add(t, "health")
+            nodes = ai.focus_of(scan, q)[0] if not link and rackfacts.node_state_question(q) else set()
+            if nodes:                                       # 'what is wrong with ct16': its links, exact (9 Nov)
+                ev.check_facts = rackfacts.node_facts(scan, nodes)
+                for t in ev.check_facts:
+                    ev.add(t, "check")
         if not (getattr(ev, "map_facts", None) or getattr(ev, "check_facts", None)):   # a lookup is exact on its own
             add_past_resolutions(state, ev, rack, link or "", q)
         hist = req.get("history") or []

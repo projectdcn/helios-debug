@@ -271,3 +271,47 @@ def answered_lines(q: str, health: dict | None) -> list[str]:
             out.append(f"Health finding on {n} ({x.get('severity')}): {str(x.get('what') or '')[:160]}"
                        + (f" - next: {str(x.get('next'))[:120]}" if x.get("next") else ""))
     return out
+
+
+NODE_STATE_RX = re.compile(r"\b(?:wrong|healthy|health|ok|okay|fine|status|state|problems?|issues?|broken|down|faults?|"
+                           r"working|works|errors?)\b", re.I)
+
+
+def node_state_question(q: str) -> bool:
+    """'what is wrong with ct16' / 'is st5 ok' - not 'who should fix the IFCP problem on st1' or 'why is ct16 down'
+    (answered from the evidence: the owner, the cause - 9 Nov: the node's link list alone lost the owner, 0 of 3)."""
+    return bool(NODE_STATE_RX.search(q or "")) and not WHY_RX.search(q or "") and not re.search(
+        r"\b(?:who|whom|whose|owners?|responsib\w*)\b", q or "", re.I)
+
+
+def node_facts(scan: dict, nodes) -> list[str]:
+    """The links of each node asked about ('what is wrong with ct16'), exact from the check: counts by verdict, then the
+    links that are not ok - the rarest kind first. 9 Nov efficacy test: the evidence had all 13 of ct16's problem links,
+    the 4B answered with the health check's driver line 3 times of 3 and never named st5 Ethernet494 (never up)."""
+    ls = scan.get("links") or []
+    out = []
+    for n in sorted(nodes):
+        mine = [x for x in ls if n in (x.get("switch"), x.get("tray"))]
+        unread = [x for x in scan.get("not_checked") or [] if x.get("node") == n]
+        if not mine:
+            out.append(f"{n}: no link of it in the check of {scan.get('time_utc')}" + (" - it could not be read" if unread else ""))
+            continue
+        st = {k: sum(1 for x in mine if x.get("state") == k) for k in ("ok", "degraded", "down")}
+        kinds: dict = {}
+        for x in mine:
+            if x.get("state") != "ok":
+                kinds[x.get("kind") or "?"] = kinds.get(x.get("kind") or "?", 0) + 1
+        out.append(f"{n}: {len(mine)} links in the check of {scan.get('time_utc')} - {st['ok']} ok, {st['degraded']} degraded, "
+                   f"{st['down']} down" + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(kinds.items(), key=lambda kv: kv[1]))
+                                           + ")" if kinds else " - nothing wrong found on its links"))
+        for kind, cnt in sorted(kinds.items(), key=lambda kv: kv[1]):     # each kind: up to 3 of its links
+            some = sorted((x for x in mine if x.get("state") != "ok" and (x.get("kind") or "?") == kind),
+                          key=lambda x: str(x.get("sw_port")))
+            for x in some[:3]:
+                far = (f"{x.get('tray')} {x.get('bdf') or ''} port {x.get('gpu_port')}" if x.get("tray") else "tray not known")
+                out.append(f"{x.get('switch')} {x.get('sw_port')} <-> {far}: {x.get('state')} {kind} - "
+                           f"{str(x.get('cause') or '')[:140]}".replace("  ", " "))
+            if cnt > 3:
+                out.append(f"{n}: and {cnt - 3} more {kind} links")
+    return out
+
