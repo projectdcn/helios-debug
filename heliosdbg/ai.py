@@ -325,6 +325,10 @@ def _switch_problems(ev: Evidence, scan: dict, names: dict, only: str | None = N
             ev.add(f"{x.get('role') or 'node'} {x.get('node')} {_unread(x, 200)}", "check")
 
 
+CHECKER_BUG = re.compile(r"cannot access local variable|referenced before assignment|object has no attribute|"
+                         r"Traceback \(most recent|is not subscriptable|unexpected keyword argument")   # Python, not the node
+
+
 def _unread(x: dict, n: int) -> str:
     """Why a node of a check was not read - an access failure, or a command that failed on a node that answered (6 Nov:
     ct06's afmctl rc=112 was explained as 'ct06 is unreachable')."""
@@ -332,6 +336,9 @@ def _unread(x: dict, n: int) -> str:
     err = str(x.get("error") or "")
     if reach.classify(err):
         return f"could not be reached: {reach.describe(err)[:n]}"
+    if CHECKER_BUG.search(err):   # the 8 Nov check: ct10/14/18 "cannot access local variable 'reach'" (fixed 9 Nov)
+        return (f"was not read: the checker itself failed on it ({err.strip()[:n]}), so the check says nothing about "
+                "the node - check it again with the current tool (not a sign that it answered over SSH)")
     return f"answered over SSH, but a command failed on it (not a reachability problem): {err.strip()[:n]}"
 
 

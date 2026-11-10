@@ -1031,3 +1031,10 @@ def test_flaps_omitted_and_bins_past_15():
     hist = "Symbol Errors Per Codeword         Codewords\n" + "".join(f"BIN{k}  {100 - k}\n" for k in range(16))
     assert l1.contradictions(2, "st1", hist, "the histogram shows a peak at BIN18 (uncorrectable)")
     assert not l1.contradictions(2, "st1", hist, "the deepest bin with codewords is BIN15")
+
+
+def test_unread_checker_bug_is_not_answered_over_ssh():
+    from heliosdbg import ai
+    t = ai._unread({"error": "cannot access local variable 'reach' where it is not associated with a value"}, 200)
+    assert "checker itself failed" in t and "answered over SSH, but" not in t
+    assert "answered over SSH" in ai._unread({"error": "afmctl rc=112: no device"}, 200)
