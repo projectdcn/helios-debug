@@ -987,3 +987,19 @@ def test_step_by_step_on_a_bare_howto_asks_for_a_node(tmp_path):
     st = S.State(inv, tmp_path / "res")
     out = S.ai_guide(st, {"path": "link-check/r/scan-20261108-200858", "question": "How do I read the IFCP state of a GPU port?"})
     assert out["done"] and out.get("howto") and "needs a node or link" in out["conclusion"]
+
+
+def test_a_read_today_overrules_an_old_verdict():
+    """10 Nov: st6 Ethernet115 - the check of 24 Oct 'down, never came up'; today STATE U and bcm-view 'oper up'."""
+    ctr = ("      IFACE    STATE        RX_OK\n-----------  -------  -----------\n"
+           "Ethernet115        U  344,819,354  12.34 B/s      0.00%         0         0         0  332,184,598\n")
+    bcm = "Broadcom view of Ethernet115 (asic0): SONiC lanes 293,294, oper up, admin up\nVerdict (code): nothing wrong"
+    st = [{"node": "st6", "command": "show interfaces counters -n asic0 -i Ethernet115", "output": ctr},
+          {"node": "st6", "command": "bcm-view -n asic0 Ethernet115", "output": bcm}]
+    assert guide.port_now(st, "Ethernet115") == ("up", 2, "the switch ASIC: oper up")
+    n = guide.now_vs_check("st6 Ethernet115", "down", st, "20261024-071833")
+    assert n.startswith("Now: st6 Ethernet115 is up on the switch [S2]") and "the check of 20261024-071833 said down" in n
+    assert guide.now_vs_check("st6 Ethernet115", "ok", st) is None             # agrees: nothing to say
+    assert guide.now_vs_check("st6 Ethernet115", "ok", [dict(st[0], output=ctr.replace(" U ", " D "))]).startswith(
+        "Now: st6 Ethernet115 is down")
+    assert guide.now_vs_check("st6 Ethernet115", "down", []) is None

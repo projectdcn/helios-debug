@@ -580,7 +580,14 @@ def ai_ask(state: State, req: dict) -> dict:
         raise BadRequest("history: a list of {q, a}")
     ev, subject, rack = _ai_subject(state, req, past=True)
     from heliosdbg import guide
-    guide.steps_evidence(ev, [x for x in (req.get("steps") or []) if isinstance(x, dict)][:24])
+    steps0 = [x for x in (req.get("steps") or []) if isinstance(x, dict)][:24]
+    guide.steps_evidence(ev, steps0)
+    lk = str(req.get("link") or "").strip()
+    now = guide.now_vs_check(lk, str(getattr(ev, "verdict", None) or next(
+        (x["text"] for x in ev.items if x["text"].startswith("Verdict:")), "")), steps0,
+        next((m.group(1) for x in ev.items if (m := re.search(r"check of (\d{8}-\d{6})", x["text"]))), "")) if lk else None
+    if now:                                  # today's read over the check's verdict, first in the evidence (10 Nov)
+        ev.items.insert(0, {"ref": "E0", "text": now, "source": "steps"})
     if ai.generic_howto(q):                  # a how-to about a kind of problem: the debug guide, not this problem's cause
         from heliosdbg import docsearch
         docs = docsearch.load()
@@ -591,6 +598,8 @@ def ai_ask(state: State, req: dict) -> dict:
         out = ai.ask(ev, subject, q, hist)
     except ai.AIError as e:
         raise BadRequest(str(e)) from None
+    if now:
+        out["now"] = now
     if rack:                                 # the commands it suggests, checked like steps: Run from the answer
         try:
             _inv, roles = _rack_nodes(state, rack)

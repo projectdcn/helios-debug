@@ -625,6 +625,46 @@ def runnable(text: str, roles: dict, aliases: dict | None = None, context: str =
     return out[:10]
 
 
+_BCM_HEAD = re.compile(r"^Broadcom view of (Ethernet\d+)[^\n]*?: [^\n]*?\boper (up|down)\b", re.M)
+
+
+def port_now(steps: list[dict], port: str) -> tuple[str, int, str] | None:
+    """(up | down | shut, step, how it was read) of a switch port in the steps run - the newest read wins: the
+    counters' STATE, 'show interfaces status', the Broadcom view's header."""
+    got = None
+    for i, s in enumerate(steps, 1):
+        o = str(s.get("output") or "")
+        for p_, st in _CTR_STATE.findall(o):
+            if p_ == port:
+                got = ({"U": "up", "D": "down", "X": "shut"}[st], i, f"STATE {st} in the counters")
+        for p_, op, adm in _SW_PORT.findall(o):
+            if p_ == port:
+                got = ("shut" if adm == "down" else op, i, f"oper {op}, admin {adm}")
+        for p_, op in _BCM_HEAD.findall(o):
+            if p_ == port:
+                got = (op, i, f"the switch ASIC: oper {op}")
+    return got
+
+
+def now_vs_check(link: str, verdict: str, steps: list[dict], when: str = "") -> str | None:
+    """What a read run today says against the check's verdict for the link (10 Nov, st6 Ethernet115: the check of 24
+    Oct said 'down, never came up', the counters (STATE U, 344 M packets) and bcm-view (oper up, PHY_LINK 1) said up -
+    and the AI explained the old verdict)."""
+    parts = (link or "").split()
+    if len(parts) < 2:
+        return None
+    now = port_now(steps, parts[1])
+    was = (re.search(r"\b(ok|degraded|down)\b", verdict or "") or [None, ""])[1]
+    if not now or not was:
+        return None
+    st, i, how = now
+    if st == "up" and was == "down" or st in ("down", "shut") and was in ("ok", "degraded"):
+        return (f"Now: {link} is {st} on the switch [S{i}] ({how}) - the check{' of ' + when if when else ''} said {was}: "
+                f"the link has changed since, what that check says about it is history. Explain the link as it is now, "
+                f"and run Check all links (or Diagnose a link) for a current verdict.")
+    return None
+
+
 def steps_evidence(ev, steps: list[dict]) -> None:
     """Commands already run (from answers or step by step) as evidence for the next question: what code reads in their
     outputs first, then each output (cut)."""

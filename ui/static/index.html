@@ -1241,7 +1241,7 @@ function aiPanel(box,ctx){
     api("/api/ai/ask",aiReq(ctx,{question:q||"",history:sess.hist,steps:sess.steps})).then(function(a){
       wait.remove();sess.hist.push({q:q||"root cause / debug / fix of "+(ctx.label||a.subject),a:a.answer});
       var d=document.createElement("div");d.className="ans";
-      d.innerHTML=(q?'<p class="mut"><b>Q:</b> '+esc(q)+"</p>":"")+aiMd(a.answer,a.evidence)+aiCmds(a.runnable)+
+      d.innerHTML=(q?'<p class="mut"><b>Q:</b> '+esc(q)+"</p>":"")+(a.now?'<div class="warn"><b>Read today, not the check:</b> '+esc(a.now)+"</div>":"")+aiMd(a.answer,a.evidence)+aiCmds(a.runnable)+
         (a.unsafe?'<div class="warn">Careful: the answer suggests a step that changes the rack ("'+esc(a.unsafe)+'") - only with a go-ahead, and not on coupled ports.</div>':"")+notSeen(a)+
         ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
         (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+" - treat those claims with care.</div>":"")+
