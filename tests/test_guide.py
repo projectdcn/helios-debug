@@ -824,3 +824,15 @@ def test_grep_of_a_few_fec_rows_keeps_the_port():
     assert l1.compact(whole).startswith("FEC counters: 257 ports")
     f = l1.facts(1, "st1", "st1 asic0", "portstat -f -n asic0 -i Ethernet7", whole)
     assert any(x.startswith("[S1] st1 asic0 Ethernet7 FEC:") for x in f)   # the port asked about, also in a whole table
+
+
+def test_docsearch_stems_and_one_passage_per_section():
+    from heliosdbg import docsearch
+    assert [docsearch.stem(w) for w in ("flapped", "flaps", "flapping", "entries", "status", "tc-sbm-017")] == \
+        ["flap", "flap", "flap", "entry", "status", "tc-sbm-017"]
+    chunks = [{"title": "g", "section": "Known issues", "text": "port flap flap port check", "source": "debug guide"},
+              {"title": "g", "section": "Known issues", "text": "port flap flap port check again", "source": "debug guide"},
+              {"title": "g", "section": "Layer 1", "text": "show interfaces flap: how often a port flapped", "source": "debug guide"},
+              {"title": "s", "section": "x", "text": "unrelated text", "source": "sonic"}]
+    hits = docsearch.Index(chunks).search("how many times did the port flap?", k=2, min_score=0)
+    assert [h["section"] for h in hits] == ["Known issues", "Layer 1"]

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "link-debug-guide.md"
 ID_RX = re.compile(r"(?:tc|hc|maint|hw)-[a-z0-9]+(?:-[a-z0-9]+)*-?\d+[a-z]?|(?:tc|hc)-\d+")
 _STOP = set("the a an and or of to in on for is are be by with this that it as at from what how which when where do does "
-            "i you we can my your our not no list give please me tell".split())
+            "i you we can my your our not no list give please me tell many much times should would could".split())
 # the words people use for what the guide calls something else ('brcm' / 'broadcom' -> the Broadcom shell's commands)
 SYNONYMS = {"broadcom": ["bcmcmd", "bsh"], "brcm": ["broadcom", "bcmcmd", "bsh"], "bcm": ["broadcom", "bcmcmd"],
             "serdes": ["broadcom", "lane", "snr"], "asic": ["broadcom"]}
@@ -29,8 +29,24 @@ _DEBUG_Q = re.compile(r"\b(debug\w*|troubleshoot\w*|diagnos\w*|commands?|links?|
                       r"check|signal|broadcom|brcm|bcm\w*)\b", re.I)
 
 
+def stem(w: str) -> str:
+    """A light English stem, for words only (not ids, commands with digits or dots): 'flapped' / 'flaps' / 'flapping'
+    found no 'flap' passage (9 Nov - 'how many times a port flapped' missed 'show interfaces flap')."""
+    if not w.isalpha() or len(w) < 5:
+        return w
+    for suf, keep in (("ing", 4), ("ied", 3), ("ies", 3), ("ed", 4), ("es", 4), ("s", 4)):
+        if w.endswith(suf) and len(w) - len(suf) >= keep and not w.endswith(("ss", "us", "is")):
+            w = w[: -len(suf)]
+            if suf in ("ied", "ies"):
+                w += "y"
+            elif len(w) > 3 and w[-1] == w[-2] and w[-1] not in "lsz":    # flapped -> flapp -> flap
+                w = w[:-1]
+            break
+    return w
+
+
 def tokens(text: str) -> list[str]:
-    return [w for w in re.findall(r"[a-z0-9_]+(?:[.-][a-z0-9_]+)*", (text or "").lower()) if w not in _STOP and len(w) > 1]
+    return [stem(w) for w in re.findall(r"[a-z0-9_]+(?:[.-][a-z0-9_]+)*", (text or "").lower()) if w not in _STOP and len(w) > 1]
 
 
 def guide_passages(path: Path = GUIDE, size: int = 1400) -> list[dict]:
@@ -102,9 +118,14 @@ class Index:
                 scored.append((s, i))
         scored.sort(key=lambda x: -x[0])
         # no one source fills every slot (705 test-plan rows would crowd out the manuals) unless an id was named
-        cap, per, out = (k if ids else max(2, (k + 1) // 2)), {}, []
+        # ... and one passage per section: two parts of 'Known link issues' kept 'Layer 1' (show interfaces flap) out (9 Nov)
+        cap, per, out, secs = (k if ids else max(2, (k + 1) // 2)), {}, [], set()
         for s, i in scored:
             src = self.chunks[i].get("source", "")
+            sec = (src, self.chunks[i].get("title", ""), self.chunks[i].get("section", ""))
+            if sec[2] and sec in secs:
+                continue
+            secs.add(sec)
             if per.get(src, 0) < cap:
                 per[src] = per.get(src, 0) + 1
                 out.append(dict(self.chunks[i], score=round(s, 2)))
