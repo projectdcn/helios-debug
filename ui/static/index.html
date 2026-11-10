@@ -1220,6 +1220,16 @@ function aiMd(t,ev){
 }
 /* what an AI request says it is about: a saved check / link / Diagnose (path, link), or any problem (ctx.spec: a
    helios-tests result {test}, outputs collected by hand {blocks, subject, rack}, a tool report {path}) */
+/* answered from an older check than the rack's newest full one (10 Nov: #scan=...20261024 kept in the page address,
+   every chat answer came from that 17-day-old check): say so, with the newest one a click away */
+function newerNote(a){var n=a&&a.newer_check;if(!n)return "";
+  return '<div class="warn">Answered from an older check'+(a.context&&a.context.time_utc?" ("+esc(stampLocal(a.context.time_utc))+")":"")+
+    ' - the rack has a newer full check'+(n.time_utc?" ("+esc(stampLocal(n.time_utc))+")":"")+
+    '. <button class="sec use-newer" data-path="'+esc(n.path)+'">Use the newest check</button> and ask again.</div>'}
+document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(".use-newer");if(!b)return;e.preventDefault();
+  var s=$("map-scan");if(s&&[].some.call(s.options,function(o){return o.value===b.dataset.path})){s.value=b.dataset.path;setHash({scan:b.dataset.path})}
+  chat.path=null;mapData=null;b.disabled=true;b.textContent="using the newest check";
+  Promise.resolve(s&&s.value===b.dataset.path?mapFetch():null).then(function(){chatCtx()})});
 function aiReq(ctx,extra){return Object.assign({path:ctx.path||"",link:ctx.link||"",focus:ctx.focus||[]},ctx.spec||{},extra||{})}
 /* an "Ask the AI" panel in box: ctx {path, link?, label} or {spec, rack, label}. One timeline, in the order things were
    done: answers, commands run from an answer, step-by-step steps. Every command run is a step (S1..) that the next
@@ -1241,7 +1251,7 @@ function aiPanel(box,ctx){
     api("/api/ai/ask",aiReq(ctx,{question:q||"",history:sess.hist,steps:sess.steps})).then(function(a){
       wait.remove();sess.hist.push({q:q||"root cause / debug / fix of "+(ctx.label||a.subject),a:a.answer});
       var d=document.createElement("div");d.className="ans";
-      d.innerHTML=(q?'<p class="mut"><b>Q:</b> '+esc(q)+"</p>":"")+(a.now?'<div class="warn"><b>Read today, not the check:</b> '+esc(a.now)+"</div>":"")+aiMd(a.answer,a.evidence)+aiCmds(a.runnable)+
+      d.innerHTML=(q?'<p class="mut"><b>Q:</b> '+esc(q)+"</p>":"")+newerNote(a)+(a.now?'<div class="warn"><b>Read today, not the check:</b> '+esc(a.now)+"</div>":"")+aiMd(a.answer,a.evidence)+aiCmds(a.runnable)+
         (a.unsafe?'<div class="warn">Careful: the answer suggests a step that changes the rack ("'+esc(a.unsafe)+'") - only with a go-ahead, and not on coupled ports.</div>':"")+notSeen(a)+
         ((a.wrong_device||[]).length?'<div class="warn">Check the commands: '+esc(a.wrong_device.join("; "))+".</div>":"")+
         (a.unknown_citations.length?'<div class="mut">Cites evidence it was not given: '+esc(a.unknown_citations.join(", "))+" - treat those claims with care.</div>":"")+
@@ -1544,7 +1554,7 @@ function chatSend(q){
   api("/api/ai/chat",{inventory:i.file,path:chat.path||(mapData&&mapData.rack===i.rack?mapData.path:""),link:lk||"",question:q,history:chat.hist}).then(function(a){
     chat.hist.push({q:q,a:a.answer});
     var refs=(a.evidence||[]).concat((a.docs||[]).map(function(d){return {ref:d.ref,text:d.title+": "+d.text}}));
-    ad.innerHTML=((a.map_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Rack map - exact, from the check'+
+    ad.innerHTML=newerNote(a)+((a.map_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Rack map - exact, from the check'+
         (a.context&&a.context.path?" "+esc(a.context.path):"")+'</b>'+a.map_facts.map(function(t){return '<div style="margin-top:3px">'+(/^Summary:/.test(t)?"<b>"+esc(t)+"</b>":esc(t))+"</div>"}).join("")+"</div>"+
         '<div class="mut" style="font-size:12px;margin:4px 0">AI explanation - the lines above are exact; if they disagree, they are right:</div>':"")+
       ((a.check_facts||[]).length?'<div class="verdict ok" style="font-size:12px;white-space:normal"><b>Exact, from the newest health and link checks</b>'+

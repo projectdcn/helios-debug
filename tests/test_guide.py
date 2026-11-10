@@ -1003,3 +1003,19 @@ def test_a_read_today_overrules_an_old_verdict():
     assert guide.now_vs_check("st6 Ethernet115", "ok", [dict(st[0], output=ctr.replace(" U ", " D "))]).startswith(
         "Now: st6 Ethernet115 is down")
     assert guide.now_vs_check("st6 Ethernet115", "down", []) is None
+
+
+def test_a_chat_on_an_older_check_names_the_newer_one(tmp_path):
+    import ui.server as S
+    inv = tmp_path / "inv"
+    inv.mkdir()
+    (inv / "r.local.yaml").write_text("rack: r\nswitches:\n  - {name: st1, host: 127.0.0.1}\ncomputes:\n  - {name: ct01, host: 127.0.0.1}\n")
+    for t in ("20261024-071833", "20261108-200858"):
+        d = tmp_path / "res" / "link-check" / "r" / f"scan-{t}"
+        d.mkdir(parents=True)
+        (d / "link_check.json").write_text(json.dumps({"rack": "r", "time_utc": t, "scope": {}, "links": [
+            {"switch": "st1", "sw_port": "Ethernet1", "tray": "ct01", "state": "ok"}]}))
+    st = S.State(inv, tmp_path / "res")
+    assert S.newer_full(st, "r", "link-check/r/scan-20261024-071833", 1) == {
+        "path": "link-check/r/scan-20261108-200858", "time_utc": "20261108-200858"}
+    assert S.newer_full(st, "r", "link-check/r/scan-20261108-200858", 1) is None

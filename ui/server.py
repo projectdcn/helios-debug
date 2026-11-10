@@ -600,6 +600,14 @@ def ai_ask(state: State, req: dict) -> dict:
         raise BadRequest(str(e)) from None
     if now:
         out["now"] = now
+    rel0 = str(req.get("path") or "").strip("/")
+    if rack and "/scan-" in rel0:                  # an older check than the newest full one: say so (10 Nov)
+        try:
+            nw = newer_full(state, rack, rel0, len(_rack_nodes(state, rack)[0].computes))
+        except BadRequest:
+            nw = None
+        if nw:
+            out["newer_check"] = nw
     if rack:                                 # the commands it suggests, checked like steps: Run from the answer
         try:
             _inv, roles = _rack_nodes(state, rack)
@@ -976,6 +984,21 @@ def smalltalk(q: str, scan: dict, rack: str, rel: str) -> dict:
             "context": {"rack": rack, "path": rel, "time_utc": scan.get("time_utc"), "link": None, "live_changes": 0}}
 
 
+def newer_full(state: State, rack: str, rel: str, computes: int) -> dict | None:
+    """{path, time_utc} of the rack's newest full check when the one asked about is older (10 Nov: the Rack map kept
+    #scan=...20261024 in the page address, and the chat answered every question from that 17-day-old check, saying so
+    only as '17.0 days old' in its footer while the check of 8 Nov was there)."""
+    runs = sorted((state.results_dir / "link-check" / rack).glob("scan-*/link_check.json"), reverse=True)
+    lf = latest_full(rack, runs, computes).get("latest_full")
+    if not lf or lf == rel or lf.rsplit("/", 1)[-1] <= rel.rsplit("/", 1)[-1]:
+        return None
+    try:
+        t = json.loads(_result_file(state, f"{lf}/link_check.json").read_text()).get("time_utc")
+    except (OSError, ValueError, BadRequest):
+        t = None
+    return {"path": lf, "time_utc": t}
+
+
 def ai_chat(state: State, req: dict) -> dict:
     """One chat question about a rack: its check (the one shown, else the newest full one), the open link if any, the
     newest Live changes when Live runs for that rack, and matching documentation passages."""
@@ -993,6 +1016,7 @@ def ai_chat(state: State, req: dict) -> dict:
         if not lf:
             raise BadRequest(f"no check of {rack} yet - run Check all links first")
         rel = lf
+    newer = newer_full(state, rack, rel, len(inv.computes))
     scan = scan_view(state, rel)
     if SMALLTALK_RX.fullmatch(q):                  # 'hi', 'thanks', 'ok': no model call, no rack dump
         return smalltalk(q, scan, rack, rel)
@@ -1064,7 +1088,8 @@ def ai_chat(state: State, req: dict) -> dict:
     out["off_facts"] = rackfacts.review(out.get("answer") or "", getattr(ev, "check_facts", None) or [])
     out = out | {"context": {"rack": rack, "path": rel, "time_utc": scan.get("time_utc"), "link": link or None,
                              "live_changes": len(live), "focus": getattr(ev, "focus", None) or [], "ages": ages,
-                             "health": hs[0].parent.name if hs else None, "kinds": ks}}
+                             "health": hs[0].parent.name if hs else None, "kinds": ks},
+                 **({"newer_check": newer} if newer else {})}
     log_chat(state, q, out)
     return out
 
