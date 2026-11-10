@@ -1019,3 +1019,15 @@ def test_a_chat_on_an_older_check_names_the_newer_one(tmp_path):
     assert S.newer_full(st, "r", "link-check/r/scan-20261024-071833", 1) == {
         "path": "link-check/r/scan-20261108-200858", "time_utc": "20261108-200858"}
     assert S.newer_full(st, "r", "link-check/r/scan-20261108-200858", 1) is None
+
+
+def test_flaps_omitted_and_bins_past_15():
+    from types import SimpleNamespace
+    from heliosdbg import l1
+    ev = SimpleNamespace(items=[{"text": "Switch port: admin up, oper up, MTU 9100, flap count 11, last down Sun Nov 08"}])
+    assert guide.flaps_omitted(ev, "The link works: both ends up and the IFCP session up")
+    assert not guide.flaps_omitted(ev, "The link works but flapped 11 times")
+    assert not guide.flaps_omitted(SimpleNamespace(items=[{"text": "flap count 1"}]), "The link works")
+    hist = "Symbol Errors Per Codeword         Codewords\n" + "".join(f"BIN{k}  {100 - k}\n" for k in range(16))
+    assert l1.contradictions(2, "st1", hist, "the histogram shows a peak at BIN18 (uncorrectable)")
+    assert not l1.contradictions(2, "st1", hist, "the deepest bin with codewords is BIN15")

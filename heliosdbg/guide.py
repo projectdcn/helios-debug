@@ -772,6 +772,20 @@ class NotJSON(GuideError):
         self.text = text
 
 
+_FLAP_COUNT = re.compile(r"\bflap count (\d+)", re.I)
+
+
+def flaps_omitted(ev, text: str) -> str | None:
+    """'The link works' for a link the check counted many flaps on, without a word about them (10 Nov, v41f on st1
+    Ethernet366: flap count 11 - 'the link works: ... both ends up')."""
+    n = max((int(m.group(1)) for x in getattr(ev, "items", None) or [] for m in _FLAP_COUNT.finditer(str(x.get("text") or ""))),
+            default=0)
+    if n >= 3 and (_WORKS.search(text or "") or _HEALTHY.search(text or "")) and not re.search(r"\bflap", text or "", re.I):
+        return (f"it says the link works, but the link check counted {n} flaps on this port - a link that went down "
+                f"{n} times is not simply fine: say so, and when it last went down")
+    return None
+
+
 def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retries: int = 1, stay=()) -> dict:
     """The model's next step: {done, node, command, why, allowed, refused} or {done, conclusion, next}. A proposal the
     read-only list refuses goes back to the model with the reason and the exact forms allowed, once (g02-g17 2 Nov:
@@ -812,6 +826,10 @@ def propose(ai, ev, subject: str, steps: list[dict], nodes: dict, env=None, retr
         out = again | {"retried": True, "contradiction_before": out["contradiction"]}
     if not out.get("done") and str(out.get("refused") or "").startswith("already run") and step_facts(steps):
         out = with_check(by_code(steps, "the AI kept proposing a step already run", subject), ev) | {"model": out.get("model")}
+    if out.get("done"):
+        fo = flaps_omitted(ev, out.get("conclusion") or "")
+        if fo:
+            out["contradicts"] = list(out.get("contradicts") or []) + [fo]
     if out.get("done") and out.get("contradicts"):       # once more, told what its own outputs show
         msgs = msgs + [{"role": "assistant", "content": out.get("_text", "")},
                        {"role": "user", "content": "Your conclusion contradicts the outputs: " + "; ".join(out["contradicts"])

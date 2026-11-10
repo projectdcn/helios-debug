@@ -259,4 +259,9 @@ def contradictions(i: int, node: str, out: str, text: str) -> list[str]:
     flapped += [h["who"] for h in histograms(out) if (h["link_up"] or 0) > 1]
     if flapped and _NO_FLAP.search(text or ""):
         got.append(f"it says it never flapped, but [S{i}] on {node} shows {flapped[0]} went down and came back")
+    if histograms(out):                         # 10 Nov (v41f): 'a peak at BIN18 (uncorrectable)' - there is none
+        big = [int(b) for b in re.findall(r"\bBIN ?(\d+)\b", text or "", re.I) if int(b) > 15]
+        if big:
+            got.append(f"it names BIN{big[0]}, but the FEC histogram [S{i}] has BIN0-BIN15 (RS544 corrects up to 15 "
+                       f"symbols; past that a codeword is uncorrectable, counted separately)")
     return got
