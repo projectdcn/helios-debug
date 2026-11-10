@@ -943,3 +943,23 @@ def test_gpu_ports_up_without_ifcp_are_a_fact_and_healthy_contradicts():
            "output": "GPU 0001:01:00.1:\n" + body.replace("ll_up no", "ll_up yes")}]
     assert "[S1] ct01 GPU 0001:01:00.1: all 36 ports up with an IFCP session" in guide.step_facts(ok)
     assert not guide.contradictions("ct01 is healthy", ok)
+
+
+def test_healthy_without_reading_the_gpu_ports_is_a_contradiction():
+    st = [{"node": "ct16", "command": "afmctl show device --json", "rc": 0, "output": "GPU 0001:01:00.1: ACTIVE"},
+          {"node": "ct16", "command": "lspci -k -d 1002:", "rc": 0, "output": "0001:01:00.0 Processing accelerators"}]
+    c = guide.contradictions("ct16 looks healthy: its 4 GPUs are ACTIVE - no fault found", st)
+    assert c and "no step read the GPU ports of ct16" in c[0]
+    st.append({"node": "ct16", "command": "sudo afmctl show port -b 0001:01:00.1 --json", "rc": 0,
+               "output": "GPU 0001:01:00.1:\n port 0: LINK_UP, admin enabled, IFCP ll_up yes peer_enabled yes peer 6/1\n"})
+    assert not guide.contradictions("ct16 looks healthy", st)
+    assert not guide.contradictions("ct16 has no GPU driver: not healthy", st[:2])
+
+
+def test_afmctl_gets_the_address_afmctl_listed():
+    st = [{"node": "ct16", "command": "afmctl show device --json",
+           "output": "GPU 0001:01:00.1: accelerator 60, config_phase ACTIVE\nGPU 0002:01:00.1: accelerator 61"}]
+    assert guide.afm_bdf("afmctl show port -b 0001:01:00.0 --json", "ct16", st) == "afmctl show port -b 0001:01:00.1 --json"
+    assert guide.afm_bdf("sudo afmctl show port -b 0002:01:00.1 --json", "ct16", st) == "sudo afmctl show port -b 0002:01:00.1 --json"
+    assert guide.afm_bdf("lspci -k -s 0001:01:00.0", "ct16", st) == "lspci -k -s 0001:01:00.0"        # not afmctl
+    assert guide.afm_bdf("afmctl show port -b 0001:01:00.0 --json", "ct01", st) == "afmctl show port -b 0001:01:00.0 --json"

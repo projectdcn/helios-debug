@@ -358,6 +358,13 @@ def contradictions(text: str, steps: list[dict]) -> list[str]:
         if noi and _HEALTHY.search(text or ""):
             out.append(f"it says healthy / no fault, but [S{i}] on {node} shows GPU {noi[0][0]} port(s) "
                        f"{', '.join(noi[0][1])} up without an IFCP session")
+    cmds = {(s.get("node"), re.sub(r"^\s*sudo\s+", "", str(s.get("command") or ""))) for s in steps
+            if str(s.get("rc")) not in ("refused", "skipped")}
+    trays = sorted({n for n, c in cmds if c.startswith("afmctl show device")})
+    unread = [n for n in trays if not any(n == n_ and c.startswith("afmctl show port") for n_, c in cmds)]
+    if unread and _HEALTHY.search(text or ""):          # 9 Nov: v41f read device / amd-smi / lspci / dmesg on ct16 and
+        out.append(f"it says healthy, but no step read the GPU ports of {', '.join(unread)} (afmctl show port -b <bdf> "  # said
+                   f"--json: link and IFCP session per port) - its links are not known")             # 'looks healthy'
     from . import l1
     for i, s in enumerate(steps, 1):
         out += l1.contradictions(i, s.get("node"), str(s.get("output") or ""), text)
@@ -889,6 +896,24 @@ def _seen(msgs: list[dict]) -> str:
     return "\n".join(str(m.get("content") or "").split("\n\nDocumentation passages:")[0] for m in msgs if m.get("role") == "user")
 
 
+def afm_bdf(command: str, node: str, steps: list[dict], out: dict | None = None) -> str:
+    """An afmctl command with a GPU's address in lspci's function (0001:01:00.0) gets the one afmctl listed on that
+    node (0001:01:00.1) - 9 Nov efficacy test: v41f took the address from lspci, 'afmctl show port -b 0001:01:00.0'
+    answered 'No such device' and it ran out of steps on 'is ct16 healthy?'."""
+    if not re.match(r"^\s*(?:sudo\s+)?afmctl\b", command or ""):
+        return command
+    listed = {b for s in steps if s.get("node") == node and "afmctl show device" in str(s.get("command") or "")
+              for b in _BDF_RX.findall(str(s.get("output") or ""))}
+    for b in set(_BDF_RX.findall(command)):
+        if b not in listed:
+            same = sorted(x for x in listed if x[:-1].lower() == b[:-1].lower())
+            if same:
+                command = command.replace(b, same[0])
+                if out is not None:
+                    out["fixed_bdf"] = f"{b} -> {same[0]} (the address afmctl listed)"
+    return command
+
+
 def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=None, stay=()) -> dict:
     text, model = ai.chat(msgs, env, max_tokens=500)
     try:
@@ -919,6 +944,7 @@ def _propose_once(ai, msgs, subject: str, steps: list[dict], nodes: dict, env=No
         return out
     try:
         out["command"], _sudo = check(out["command"], nodes[node])
+        out["command"] = afm_bdf(out["command"], node, steps, out)
         # the same GPU is .0 in lspci / amd-smi and .1 in afmctl: the address seen, whatever its function
         unseen = [b for b in _BDF_RX.findall(out["command"]) if b.lower()[:-1] not in _seen(msgs).lower()]
         if any(s.get("node") == node and s.get("command") == out["command"] for s in steps):
